@@ -5,7 +5,37 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.3.0-dev — in progress (PR 3 landed)
+## v0.3.0 — PR 4 (observability) landed; Phase 4 closed
+
+### PR 4 — Observability
+
+#### Added — OpenTelemetry GenAI semconv telemetry
+
+- `ExAthena.Telemetry` — emits `:telemetry`-library events shaped to the
+  OpenTelemetry GenAI semantic conventions. Consumers bridge to OTel
+  via `opentelemetry_telemetry` (no direct OTel dep). Events:
+  - `[:ex_athena, :loop, :start | :stop | :exception]`
+  - `[:ex_athena, :chat, :start | :stop]`
+  - `[:ex_athena, :tool, :start | :stop]`
+  - `[:ex_athena, :compaction, :stop]`
+  - `[:ex_athena, :subagent, :spawn | :stop]`
+  - `[:ex_athena, :structured_retry]`
+- GenAI semconv metadata keys: `gen_ai_operation_name`,
+  `gen_ai_provider_name`, `gen_ai_request_model`, `gen_ai_agent_id`,
+  `gen_ai_conversation_id`, `gen_ai_tool_name`, `gen_ai_tool_call_id`,
+  `gen_ai_usage_input_tokens`, `gen_ai_usage_output_tokens`,
+  `gen_ai_response_finish_reasons`.
+- New `:conversation_id` / `:agent_id` opts on `Loop.run/2` — threaded
+  into every emitted event's metadata so OTel traces can stitch across
+  turns.
+- `Telemetry.span/3` helper wraps arbitrary work in a start/stop pair
+  with duration measurement + exception re-raising.
+
+#### Released
+
+- Version bump `0.3.0-dev` → `0.3.0`. Ready for Hex publish.
+
+## v0.3.0-dev — PR 3 landed
 
 ### PR 3 — Reliability + intelligence
 

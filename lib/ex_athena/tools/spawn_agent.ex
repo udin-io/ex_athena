@@ -60,6 +60,12 @@ defmodule ExAthena.Tools.SpawnAgent do
 
     emit_event(ctx, {:subagent_spawn, %{id: sub_id, prompt: prompt}})
 
+    ExAthena.Telemetry.event(
+      [:ex_athena, :subagent, :spawn],
+      %{},
+      %{subagent_id: sub_id, parent_conversation_id: Map.get(ctx.assigns || %{}, :conversation_id)}
+    )
+
     # Run the sub-loop under a supervised Task so a crash doesn't bring
     # down the parent, and timeouts are enforceable. Task.Supervisor is
     # started by ExAthena.Application under `ExAthena.Tasks`.
@@ -72,6 +78,13 @@ defmodule ExAthena.Tools.SpawnAgent do
       case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
         {:ok, {:ok, %{text: text}}} ->
           emit_event(ctx, {:subagent_result, %{id: sub_id, text: text || ""}})
+
+          ExAthena.Telemetry.event(
+            [:ex_athena, :subagent, :stop],
+            %{},
+            %{subagent_id: sub_id, outcome: :ok}
+          )
+
           {:ok, text || ""}
 
         {:ok, {:error, reason}} ->

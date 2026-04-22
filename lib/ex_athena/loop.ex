@@ -58,7 +58,7 @@ defmodule ExAthena.Loop do
       (e.g. unknown provider, bad tool module).
   """
 
-  alias ExAthena.{Budget, Config, Error, Request, Result, Tools}
+  alias ExAthena.{Budget, Config, Error, Request, Result, Telemetry, Tools}
   alias ExAthena.Loop.{Events, Mode, State}
 
   @default_max_iterations 25
@@ -70,10 +70,21 @@ defmodule ExAthena.Loop do
   def run(prompt, opts \\ []) do
     started_at = System.monotonic_time(:millisecond)
 
-    with {:ok, state} <- build_initial_state(prompt, opts),
-         {:ok, state} <- state.mode.init(state) do
-      state |> loop() |> to_result(started_at)
-    end
+    meta =
+      Telemetry.genai_meta(
+        operation: "invoke_agent",
+        provider: Keyword.get(opts, :provider),
+        request_model: Keyword.get(opts, :model),
+        agent_id: Keyword.get(opts, :agent_id),
+        conversation_id: Keyword.get(opts, :conversation_id)
+      )
+
+    Telemetry.span([:ex_athena, :loop], meta, fn ->
+      with {:ok, state} <- build_initial_state(prompt, opts),
+           {:ok, state} <- state.mode.init(state) do
+        state |> loop() |> to_result(started_at)
+      end
+    end)
   end
 
   # ── Loop body ─────────────────────────────────────────────────────
@@ -137,6 +148,16 @@ defmodule ExAthena.Loop do
           new_budget = Map.get(metadata, :budget, state.budget)
 
           Events.emit(state.on_event, {:compaction, metadata})
+
+          Telemetry.event(
+            [:ex_athena, :compaction, :stop],
+            %{
+              before_tokens: Map.get(metadata, :before),
+              after_tokens: Map.get(metadata, :after),
+              dropped_count: Map.get(metadata, :dropped_count)
+            },
+            %{reason: Map.get(metadata, :reason)}
+          )
 
           {:ok, %{state | messages: new_messages, budget: new_budget}}
 
@@ -287,7 +308,14 @@ defmodule ExAthena.Loop do
   end
 
   defp compaction_meta(opts) do
-    [:compactor, :compact_at, :pinned_prefix_count, :live_suffix_count]
+    [
+      :compactor,
+      :compact_at,
+      :pinned_prefix_count,
+      :live_suffix_count,
+      :conversation_id,
+      :agent_id
+    ]
     |> Enum.reduce(%{}, fn key, acc ->
       case Keyword.get(opts, key) do
         nil -> acc
