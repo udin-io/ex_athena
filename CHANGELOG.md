@@ -5,6 +5,75 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.0 — unreleased
+
+Phase 2 of the agent-loop roadmap: ex_athena is now feature-complete for
+multi-turn tool-using work. Drop-in replacement for the Claude Code SDK.
+
+### Added — Agent loop
+
+- `ExAthena.Loop` — multi-turn loop. Infer → parse tool calls → permissions →
+  PreToolUse hooks → execute → PostToolUse hooks → replay → repeat. Bounded
+  by `:max_iterations` (default 25). Auto-falls-back between native and
+  text-tagged tool-call protocols via `ExAthena.ToolCalls.extract/2`.
+- `ExAthena.Session` — GenServer owning multi-turn conversation state.
+  Appends to message history on every turn, resumable, supervised.
+- `ExAthena.run/2` + `ExAthena.extract_structured/2` on the facade.
+
+### Added — Tool behaviour + builtins
+
+- `ExAthena.Tool` behaviour (`name`, `description`, `schema`, `execute`).
+- `ExAthena.ToolContext` — `:cwd`, `:phase`, `:session_id`, `:tool_call_id`,
+  `:assigns`, plus `resolve_path/2` that rejects traversal + null bytes.
+- `ExAthena.Tools` registry — resolves user tool lists and constructs the
+  provider-facing + prompt-facing schemas.
+- Ten builtin tools:
+  - `Read` (with line numbering + offset/limit)
+  - `Glob` (wildcard listing with max cap)
+  - `Grep` (`rg` when available, pure-Elixir fallback)
+  - `Write` (creates parent dirs)
+  - `Edit` (strict exact-string replacement, ambiguity-rejecting)
+  - `Bash` (port-based, configurable timeout, kills on timeout)
+  - `WebFetch` (http/https only, 1 MB cap)
+  - `TodoWrite` (validates statuses, optional notifier callback via `assigns`)
+  - `PlanMode` (phase transition request — loop consumes the sentinel)
+  - `SpawnAgent` (synchronous sub-loop, inherits ctx, filters meta-tools)
+
+### Added — Permissions
+
+- `ExAthena.Permissions` with three modes (`:plan`, `:default`,
+  `:bypass_permissions`), `allowed_tools`/`disallowed_tools` lists, and a
+  `can_use_tool` callback for interactive approval.
+- `:plan` mode blocks mutation tools (`write`, `edit`, `bash`, `todo_write`)
+  by default; read-only tools always permitted.
+
+### Added — Hooks
+
+- `ExAthena.Hooks` lifecycle matching Claude Code's shape: `PreToolUse`,
+  `PostToolUse`, `Stop`, `Notification`, `PreCompact`, `SessionStart`,
+  `SessionEnd`. Matcher groups (regex or string) select which tools fire.
+  Hook crashes are caught and become `:halt` returns.
+
+### Added — Structured extraction
+
+- `ExAthena.Structured.extract/2` — one-shot JSON extraction with schema
+  validation. Uses JSON mode when the provider supports it; falls back to a
+  fenced `~~~json` block for providers that don't. `:validator` opt for
+  custom validation.
+
+### Test surface
+
+- 95 tests (up from 43 in Phase 1). Coverage per tool, permission modes,
+  hook lifecycle, loop end-to-end driven by the Mock provider, structured
+  extraction both JSON-mode and fenced.
+
+### Phase 3 roadmap (next PR)
+
+Start migrating `udin_code` off direct `claude_code` calls. Route ticket
+work (`SdkRunner`, `GenericRunner`, `Orchestrator`) through `ExAthena.Session`
+so picking `:ollama` in the `ModelProvider` UI begins actually running tasks
+on Ollama.
+
 ## v0.1.0 — unreleased
 
 Initial public release. Phase 1 of the agent-loop roadmap: pure inference
