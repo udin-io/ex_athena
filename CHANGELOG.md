@@ -5,6 +5,74 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.0-dev — in progress
+
+v0.3 is a research-driven rewrite of the agent loop (incoming in PRs 2-4).
+PR 1 lays the foundation: canonical types, typed terminations, budget
+accounting, and a single req_llm-backed provider adapter that replaces the
+three hand-written provider modules.
+
+### Added — Result, Terminations, Budget
+
+- `ExAthena.Result` — canonical run outcome struct. Every run (success or
+  error) returns a `%Result{}` carrying final text, message history,
+  finish_reason, iterations, tool_calls_made, aggregated usage, cost in
+  USD, duration, model, provider, and telemetry metadata. Replaces the
+  loose map v0.2 returned.
+- `ExAthena.Loop.Terminations` — typed finish_reason subtypes inspired by
+  the Claude Agent SDK. Each run ends with exactly one of:
+  `:stop`, `:error_max_turns`, `:error_max_budget_usd`,
+  `:error_during_execution`, `:error_max_structured_output_retries`,
+  `:error_consecutive_mistakes`, `:error_halted`, `:error_compaction_failed`.
+  `Terminations.category/1` classifies each as `:success | :retryable |
+  :capacity | :fatal` for retry-decision logic.
+- `ExAthena.Budget` — usage + cost accumulator. Aggregates token usage
+  across iterations, computes cost from provider metadata (req_llm +
+  models.dev), and supports `:max_budget_usd` caps.
+
+### Added — req_llm provider adapter
+
+- `ExAthena.Providers.ReqLLM` — single adapter that delegates to
+  `req_llm`'s 18+ providers (OpenAI, Anthropic, Ollama, OpenRouter, Groq,
+  Together, DeepInfra, Vercel, LM Studio, vLLM, llama.cpp, Mistral, Gemini,
+  Cohere, Bedrock, …). Model names resolve through the `models.dev`
+  registry for cost + context-window metadata.
+- `ExAthena.Config.pop_provider!/1` now threads a `req_llm_provider_tag`
+  key through opts so bare `model: "llama3.1"` + `provider: :ollama`
+  auto-expands to the full `"ollama:llama3.1"` spec req_llm expects.
+- `Config.req_llm_provider_tag/1` — translate an ExAthena provider atom
+  into the req_llm `"tag:model-id"` prefix.
+
+### Removed — hand-written provider modules
+
+- `ExAthena.Providers.Ollama`
+- `ExAthena.Providers.OpenAICompatible`
+- `ExAthena.Providers.Claude`
+  All three were direct HTTP clients (Ollama + OpenAICompatible) or SDK
+  wrappers (Claude). req_llm does this work across more providers and
+  maintains the catalogs. The provider atoms `:ollama`, `:openai`,
+  `:openai_compatible`, `:llamacpp`, `:claude`, `:anthropic` continue to
+  work — they now all resolve to `ExAthena.Providers.ReqLLM`.
+
+### Added — dep
+
+- `{:req_llm, "~> 1.10"}`.
+
+### Breaking change — none yet (visible)
+
+Consumer-visible API unchanged in this PR. Every existing call
+(`ExAthena.query/2`, `ExAthena.stream/3`, `ExAthena.Loop.run/2`,
+`ExAthena.Session.start_link/1`) works identically. The provider-module
+change is internal.
+
+Breaking API changes land in PR 2 (Kernel) alongside the new Mode
+behaviour and the new stream event shape.
+
+### Tests
+
+- 116 tests passing (up from 91 baseline). 25 new covering Terminations,
+  Result, Budget, and the req_llm adapter routing.
+
 ## v0.2.0 — unreleased
 
 Phase 2 of the agent-loop roadmap: ex_athena is now feature-complete for
@@ -147,7 +215,7 @@ Edit, Bash, WebFetch, TodoWrite, PlanMode, SpawnAgent), `ExAthena.Loop`
 (multi-turn agent loop), `ExAthena.Session` GenServer, `ExAthena.Hooks`
 (PreToolUse/PostToolUse/Stop lifecycle), `ExAthena.Permissions`
 (`:plan` / `:default` / `:bypass` + `can_use_tool` callback), and
-`ExAthena.extract_structured/3` (JSON-schema-validated output).
+`ExAthena.extract_structured/2` (JSON-schema-validated output).
 
 ### Phase 3+ roadmap
 

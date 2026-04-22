@@ -51,33 +51,33 @@ defmodule ExAthena.ConfigTest do
 
       # per-call wins
       assert "call-model" =
-               Config.get(ExAthena.Providers.Ollama, :model,
+               Config.get(ExAthena.Providers.ReqLLM, :model,
                  [model: "call-model"],
                  "default"
                )
 
       # provider env wins over top-level
-      assert "env-model" = Config.get(ExAthena.Providers.Ollama, :model, [], "default")
+      assert "env-model" = Config.get(ExAthena.Providers.ReqLLM, :model, [], "default")
 
       # top-level wins over default when provider env doesn't set it
       Application.delete_env(:ex_athena, :ollama)
 
-      assert "top-model" = Config.get(ExAthena.Providers.Ollama, :model, [], "default")
+      assert "top-model" = Config.get(ExAthena.Providers.ReqLLM, :model, [], "default")
 
       # default when nothing is set
       Application.delete_env(:ex_athena, :model)
 
-      assert "default" = Config.get(ExAthena.Providers.Ollama, :model, [], "default")
+      assert "default" = Config.get(ExAthena.Providers.ReqLLM, :model, [], "default")
     end
   end
 
   describe "provider_module/1" do
     test "resolves built-in atoms" do
-      assert ExAthena.Providers.Ollama = Config.provider_module(:ollama)
-      assert ExAthena.Providers.OpenAICompatible = Config.provider_module(:openai)
-      assert ExAthena.Providers.OpenAICompatible = Config.provider_module(:openai_compatible)
-      assert ExAthena.Providers.OpenAICompatible = Config.provider_module(:llamacpp)
-      assert ExAthena.Providers.Claude = Config.provider_module(:claude)
+      assert ExAthena.Providers.ReqLLM = Config.provider_module(:ollama)
+      assert ExAthena.Providers.ReqLLM = Config.provider_module(:openai)
+      assert ExAthena.Providers.ReqLLM = Config.provider_module(:openai_compatible)
+      assert ExAthena.Providers.ReqLLM = Config.provider_module(:llamacpp)
+      assert ExAthena.Providers.ReqLLM = Config.provider_module(:claude)
       assert ExAthena.Providers.Mock = Config.provider_module(:mock)
     end
 

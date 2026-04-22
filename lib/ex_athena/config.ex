@@ -27,12 +27,26 @@ defmodule ExAthena.Config do
   """
 
   @builtin_providers %{
-    ollama: ExAthena.Providers.Ollama,
-    openai: ExAthena.Providers.OpenAICompatible,
-    openai_compatible: ExAthena.Providers.OpenAICompatible,
-    llamacpp: ExAthena.Providers.OpenAICompatible,
-    claude: ExAthena.Providers.Claude,
-    mock: ExAthena.Providers.Mock
+    ollama: ExAthena.Providers.ReqLLM,
+    openai: ExAthena.Providers.ReqLLM,
+    openai_compatible: ExAthena.Providers.ReqLLM,
+    llamacpp: ExAthena.Providers.ReqLLM,
+    claude: ExAthena.Providers.ReqLLM,
+    anthropic: ExAthena.Providers.ReqLLM,
+    mock: ExAthena.Providers.Mock,
+    req_llm: ExAthena.Providers.ReqLLM
+  }
+
+  # Map the ExAthena provider atom → the `req_llm` provider tag that belongs
+  # in the `"tag:model-id"` spec. When an ExAthena caller says `:ollama`, the
+  # ReqLLM adapter turns a raw `model: "llama3.1"` into `"ollama:llama3.1"`.
+  @req_llm_provider_tag %{
+    ollama: "ollama",
+    openai: "openai",
+    openai_compatible: "openai",
+    llamacpp: "llamacpp",
+    claude: "anthropic",
+    anthropic: "anthropic"
   }
 
   @doc """
@@ -51,8 +65,25 @@ defmodule ExAthena.Config do
                 "Pass [provider: :ollama, ...] or set " <>
                 "`config :ex_athena, default_provider: :ollama`."
 
+    rest =
+      case req_llm_provider_tag(provider) do
+        nil -> rest
+        tag -> Keyword.put_new(rest, :req_llm_provider_tag, tag)
+      end
+
     {provider_module(provider), rest}
   end
+
+  @doc """
+  Translate an ExAthena provider atom into the `req_llm` provider tag used in
+  `"tag:model-id"` specs. Returns `nil` when the atom doesn't map to req_llm
+  (e.g. `:mock`, or a user-supplied module).
+  """
+  @spec req_llm_provider_tag(atom() | module()) :: String.t() | nil
+  def req_llm_provider_tag(atom) when is_atom(atom),
+    do: Map.get(@req_llm_provider_tag, atom)
+
+  def req_llm_provider_tag(_), do: nil
 
   @doc "Resolve a provider atom (or module) to its implementing module."
   @spec provider_module(atom() | module()) :: module()

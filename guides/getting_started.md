@@ -97,4 +97,4 @@ work per-delta, hand off to a `Task`.
 - [Providers](providers.md) — full config surface for each provider.
 - [Tool calls](tool_calls.md) — native vs text-tagged protocols.
 - Phase 2 ships: `ExAthena.Tool`, `ExAthena.Loop`, `ExAthena.Session`,
-  `ExAthena.extract_structured/3`.
+  `ExAthena.extract_structured/2`.
