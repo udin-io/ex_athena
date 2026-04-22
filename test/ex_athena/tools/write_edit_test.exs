@@ -1,0 +1,97 @@
+defmodule ExAthena.Tools.WriteEditTest do
+  use ExUnit.Case, async: true
+
+  alias ExAthena.ToolContext
+  alias ExAthena.Tools.{Edit, Write}
+
+  setup do
+    dir = Path.join(System.tmp_dir!(), "writeedit_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    {:ok, dir: dir, ctx: ToolContext.new(cwd: dir)}
+  end
+
+  describe "Write" do
+    test "creates a file and reports byte count", %{dir: dir, ctx: ctx} do
+      assert {:ok, msg} = Write.execute(%{"path" => "hello.txt", "content" => "hi"}, ctx)
+      assert msg =~ "wrote 2 bytes"
+      assert File.read!(Path.join(dir, "hello.txt")) == "hi"
+    end
+
+    test "creates parent directories automatically", %{dir: dir, ctx: ctx} do
+      assert {:ok, _} =
+               Write.execute(%{"path" => "nested/deeply/file.txt", "content" => "x"}, ctx)
+
+      assert File.read!(Path.join(dir, "nested/deeply/file.txt")) == "x"
+    end
+
+    test "overwrites existing files", %{dir: dir, ctx: ctx} do
+      path = Path.join(dir, "over.txt")
+      File.write!(path, "old")
+      assert {:ok, _} = Write.execute(%{"path" => "over.txt", "content" => "new"}, ctx)
+      assert File.read!(path) == "new"
+    end
+
+    test "missing arguments rejected", %{ctx: ctx} do
+      assert {:error, :missing_path} = Write.execute(%{}, ctx)
+      assert {:error, :missing_content} = Write.execute(%{"path" => "x"}, ctx)
+    end
+  end
+
+  describe "Edit" do
+    test "replaces a unique string exactly once", %{dir: dir, ctx: ctx} do
+      path = Path.join(dir, "edit.txt")
+      File.write!(path, "Hello world")
+
+      assert {:ok, msg} =
+               Edit.execute(
+                 %{"path" => "edit.txt", "old_string" => "world", "new_string" => "there"},
+                 ctx
+               )
+
+      assert msg =~ "1 replacement"
+      assert File.read!(path) == "Hello there"
+    end
+
+    test "rejects ambiguous matches unless replace_all", %{dir: dir, ctx: ctx} do
+      path = Path.join(dir, "dup.txt")
+      File.write!(path, "a\na\na")
+
+      assert {:error, {:ambiguous_match, 3}} =
+               Edit.execute(%{"path" => "dup.txt", "old_string" => "a", "new_string" => "b"}, ctx)
+
+      # replace_all lifts the uniqueness constraint
+      assert {:ok, _} =
+               Edit.execute(
+                 %{
+                   "path" => "dup.txt",
+                   "old_string" => "a",
+                   "new_string" => "b",
+                   "replace_all" => true
+                 },
+                 ctx
+               )
+
+      assert File.read!(path) == "b\nb\nb"
+    end
+
+    test "missing old_string errors", %{dir: dir, ctx: ctx} do
+      path = Path.join(dir, "missing.txt")
+      File.write!(path, "content")
+
+      assert {:error, :old_string_not_found} =
+               Edit.execute(
+                 %{"path" => "missing.txt", "old_string" => "nope", "new_string" => "new"},
+                 ctx
+               )
+    end
+
+    test "empty old_string rejected", %{dir: dir, ctx: ctx} do
+      path = Path.join(dir, "empty.txt")
+      File.write!(path, "content")
+
+      assert {:error, :empty_old_string} =
+               Edit.execute(%{"path" => "empty.txt", "old_string" => "", "new_string" => "x"}, ctx)
+    end
+  end
+end

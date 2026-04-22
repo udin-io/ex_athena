@@ -1,7 +1,7 @@
 defmodule ExAthena.MixProject do
   use Mix.Project
 
-  @version "0.1.0"
+  @version "0.2.0"
   @source_url "https://github.com/udin-io/ex_athena"
 
   def project do
@@ -72,6 +72,8 @@ defmodule ExAthena.MixProject do
         "guides/getting_started.md",
         "guides/providers.md",
         "guides/tool_calls.md",
+        "guides/tools.md",
+        "guides/agent_loop.md",
         "LICENSE"
       ],
       groups_for_extras: [
@@ -80,7 +82,13 @@ defmodule ExAthena.MixProject do
       source_ref: "v#{@version}",
       groups_for_modules: [
         "Core API": [ExAthena, ExAthena.Config, ExAthena.Request, ExAthena.Response],
-        Messages: [ExAthena.Messages, ExAthena.Messages.Message, ExAthena.Messages.ToolCall],
+        "Agent loop": [ExAthena.Loop, ExAthena.Session, ExAthena.Structured],
+        Messages: [
+          ExAthena.Messages,
+          ExAthena.Messages.Message,
+          ExAthena.Messages.ToolCall,
+          ExAthena.Messages.ToolResult
+        ],
         "Provider contract": [ExAthena.Provider, ExAthena.Capabilities],
         Providers: [
           ExAthena.Providers.Ollama,
@@ -93,6 +101,20 @@ defmodule ExAthena.MixProject do
           ExAthena.ToolCalls.Native,
           ExAthena.ToolCalls.TextTagged
         ],
+        "Tool contract": [ExAthena.Tool, ExAthena.ToolContext, ExAthena.Tools],
+        "Builtin tools": [
+          ExAthena.Tools.Read,
+          ExAthena.Tools.Glob,
+          ExAthena.Tools.Grep,
+          ExAthena.Tools.Write,
+          ExAthena.Tools.Edit,
+          ExAthena.Tools.Bash,
+          ExAthena.Tools.WebFetch,
+          ExAthena.Tools.TodoWrite,
+          ExAthena.Tools.PlanMode,
+          ExAthena.Tools.SpawnAgent
+        ],
+        "Permissions + hooks": [ExAthena.Permissions, ExAthena.Hooks],
         Streaming: [ExAthena.Streaming, ExAthena.Streaming.Event],
         Errors: [ExAthena.Error]
       ]

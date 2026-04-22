@@ -94,6 +94,22 @@ defmodule ExAthena do
   end
 
   @doc """
+  Run a multi-turn agent loop: infer → tool call → execute → replay → repeat.
+
+  See `ExAthena.Loop.run/2` for the full option list.
+  """
+  @spec run(String.t() | nil, keyword()) :: {:ok, map()} | {:error, term()}
+  defdelegate run(prompt, opts \\ []), to: ExAthena.Loop
+
+  @doc """
+  One-shot structured extraction. Returns a validated JSON map.
+
+  See `ExAthena.Structured.extract/2` for the full option list.
+  """
+  @spec extract_structured(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  defdelegate extract_structured(prompt, opts), to: ExAthena.Structured, as: :extract
+
+  @doc """
   Returns the capabilities map for a provider.
 
       ExAthena.capabilities(:mock)

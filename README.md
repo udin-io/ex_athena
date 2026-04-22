@@ -10,10 +10,12 @@ Code SDK that runs on **Ollama**, **OpenAI-compatible endpoints**
 or **Anthropic Claude** itself — with the same tools, hooks, permissions,
 and streaming semantics across every provider.
 
-> **Status:** Phase 1 ships pure inference — `query/3` and `stream/3` across
-> every supported provider, plus the canonical message/request/response
-> shapes and both tool-call protocols. The agent loop, tool execution, and
-> `ExAthena.Session` land in Phase 2.
+> **Status (v0.2):** feature-complete for agent work. Multi-turn loop, 10
+> builtin tools (Read/Glob/Grep/Write/Edit/Bash/WebFetch/TodoWrite/PlanMode/
+> SpawnAgent), permissions (`:plan`/`:default`/`:bypass`), lifecycle hooks
+> (PreToolUse/PostToolUse/Stop/…), `ExAthena.Session` GenServer for multi-turn
+> conversation state, and structured JSON extraction with schema validation.
+> Claude Code drop-in replacement.
 
 ## Why
 
