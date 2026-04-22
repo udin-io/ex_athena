@@ -181,7 +181,11 @@ defmodule ExAthena.Modes.ReAct do
 
   defp fold_usage(state, response) do
     budget = state.budget || Budget.new()
-    new_budget = Budget.add(budget, response.usage, nil)
+    # Providers that report cost (req_llm via models.dev) include a
+    # `:total_cost` key on usage. Fall back to nil when absent; the budget
+    # accumulator treats nil as "no cost data this turn".
+    cost = extract_cost(response.usage)
+    new_budget = Budget.add(budget, response.usage, cost)
 
     if response.usage do
       Events.emit(state.on_event, {:usage, response.usage})
@@ -216,4 +220,23 @@ defmodule ExAthena.Modes.ReAct do
 
   defp stringify(value) when is_binary(value), do: value
   defp stringify(value), do: inspect(value, pretty: true, limit: :infinity)
+
+  defp extract_cost(nil), do: nil
+
+  defp extract_cost(usage) when is_map(usage) do
+    # req_llm uses :total_cost (in USD). Some providers may emit
+    # input_cost/output_cost split with no total — sum them on the fly.
+    cond do
+      cost = Map.get(usage, :total_cost) -> cost
+      cost = Map.get(usage, "total_cost") -> cost
+      ic = Map.get(usage, :input_cost) || Map.get(usage, "input_cost") ->
+        oc = Map.get(usage, :output_cost) || Map.get(usage, "output_cost") || 0
+        ic + oc
+
+      true ->
+        nil
+    end
+  end
+
+  defp extract_cost(_), do: nil
 end

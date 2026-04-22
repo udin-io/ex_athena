@@ -52,9 +52,15 @@ defmodule ExAthena.StructuredTest do
 
     schema = %{"type" => "object", "required" => ["name", "age"]}
 
-    assert {:error, {:missing_required_keys, ["age"]}} =
-             Structured.extract("x", schema: schema, provider: :mock,
-               mock: [responder: responder])
+    # max_retries: 0 short-circuits the repair loop so the raw validation
+    # error propagates directly. The default (2) wraps it in
+    # :error_max_structured_output_retries after retries exhaust.
+    assert {:error, {:error_max_structured_output_retries, {:missing_required_keys, ["age"]}}} =
+             Structured.extract("x",
+               schema: schema,
+               provider: :mock,
+               mock: [responder: responder]
+             )
   end
 
   test "validates top-level type" do
@@ -79,9 +85,12 @@ defmodule ExAthena.StructuredTest do
       "properties" => %{"age" => %{"type" => "integer"}}
     }
 
-    assert {:error, {:property_invalid, "age"}} =
-             Structured.extract("x", schema: schema, provider: :mock,
-               mock: [responder: responder])
+    assert {:error, {:error_max_structured_output_retries, {:property_invalid, "age"}}} =
+             Structured.extract("x",
+               schema: schema,
+               provider: :mock,
+               mock: [responder: responder]
+             )
   end
 
   test "validator opt overrides the default validator" do
@@ -89,12 +98,78 @@ defmodule ExAthena.StructuredTest do
 
     strict = fn _json, _schema -> {:error, :always_fails} end
 
-    assert {:error, :always_fails} =
+    assert {:error, {:error_max_structured_output_retries, :always_fails}} =
              Structured.extract("x",
                provider: :mock,
                mock: [responder: responder],
                schema: %{"type" => "object"},
                validator: strict
              )
+  end
+
+  describe "repair loop" do
+    test "retries once and succeeds when the second response is valid" do
+      counter = :counters.new(1, [:atomics])
+
+      # First response: invalid (missing :age). Second: valid.
+      responder = fn _req ->
+        :counters.add(counter, 1, 1)
+
+        case :counters.get(counter, 1) do
+          1 -> %Response{text: ~s({"name": "Ada"}), provider: :mock, finish_reason: :stop}
+          _ -> %Response{text: ~s({"name": "Ada", "age": 36}), provider: :mock, finish_reason: :stop}
+        end
+      end
+
+      schema = %{
+        "type" => "object",
+        "required" => ["name", "age"],
+        "properties" => %{
+          "name" => %{"type" => "string"},
+          "age" => %{"type" => "integer"}
+        }
+      }
+
+      assert {:ok, %{"name" => "Ada", "age" => 36}} =
+               Structured.extract("tell me",
+                 provider: :mock,
+                 mock: [responder: responder],
+                 schema: schema
+               )
+
+      assert :counters.get(counter, 1) == 2
+    end
+
+    test "exhausts :max_retries and wraps the final validation error" do
+      responder = fn _req -> %Response{text: ~s({}), provider: :mock} end
+
+      schema = %{"type" => "object", "required" => ["k"]}
+
+      assert {:error, {:error_max_structured_output_retries, _}} =
+               Structured.extract("x",
+                 provider: :mock,
+                 mock: [responder: responder],
+                 schema: schema,
+                 max_retries: 1
+               )
+    end
+
+    test "emits {:structured_retry, …} events on each retry" do
+      test_pid = self()
+
+      responder = fn _req -> %Response{text: ~s({}), provider: :mock} end
+
+      _ =
+        Structured.extract("x",
+          provider: :mock,
+          mock: [responder: responder],
+          schema: %{"type" => "object", "required" => ["k"]},
+          max_retries: 2,
+          on_event: fn e -> send(test_pid, {:evt, e}) end
+        )
+
+      assert_receive {:evt, {:structured_retry, %{attempt: 1}}}
+      assert_receive {:evt, {:structured_retry, %{attempt: 2}}}
+    end
   end
 end

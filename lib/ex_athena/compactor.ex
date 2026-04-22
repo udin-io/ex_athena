@@ -1,0 +1,90 @@
+defmodule ExAthena.Compactor do
+  @moduledoc """
+  Behaviour for context-window compaction.
+
+  When the conversation's estimated token footprint crosses
+  `:compact_at` (fraction of the provider's `max_tokens`), the loop asks
+  the Compactor to reduce history size. The Compactor's job is to preserve
+  **intent** + **pinned rules** while replacing the middle of history with
+  a summary.
+
+  ## Contract
+
+  - **Pinned prefix**: the first N messages (`:pinned_prefix_count`) are
+    never dropped. System prompts + CLAUDE.md-style pinned rules live
+    there.
+  - **Live suffix**: the last K messages (`:live_suffix_count`) are
+    never dropped. Recent context the model needs to keep reasoning.
+  - **Middle**: everything between is the Compactor's to replace. It may
+    emit zero or more summary messages that sit where the dropped
+    messages used to be.
+
+  Default implementation `ExAthena.Compactors.Summary` uses the session's
+  own provider to generate a terse summary message and substitutes it.
+  Consumers can swap in any module via `config :ex_athena, compactor:
+  MyApp.MyCompactor`.
+
+  ## Why
+
+  Research (Anthropic `compact_20260112` beta, Cline, Claude Agent SDK):
+  proactive compaction at ~60% of the context limit beats reactive
+  truncation at 95% — the model never notices a sudden loss of
+  continuity, and pinned rules survive every compaction cycle.
+  """
+
+  alias ExAthena.Loop.State
+  alias ExAthena.Messages.Message
+
+  @type estimate :: %{
+          required(:tokens) => non_neg_integer(),
+          required(:max_tokens) => non_neg_integer()
+        }
+
+  @type decision ::
+          {:compact, messages :: [Message.t()], metadata :: map()}
+          | :skip
+          | {:error, term()}
+
+  @doc """
+  Run compaction against the current state. Return one of:
+
+    * `{:compact, new_messages, metadata}` — the kernel swaps
+      `state.messages` for `new_messages` and emits a `{:compaction, …}`
+      event with `metadata`.
+    * `:skip` — do nothing this cycle (e.g. compactor judged compaction
+      not yet necessary). The kernel emits no event.
+    * `{:error, reason}` — terminate the run with
+      `:error_compaction_failed`.
+  """
+  @callback compact(State.t(), estimate()) :: decision()
+
+  @doc """
+  Whether compaction should run this turn. The kernel calls this before
+  `compact/2` so the compactor can defer cheaply without having to build
+  a summary.
+  """
+  @callback should_compact?(State.t(), estimate()) :: boolean()
+
+  @optional_callbacks [should_compact?: 2]
+
+  @doc """
+  Best-effort token estimator. Counts ~4 chars per token for text
+  content, plus a small fixed cost per tool-call to cover the JSON
+  envelope. Good enough for compaction triggers; not a billing number.
+  """
+  @spec estimate_tokens([Message.t()]) :: non_neg_integer()
+  def estimate_tokens(messages) do
+    Enum.reduce(messages, 0, fn msg, acc -> acc + tokens_for(msg) end)
+  end
+
+  defp tokens_for(%Message{content: nil, tool_calls: calls}) when is_list(calls) do
+    Enum.reduce(calls, 0, fn tc, acc ->
+      acc + 64 + div(byte_size(Jason.encode!(tc.arguments || %{})), 4)
+    end)
+  end
+
+  defp tokens_for(%Message{content: content}) when is_binary(content),
+    do: div(byte_size(content), 4) + 8
+
+  defp tokens_for(_), do: 16
+end

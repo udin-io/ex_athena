@@ -5,7 +5,89 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.3.0-dev — in progress (PR 2 landed)
+## v0.3.0-dev — in progress (PR 3 landed)
+
+### PR 3 — Reliability + intelligence
+
+No additional breaking changes. New capabilities layer on top of PR 2.
+
+#### Added — context compaction
+
+- `ExAthena.Compactor` — behaviour for context-window reduction. Called
+  by the kernel before each iteration when the token estimate crosses
+  `:compact_at` (default 60% of the provider's `max_tokens`). Preserves
+  a pinned prefix (system prompt + rules) and a live suffix (recent
+  turns) while substituting the middle with a summary.
+- `ExAthena.Compactors.Summary` — default implementation. Uses the
+  session's own provider to generate a terse summary and replaces the
+  dropped messages with a single assistant message tagged
+  `name: "compactor_summary"`. Cost counts against the run's budget.
+- New options: `:compact_at` (default 0.6), `:pinned_prefix_count`
+  (default 1), `:live_suffix_count` (default 6), `:compactor` (override
+  module).
+- New events: `{:compaction, metadata}` fires after a successful
+  compaction with before/after token counts and dropped count.
+- New termination: `:error_compaction_failed` when compaction errors.
+- New hook: `:PreCompact` fires with `%{estimate: …}` before each
+  compaction attempt.
+
+#### Added — budget accounting from provider metadata
+
+- `extract_cost/1` in `ExAthena.Modes.ReAct` pulls `:total_cost` (or
+  `:input_cost + :output_cost`) from provider usage metadata and folds
+  it into the run's Budget. req_llm's `models.dev`-backed cost data
+  flows straight through.
+- `ExAthena.Result.cost_usd` is populated when the provider reports
+  cost; `nil` otherwise.
+- `:max_budget_usd` (introduced as a knob in PR 2) now genuinely trips
+  `:error_max_budget_usd` when cumulative cost crosses the cap.
+
+#### Added — structured-output repair loop (instructor-style)
+
+- `ExAthena.Structured.extract/2` now retries on validation failure by
+  appending the failed response + a user message carrying the validation
+  error and re-prompting. Default `:max_retries: 2`.
+- After retries exhaust, returns
+  `{:error, {:error_max_structured_output_retries, last_validation_error}}`.
+- New events: `{:structured_retry, %{attempt:, error:}}` fires on each
+  retry.
+
+#### Added — Plan-and-Solve mode
+
+- `ExAthena.Modes.PlanAndSolve` — two-phase mode. First iteration is
+  **planning-only** (no tools, plain-text plan following a structured
+  prompt). Subsequent iterations delegate to `ReAct`.
+- Rationale: smaller / local models produce better tool-calling
+  behaviour when they articulate a plan first.
+
+#### Added — Reflexion mode
+
+- `ExAthena.Modes.Reflexion` — after each ReAct iteration, injects a
+  short self-critique pass and adds it to the conversation history.
+  Capped at 3 reflections (per research — beyond that,
+  degeneration-of-thought kicks in).
+- Triples per-loop cost; best reserved for correctness-sensitive tasks.
+
+#### Added — subagent supervision upgrade
+
+- `ExAthena.Tools.SpawnAgent` now runs sub-loops under
+  `Task.Supervisor.async_nolink` (supervisor name `ExAthena.Tasks`,
+  registered by `ExAthena.Application`). Sub-agent crashes no longer
+  propagate to the parent; timeouts are enforceable.
+- New events: `{:subagent_spawn, %{id:, prompt:}}` and
+  `{:subagent_result, %{id:, text:}}` fire around sub-loop execution.
+- New optional arg: `timeout_ms` (default 300_000).
+- New error subtypes from SpawnAgent: `{:sub_agent_crashed, reason}`,
+  `{:sub_agent_timeout, ms}`.
+
+### Tests
+
+- **140 total** (up from 126 in PR 2). 14 new cover compaction
+  (threshold detection, middle-replacement, error surfacing), budget
+  caps (cost-based termination, `cost_usd` accumulation, nil fallback),
+  structured repair loop (retry success, retry exhaustion, retry
+  events), Plan-and-Solve (planning turn assertion, execution-phase
+  tool use), and Reflexion (reflection cap, history injection).
 
 ### PR 2 — Kernel rewrite (**breaking changes**)
 
