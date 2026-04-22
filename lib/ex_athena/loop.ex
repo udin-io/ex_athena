@@ -93,21 +93,68 @@ defmodule ExAthena.Loop do
         |> set_finish_reason(:error_max_budget_usd)
 
       true ->
-        Events.emit(state.on_event, {:iteration, state.iterations})
+        case maybe_compact(state) do
+          {:ok, state} ->
+            Events.emit(state.on_event, {:iteration, state.iterations})
 
-        case state.mode.iterate(state) do
-          {:continue, new_state} ->
-            loop(%{new_state | iterations: new_state.iterations + 1})
+            case state.mode.iterate(state) do
+              {:continue, new_state} ->
+                loop(%{new_state | iterations: new_state.iterations + 1})
 
-          {:halt, new_state} ->
-            new_state
+              {:halt, new_state} ->
+                new_state
+
+              {:error, reason} ->
+                state
+                |> Map.put(:halted_reason, reason)
+                |> set_finish_reason(:error_during_execution)
+            end
 
           {:error, reason} ->
             state
             |> Map.put(:halted_reason, reason)
-            |> set_finish_reason(:error_during_execution)
+            |> set_finish_reason(:error_compaction_failed)
         end
     end
+  end
+
+  # ── Compaction ────────────────────────────────────────────────────
+
+  defp maybe_compact(%State{} = state) do
+    compactor = compactor_module(state)
+
+    estimate = %{
+      tokens: ExAthena.Compactor.estimate_tokens(state.messages),
+      max_tokens: state.capabilities[:max_tokens] || 128_000
+    }
+
+    if function_exported?(compactor, :should_compact?, 2) and
+         compactor.should_compact?(state, estimate) do
+      _ = ExAthena.Hooks.run_lifecycle(state.hooks, :PreCompact, %{estimate: estimate})
+
+      case compactor.compact(state, estimate) do
+        {:compact, new_messages, metadata} ->
+          new_budget = Map.get(metadata, :budget, state.budget)
+
+          Events.emit(state.on_event, {:compaction, metadata})
+
+          {:ok, %{state | messages: new_messages, budget: new_budget}}
+
+        :skip ->
+          {:ok, state}
+
+        {:error, _} = err ->
+          err
+      end
+    else
+      {:ok, state}
+    end
+  end
+
+  defp compactor_module(%State{meta: meta}) do
+    Map.get(meta, :compactor) ||
+      Application.get_env(:ex_athena, :compactor_module) ||
+      ExAthena.Compactors.Summary
   end
 
   defp set_finish_reason(%State{} = state, reason) do
@@ -207,7 +254,7 @@ defmodule ExAthena.Loop do
         max_concurrency: Keyword.get(opts, :max_concurrency, @default_max_concurrency),
         mode: mode,
         mode_state: %{},
-        meta: %{}
+        meta: compaction_meta(opts)
       }
 
       _ = ExAthena.Hooks.run_lifecycle(state.hooks, :SessionStart, %{})
@@ -237,5 +284,15 @@ defmodule ExAthena.Loop do
       e in ArgumentError ->
         {:error, Error.new(:bad_request, Exception.message(e), provider: :loop)}
     end
+  end
+
+  defp compaction_meta(opts) do
+    [:compactor, :compact_at, :pinned_prefix_count, :live_suffix_count]
+    |> Enum.reduce(%{}, fn key, acc ->
+      case Keyword.get(opts, key) do
+        nil -> acc
+        value -> Map.put(acc, key, value)
+      end
+    end)
   end
 end

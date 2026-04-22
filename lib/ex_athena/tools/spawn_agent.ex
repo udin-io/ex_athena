@@ -46,6 +46,8 @@ defmodule ExAthena.Tools.SpawnAgent do
 
   @impl true
   def execute(%{"prompt" => prompt} = args, ctx) when is_binary(prompt) do
+    timeout = Map.get(args, "timeout_ms", 300_000)
+
     sub_opts =
       (ctx.assigns[:spawn_agent_opts] || [])
       |> Keyword.put_new(:max_iterations, Map.get(args, "max_iterations", @default_max_iterations))
@@ -54,10 +56,35 @@ defmodule ExAthena.Tools.SpawnAgent do
       |> Keyword.put(:assigns, ctx.assigns)
       |> Keyword.put(:cwd, ctx.cwd)
 
-    case ExAthena.Loop.run(prompt, sub_opts) do
-      {:ok, %{text: text}} -> {:ok, text || ""}
-      {:error, reason} -> {:error, {:sub_agent_failed, reason}}
-    end
+    sub_id = "subagent_" <> (:crypto.strong_rand_bytes(6) |> Base.url_encode64(padding: false))
+
+    emit_event(ctx, {:subagent_spawn, %{id: sub_id, prompt: prompt}})
+
+    # Run the sub-loop under a supervised Task so a crash doesn't bring
+    # down the parent, and timeouts are enforceable. Task.Supervisor is
+    # started by ExAthena.Application under `ExAthena.Tasks`.
+    task =
+      Task.Supervisor.async_nolink(ExAthena.Tasks, fn ->
+        ExAthena.Loop.run(prompt, sub_opts)
+      end)
+
+    result =
+      case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+        {:ok, {:ok, %{text: text}}} ->
+          emit_event(ctx, {:subagent_result, %{id: sub_id, text: text || ""}})
+          {:ok, text || ""}
+
+        {:ok, {:error, reason}} ->
+          {:error, {:sub_agent_failed, reason}}
+
+        {:exit, reason} ->
+          {:error, {:sub_agent_crashed, reason}}
+
+        nil ->
+          {:error, {:sub_agent_timeout, timeout}}
+      end
+
+    result
   end
 
   def execute(_, _), do: {:error, :missing_prompt}
@@ -73,4 +100,11 @@ defmodule ExAthena.Tools.SpawnAgent do
     names
     |> Enum.reject(&(&1 in ["plan_mode", "spawn_agent"]))
   end
+
+  defp emit_event(%{assigns: %{on_event: callback}}, event) when is_function(callback, 1) do
+    callback.(event)
+    :ok
+  end
+
+  defp emit_event(_ctx, _event), do: :ok
 end

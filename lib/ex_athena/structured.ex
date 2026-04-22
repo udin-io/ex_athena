@@ -39,6 +39,8 @@ defmodule ExAthena.Structured do
     schema = Keyword.fetch!(opts, :schema)
     validator = Keyword.get(opts, :validator, &validate_basic/2)
     instructions = Keyword.get(opts, :instructions)
+    max_retries = Keyword.get(opts, :max_retries, 2)
+    on_event = Keyword.get(opts, :on_event)
 
     {provider_mod, opts} = Config.pop_provider!(opts)
     caps = provider_mod.capabilities()
@@ -46,11 +48,96 @@ defmodule ExAthena.Structured do
     {augmented_prompt, request_opts} = build_request_opts(prompt, schema, instructions, caps, opts)
     request = Request.new(augmented_prompt, request_opts)
 
-    with {:ok, response} <- provider_mod.query(request, Config.provider_opts(provider_mod, opts)),
-         {:ok, json} <- extract_json(response.text, caps),
-         :ok <- validator.(json, schema) do
-      {:ok, json}
+    provider_opts = Config.provider_opts(provider_mod, opts)
+
+    extract_with_repair(request, provider_mod, provider_opts, caps, validator, schema,
+      max_retries: max_retries,
+      attempt: 0,
+      on_event: on_event
+    )
+  end
+
+  # Repair loop: on validation error, re-prompt with the failure feedback
+  # until we exhaust `:max_retries`. This is the instructor-style pattern —
+  # the LLM sees its mistake expressed as a user message and fixes it.
+  defp extract_with_repair(request, provider_mod, provider_opts, caps, validator, schema, state) do
+    case provider_mod.query(request, provider_opts) do
+      {:ok, response} ->
+        with {:ok, json} <- extract_json(response.text, caps),
+             :ok <- validator.(json, schema) do
+          {:ok, json}
+        else
+          {:error, validation_error} ->
+            maybe_retry(
+              request,
+              provider_mod,
+              provider_opts,
+              caps,
+              validator,
+              schema,
+              state,
+              response,
+              validation_error
+            )
+        end
+
+      {:error, _} = err ->
+        err
     end
+  end
+
+  defp maybe_retry(
+         request,
+         provider_mod,
+         provider_opts,
+         caps,
+         validator,
+         schema,
+         state,
+         response,
+         validation_error
+       ) do
+    if state[:attempt] >= state[:max_retries] do
+      {:error, {:error_max_structured_output_retries, validation_error}}
+    else
+      attempt = state[:attempt] + 1
+
+      emit_retry(state[:on_event], attempt, validation_error)
+
+      # Append assistant's failed response + a user message carrying the
+      # validation error. The LLM will see the exact feedback.
+      repair_messages =
+        request.messages ++
+          [
+            %ExAthena.Messages.Message{role: :assistant, content: response.text || ""},
+            %ExAthena.Messages.Message{
+              role: :user,
+              content: repair_feedback(validation_error, schema)
+            }
+          ]
+
+      new_request = %{request | messages: repair_messages}
+
+      extract_with_repair(new_request, provider_mod, provider_opts, caps, validator, schema,
+        max_retries: state[:max_retries],
+        attempt: attempt,
+        on_event: state[:on_event]
+      )
+    end
+  end
+
+  defp repair_feedback(validation_error, schema) do
+    "Your previous response failed validation: #{inspect(validation_error)}.\n\n" <>
+      "Please respond again with a valid JSON object that conforms to this schema:\n\n" <>
+      Jason.encode!(schema, pretty: true) <>
+      "\n\nReturn only the JSON object (or a fenced ~~~json block)."
+  end
+
+  defp emit_retry(nil, _attempt, _error), do: :ok
+
+  defp emit_retry(callback, attempt, error) when is_function(callback, 1) do
+    callback.({:structured_retry, %{attempt: attempt, error: error}})
+    :ok
   end
 
   # ── Request building ───────────────────────────────────────────────
