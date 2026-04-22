@@ -5,9 +5,86 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.3.0-dev — in progress
+## v0.3.0-dev — in progress (PR 2 landed)
 
-v0.3 is a research-driven rewrite of the agent loop (incoming in PRs 2-4).
+### PR 2 — Kernel rewrite (**breaking changes**)
+
+**The return type of `ExAthena.Loop.run/2` is now `{:ok, %Result{}}`
+instead of the v0.2 `{:ok, map()}`.** Consumers pattern-matching on the
+old map shape must update.
+
+#### Added — pluggable Mode behaviour
+
+- `ExAthena.Loop.Mode` — behaviour with `init/1` + `iterate/1`. Drives
+  the turn-by-turn control flow. Kernel handles caps, budget, hooks,
+  counters, events, and Result construction.
+- `ExAthena.Modes.ReAct` — default mode. ReAct cycle (reason → act →
+  observe) with parallel tool execution, mistake counter, and typed
+  terminations.
+- `ExAthena.Modes.PlanAndSolve` + `ExAthena.Modes.Reflexion` — stubs
+  returning `:not_implemented`. Full implementations land in PR 3.
+- `ExAthena.Loop.Mode.resolve/1` translates atom shortcuts (`:react`,
+  `:plan_and_solve`, `:reflexion`) to modules.
+
+#### Added — reliability knobs
+
+- `:max_consecutive_mistakes` (default 3) — trips
+  `:error_consecutive_mistakes` after N consecutive tool errors. A
+  successful tool call resets the counter. Prevents runaway loops
+  (Cline pattern).
+- `:max_budget_usd` — trips `:error_max_budget_usd` when the budget
+  accumulator crosses the cap. PR 3 wires cost computation from provider
+  metadata.
+- `:tool_timeout_ms` (default 60_000) — per-call timeout for parallel
+  execution.
+- `:max_concurrency` (default 4) — `Task.async_stream` concurrency cap.
+
+#### Added — parallel tool execution
+
+- `ExAthena.Loop.Parallel` — classifies a single iteration's tool calls
+  into parallel-safe (read-only) and serial (mutating) groups. Runs
+  mutating calls first in order, then parallel-safe calls concurrently
+  via `Task.async_stream/3`. Result order always matches input call
+  order so the model sees aligned results.
+- `ExAthena.Tool.parallel_safe?/0` — optional behaviour callback.
+  Defaults to `false`.
+- Read-only builtins (`Read`, `Glob`, `Grep`, `WebFetch`) declare
+  `parallel_safe?: true`. Mutating builtins default to `false`.
+
+#### Changed — event shape (**breaking change**)
+
+v0.2's `%ExAthena.Streaming.Event{type:, data:, index:}` struct is
+replaced by flat pattern-matchable tuples modelled on `ash_ai`'s
+`ToolLoop.stream/2`:
+
+    {:content, text}
+    {:tool_call, ToolCall.t()}
+    {:tool_result, ToolResult.t()}
+    {:iteration, integer()}
+    {:usage, usage_map}
+    {:error, term()}
+    {:done, Result.t()}
+
+Consumers subscribing via `:on_event` need to update their handlers.
+OTel span emission in PR 4 consumes the same tuples.
+
+#### Changed — error handling
+
+Tool errors use the `is_error: true` tool-result convention (Cline
+pattern). The model sees its mistake and self-corrects; the mistake
+counter advances; a streak hits the cap.
+
+Unknown tools + parse failures flow as error tool-results rather than
+halting the run. Hook-driven halts produce `:error_halted`. Provider
+errors produce `:error_during_execution`.
+
+#### Tests
+
+126 total (up from 116 in PR 1). 10 new cover Result shape, termination
+subtypes, max_iterations → `:error_max_turns`, mistake counter + reset,
+parallel tool ordering, flat event tuples, Mode resolve/1.
+
+### PR 1 — Foundation (already landed, unchanged)
 PR 1 lays the foundation: canonical types, typed terminations, budget
 accounting, and a single req_llm-backed provider adapter that replaces the
 three hand-written provider modules.

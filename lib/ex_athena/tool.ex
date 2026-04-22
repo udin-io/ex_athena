@@ -60,4 +60,18 @@ defmodule ExAthena.Tool do
               {:ok, result :: term()}
               | {:error, reason :: term()}
               | {:halt, reason :: term()}
+
+  @doc """
+  Whether this tool is safe to run concurrently with siblings in the same
+  iteration.
+
+  Read-only tools (Read, Glob, Grep, WebFetch) return `true`. Mutating
+  tools (Write, Edit, Bash, TodoWrite) MUST return `false` so the loop
+  preserves their ordering.
+
+  Defaults to `false` (conservative) when the callback isn't implemented.
+  """
+  @callback parallel_safe?() :: boolean()
+
+  @optional_callbacks [parallel_safe?: 0]
 end

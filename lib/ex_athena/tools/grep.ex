@@ -38,6 +38,9 @@ defmodule ExAthena.Tools.Grep do
   end
 
   @impl true
+  def parallel_safe?, do: true
+
+  @impl true
   def execute(%{"pattern" => pattern} = args, %{cwd: cwd}) when is_binary(pattern) do
     max = clamp(Map.get(args, "max_results", @default_max))
     glob = Map.get(args, "path_glob")
