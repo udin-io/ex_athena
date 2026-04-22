@@ -91,10 +91,19 @@ defmodule ExAthena.MixProject do
         ],
         "Agent loop": [
           ExAthena.Loop,
+          ExAthena.Loop.Mode,
+          ExAthena.Loop.Events,
+          ExAthena.Loop.Parallel,
+          ExAthena.Loop.State,
           ExAthena.Loop.Terminations,
           ExAthena.Session,
           ExAthena.Structured,
           ExAthena.Budget
+        ],
+        Modes: [
+          ExAthena.Modes.ReAct,
+          ExAthena.Modes.PlanAndSolve,
+          ExAthena.Modes.Reflexion
         ],
         Messages: [
           ExAthena.Messages,

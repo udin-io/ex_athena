@@ -1,0 +1,182 @@
+defmodule ExAthena.Loop.Parallel do
+  @moduledoc """
+  Parallel tool-call dispatcher.
+
+  When a model emits multiple tool calls in a single response, the kernel
+  groups them:
+
+    * **Read-only calls** (tool's `parallel_safe?/0` returns `true`) run
+      concurrently via `Task.async_stream/3`.
+    * **Mutating calls** run serially in the order the model emitted them,
+      to preserve deterministic side-effect ordering.
+
+  Regardless of execution order, results are returned in the same order as
+  the input tool calls — the model always sees results aligned with its
+  calls.
+  """
+
+  alias ExAthena.{Hooks, Permissions}
+  alias ExAthena.Loop.Events
+  alias ExAthena.Messages
+  alias ExAthena.Messages.ToolCall
+  alias ExAthena.Tools
+
+  @doc """
+  Execute a list of tool calls.
+
+  `runner_fn` is `(ToolCall.t(), state -> {result, updated_state})`. The
+  `result` is whatever the single-call runner returns (typically a
+  tool-result message tuple or a `:halt` tuple). Updated state threads the
+  phase transitions, mistake counter, and budget.
+
+  Returns `{:ok, results_in_order, final_state}` or
+  `{:halt, reason, final_state}` when any call returns a halt.
+
+  Ordering guarantee: `results_in_order` is ordered the same as the input
+  `calls`, even though parallel-safe calls may execute out-of-order.
+  """
+  @spec run([ToolCall.t()], map(), (ToolCall.t(), map() -> {term(), map()})) ::
+          {:ok, [term()], map()} | {:halt, term(), map()}
+  def run(calls, state, runner_fn) do
+    {parallel_safe, must_serial} = classify(calls, state.tool_modules)
+
+    # Mutations first, in order, so the filesystem state parallel tools see
+    # (if any) is the post-mutation state. This matches what a human would
+    # do when the model says "write file X; then grep it".
+    case run_serial(must_serial, state, runner_fn) do
+      {:ok, serial_results, state} ->
+        case run_concurrent(parallel_safe, state, runner_fn) do
+          {:ok, parallel_results, state} ->
+            merged = merge_in_order(calls, serial_results ++ parallel_results)
+            {:ok, merged, state}
+
+          {:halt, _reason, _state} = halt ->
+            halt
+        end
+
+      {:halt, _reason, _state} = halt ->
+        halt
+    end
+  end
+
+  # ── Classification ────────────────────────────────────────────────
+
+  defp classify(calls, tool_modules) do
+    Enum.split_with(calls, fn call ->
+      case Tools.find(tool_modules, call.name) do
+        nil -> false
+        mod -> parallel_safe?(mod)
+      end
+    end)
+  end
+
+  defp parallel_safe?(mod) do
+    function_exported?(mod, :parallel_safe?, 0) and mod.parallel_safe?()
+  end
+
+  # ── Serial execution ──────────────────────────────────────────────
+
+  defp run_serial(calls, state, runner_fn) do
+    Enum.reduce_while(calls, {:ok, [], state}, fn call, {:ok, acc, state} ->
+      case runner_fn.(call, state) do
+        {{:halt, reason}, new_state} -> {:halt, {:halt, reason, new_state}}
+        {result, new_state} -> {:cont, {:ok, acc ++ [{call.id, result}], new_state}}
+      end
+    end)
+  end
+
+  # ── Parallel execution ────────────────────────────────────────────
+
+  defp run_concurrent([], state, _runner_fn), do: {:ok, [], state}
+
+  defp run_concurrent(calls, state, runner_fn) do
+    concurrency = max(1, state.max_concurrency || 4)
+    timeout = state.tool_timeout_ms || 60_000
+
+    # Snapshot the state each task reads. Tasks do NOT mutate shared state —
+    # their `runner_fn` returns per-call state deltas we fold back in order
+    # afterwards. This avoids race conditions on things like the mistake
+    # counter, which we'd otherwise see interleaved.
+    calls
+    |> Task.async_stream(
+      fn call -> {call.id, runner_fn.(call, state)} end,
+      max_concurrency: concurrency,
+      timeout: timeout,
+      on_timeout: :kill_task,
+      ordered: false
+    )
+    |> Enum.reduce_while({:ok, [], state}, fn
+      {:ok, {call_id, {{:halt, reason}, _new_state}}}, {:ok, _acc, state} ->
+        {:halt, {:halt, reason, fold_halt(state, call_id, reason)}}
+
+      {:ok, {call_id, {result, deltas}}}, {:ok, acc, state} ->
+        {:cont, {:ok, acc ++ [{call_id, result}], fold_deltas(state, deltas)}}
+
+      {:exit, {reason, _}}, {:ok, acc, state} ->
+        # One task crashed or timed out — surface as an error result for the
+        # corresponding call but don't halt. The kernel converts it to a
+        # tool-error replay message.
+        err_result = Messages.tool_result("unknown", "parallel task failed: #{inspect(reason)}", true)
+        {:cont, {:ok, acc ++ [{nil, err_result}], state}}
+    end)
+  end
+
+  defp fold_halt(state, _call_id, _reason), do: state
+
+  # Each task returns its own fresh `state`; we only keep deltas that matter
+  # across concurrent tasks: the budget accumulator. Mistake counter and ctx
+  # phase belong to the sequential path.
+  defp fold_deltas(state, new_state) do
+    case new_state do
+      %{budget: b} when not is_nil(b) -> %{state | budget: b}
+      _ -> state
+    end
+  end
+
+  # ── Ordering ──────────────────────────────────────────────────────
+
+  # Results come back as `[{call_id, result}]` — one per input call. Re-sort
+  # them into the original call order.
+  defp merge_in_order(calls, results) do
+    by_id = Map.new(results, fn {id, r} -> {id, r} end)
+    Enum.map(calls, fn c -> Map.get(by_id, c.id) end)
+  end
+
+  # ── Permission/hook helpers (used by the kernel, exposed here so the
+  # serial + parallel paths share one implementation) ───────────────
+
+  @doc """
+  Run the pre-tool gate (permissions + PreToolUse hooks) for a single call.
+
+  Returns `:allow`, `{:deny, reason}`, or `{:halt, reason}`.
+  """
+  @spec pre_tool_gate(ToolCall.t(), map()) ::
+          :allow | {:deny, term()} | {:halt, term()}
+  def pre_tool_gate(%ToolCall{name: name, arguments: args, id: id}, state) do
+    case Permissions.check(%ToolCall{id: id, name: name, arguments: args}, state.ctx, state.permissions_opts) do
+      :allow ->
+        # Hooks.run_pre_tool_use returns :ok (continue), {:deny, reason}, or
+        # {:halt, reason}. Normalise :ok → :allow so the caller can match
+        # on one surface.
+        case Hooks.run_pre_tool_use(state.hooks, name, args, id) do
+          :ok -> :allow
+          {:deny, _} = deny -> deny
+          {:halt, _} = halt -> halt
+        end
+
+      {:deny, _reason} = deny ->
+        deny
+    end
+  end
+
+  @doc "Emit tool-call / tool-result events and update counters."
+  @spec emit_events(map(), ToolCall.t(), Messages.Message.t()) :: :ok
+  def emit_events(state, %ToolCall{} = call, tool_message) do
+    Events.emit(state.on_event, {:tool_call, call})
+
+    case tool_message.tool_results do
+      [tr | _] -> Events.emit(state.on_event, {:tool_result, tr})
+      _ -> :ok
+    end
+  end
+end

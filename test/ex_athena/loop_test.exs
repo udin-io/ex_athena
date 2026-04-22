@@ -87,7 +87,7 @@ defmodule ExAthena.LoopTest do
 
     responder = fn _req -> loop_response end
 
-    assert {:error, {:max_iterations_exceeded, 3}} =
+    assert {:ok, %ExAthena.Result{finish_reason: :error_max_turns, iterations: 3}} =
              Loop.run("spin",
                provider: :mock,
                mock: [responder: responder],
@@ -151,7 +151,8 @@ defmodule ExAthena.LoopTest do
 
     tool_msg = Enum.find(result.messages, &match?(%{role: :tool}, &1))
     assert [%{is_error: true, content: content}] = tool_msg.tool_results
-    assert content =~ "unknown_tool"
+    assert content =~ "unknown tool"
+    assert content =~ "nonexistent_tool"
   end
 
   test "plan_mode tool changes the ctx phase mid-loop", %{dir: dir} do
