@@ -1,7 +1,7 @@
 defmodule ExAthena.MixProject do
   use Mix.Project
 
-  @version "0.2.0"
+  @version "0.3.0-dev"
   @source_url "https://github.com/udin-io/ex_athena"
 
   def project do
@@ -33,6 +33,7 @@ defmodule ExAthena.MixProject do
   defp deps do
     [
       {:req, "~> 0.5"},
+      {:req_llm, "~> 1.10"},
       {:jason, "~> 1.4"},
       {:nimble_options, "~> 1.1"},
       {:telemetry, "~> 1.3"},
@@ -81,8 +82,20 @@ defmodule ExAthena.MixProject do
       ],
       source_ref: "v#{@version}",
       groups_for_modules: [
-        "Core API": [ExAthena, ExAthena.Config, ExAthena.Request, ExAthena.Response],
-        "Agent loop": [ExAthena.Loop, ExAthena.Session, ExAthena.Structured],
+        "Core API": [
+          ExAthena,
+          ExAthena.Config,
+          ExAthena.Request,
+          ExAthena.Response,
+          ExAthena.Result
+        ],
+        "Agent loop": [
+          ExAthena.Loop,
+          ExAthena.Loop.Terminations,
+          ExAthena.Session,
+          ExAthena.Structured,
+          ExAthena.Budget
+        ],
         Messages: [
           ExAthena.Messages,
           ExAthena.Messages.Message,
@@ -91,9 +104,7 @@ defmodule ExAthena.MixProject do
         ],
         "Provider contract": [ExAthena.Provider, ExAthena.Capabilities],
         Providers: [
-          ExAthena.Providers.Ollama,
-          ExAthena.Providers.OpenAICompatible,
-          ExAthena.Providers.Claude,
+          ExAthena.Providers.ReqLLM,
           ExAthena.Providers.Mock
         ],
         "Tool calls": [
