@@ -1,7 +1,7 @@
 defmodule ExAthena.MixProject do
   use Mix.Project
 
-  @version "0.3.0-dev"
+  @version "0.3.0"
   @source_url "https://github.com/udin-io/ex_athena"
 
   def project do

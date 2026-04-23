@@ -20,7 +20,7 @@ defmodule ExAthena.Modes.ReAct do
 
   @behaviour ExAthena.Loop.Mode
 
-  alias ExAthena.{Budget, Messages}
+  alias ExAthena.{Budget, Messages, Telemetry}
   alias ExAthena.Loop.{Events, Parallel, State}
   alias ExAthena.Messages.ToolCall
   alias ExAthena.Tools
@@ -32,7 +32,17 @@ defmodule ExAthena.Modes.ReAct do
   def iterate(%State{} = state) do
     request = build_request(state)
 
-    case state.provider_mod.query(request, state.provider_opts) do
+    chat_meta =
+      Telemetry.genai_meta(
+        operation: "chat",
+        provider: state.provider_mod,
+        request_model: request.model,
+        conversation_id: Map.get(state.meta, :conversation_id)
+      )
+
+    case Telemetry.span([:ex_athena, :chat], chat_meta, fn ->
+           state.provider_mod.query(request, state.provider_opts)
+         end) do
       {:ok, response} ->
         # Accumulate usage + cost before considering termination.
         state = fold_usage(state, response)
@@ -118,6 +128,14 @@ defmodule ExAthena.Modes.ReAct do
   defp do_execute(%ToolCall{} = call, state) do
     ctx = %{state.ctx | tool_call_id: call.id}
 
+    tool_meta =
+      Telemetry.genai_meta(
+        operation: "execute_tool",
+        tool_name: call.name,
+        tool_call_id: call.id,
+        conversation_id: Map.get(state.meta, :conversation_id)
+      )
+
     case Tools.find(state.tool_modules, call.name) do
       nil ->
         result = Messages.tool_result(call.id, "unknown tool: #{call.name}", true)
@@ -126,7 +144,9 @@ defmodule ExAthena.Modes.ReAct do
         {result, state}
 
       mod ->
-        case mod.execute(call.arguments, ctx) do
+        case Telemetry.span([:ex_athena, :tool], tool_meta, fn ->
+               mod.execute(call.arguments, ctx)
+             end) do
           {:ok, %{phase_transition: new_phase} = payload} ->
             # Phase transition sentinel — special-case only in the single-tool runner.
             msg = Map.get(payload, :message, "phase -> #{new_phase}")

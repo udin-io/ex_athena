@@ -133,10 +133,17 @@ defmodule ExAthena.Structured do
       "\n\nReturn only the JSON object (or a fenced ~~~json block)."
   end
 
-  defp emit_retry(nil, _attempt, _error), do: :ok
+  defp emit_retry(callback, attempt, error) do
+    ExAthena.Telemetry.event(
+      [:ex_athena, :structured_retry],
+      %{attempt: attempt},
+      %{error: error}
+    )
 
-  defp emit_retry(callback, attempt, error) when is_function(callback, 1) do
-    callback.({:structured_retry, %{attempt: attempt, error: error}})
+    if is_function(callback, 1) do
+      callback.({:structured_retry, %{attempt: attempt, error: error}})
+    end
+
     :ok
   end
 
