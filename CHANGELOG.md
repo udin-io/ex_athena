@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.1 — per-token streaming in the ReAct mode
+
+### Added
+
+- `Modes.ReAct` now dispatches to `provider_mod.stream/3` (instead of
+  `query/2`) whenever the caller registered an `on_event` callback on
+  `Loop.run/2`. Every `%Streaming.Event{type: :text_delta, data: ...}`
+  produced by the provider is forwarded to `on_event` in real time, so
+  consumers (e.g. a LiveView chat UI) get character-level deltas again
+  without having to drive streaming themselves.
+- When no `on_event` is set the behaviour is unchanged — the mode uses
+  the cheaper one-shot `query/2` path.
+- When the provider module does not implement `stream/3` (it is an
+  optional callback) the mode transparently falls back to `query/2`.
+
+### Changed
+
+- Docstring on `Modes.ReAct` now reflects the stream/query dispatch.
+
 ## v0.3.0 — PR 4 (observability) landed; Phase 4 closed
 
 ### PR 4 — Observability

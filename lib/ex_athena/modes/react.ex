@@ -5,8 +5,10 @@ defmodule ExAthena.Modes.ReAct do
   Each iteration:
 
     1. Build a Request from current messages + tools + system prompt.
-    2. Call the provider (one-shot, not streaming — streaming is an
-       optimisation landing in PR 4).
+    2. Call the provider — uses `stream/3` when the loop was started with
+       `on_event:` set (so partial token deltas flow to the caller in
+       real time), falls back to one-shot `query/2` when no event
+       callback is registered.
     3. Extract tool calls (native, or TextTagged fallback via
        `ExAthena.ToolCalls`).
     4. If no tool calls: emit `{:content, text}`, set `finish_reason:
@@ -41,7 +43,7 @@ defmodule ExAthena.Modes.ReAct do
       )
 
     case Telemetry.span([:ex_athena, :chat], chat_meta, fn ->
-           state.provider_mod.query(request, state.provider_opts)
+           query_or_stream(state, request)
          end) do
       {:ok, response} ->
         # Accumulate usage + cost before considering termination.
@@ -236,6 +238,24 @@ defmodule ExAthena.Modes.ReAct do
       state.request_template.system_prompt,
       Tools.describe_for_prompt(state.tool_modules)
     )
+  end
+
+  # ── Provider dispatch: query vs stream ────────────────────────────
+
+  # When the caller registered `on_event`, stream the provider response and
+  # forward `:text_delta` events to it in real time. Otherwise fall back to
+  # a cheaper one-shot `query/2`.
+  defp query_or_stream(%State{on_event: nil} = state, request) do
+    state.provider_mod.query(request, state.provider_opts)
+  end
+
+  defp query_or_stream(%State{on_event: on_event} = state, request)
+       when is_function(on_event, 1) do
+    if function_exported?(state.provider_mod, :stream, 3) do
+      state.provider_mod.stream(request, on_event, state.provider_opts)
+    else
+      state.provider_mod.query(request, state.provider_opts)
+    end
   end
 
   defp stringify(value) when is_binary(value), do: value
