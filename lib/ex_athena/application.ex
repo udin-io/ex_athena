@@ -21,10 +21,22 @@ defmodule ExAthena.Application do
   # environment so unit tests don't trigger filesystem GC; tests opt in
   # explicitly when they want to exercise it.
   defp maybe_add_sweeper(children) do
-    if Application.get_env(:ex_athena, :enable_worktree_sweeper, true) do
-      children ++ [ExAthena.Agents.WorktreeSweeper]
-    else
-      children
-    end
+    children =
+      if Application.get_env(:ex_athena, :enable_worktree_sweeper, true) do
+        children ++ [ExAthena.Agents.WorktreeSweeper]
+      else
+        children
+      end
+
+    children =
+      if Application.get_env(:ex_athena, :enable_checkpoint_sweeper, true) do
+        children ++ [ExAthena.Checkpoint.Sweeper]
+      else
+        children
+      end
+
+    # Always supervise the in-memory store — it's used by tests and the
+    # default Session config. Cheap to keep around (a single ETS table).
+    children ++ [ExAthena.Sessions.Stores.InMemory]
   end
 end

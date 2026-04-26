@@ -46,6 +46,7 @@ defmodule ExAthena.Tools.Edit do
          replace_all? = Map.get(args, "replace_all", false),
          {:ok, body} <- File.read(path),
          {:ok, updated} <- replace(body, old_s, new_s, replace_all?),
+         _ <- maybe_snapshot(ctx, path),
          :ok <- File.write(path, updated) do
       count = if replace_all?, do: occurrences(body, old_s), else: 1
 
@@ -96,4 +97,15 @@ defmodule ExAthena.Tools.Edit do
   end
 
   defp occurrences(body, old_s), do: body |> String.split(old_s) |> length() |> Kernel.-(1)
+
+  # Best-effort: snapshot prior contents for `Checkpoint.rewind/3`.
+  defp maybe_snapshot(%ToolContext{session_id: sid, cwd: cwd}, path)
+       when is_binary(sid) and sid != "" do
+    _ = ExAthena.Checkpoint.snapshot(cwd, sid, path)
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  defp maybe_snapshot(_, _), do: :ok
 end

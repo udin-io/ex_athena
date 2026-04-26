@@ -40,10 +40,25 @@ defmodule ExAthena.Tools.Write do
     with {:ok, path} <- fetch_path(args, ctx),
          {:ok, content} <- fetch_content(args),
          :ok <- File.mkdir_p(Path.dirname(path)),
+         _ <- maybe_snapshot(ctx, path),
          :ok <- File.write(path, content) do
       {:ok, "wrote #{byte_size(content)} bytes to #{Path.relative_to(path, ctx.cwd)}"}
     end
   end
+
+  # Best-effort: snapshot the prior contents (or tombstone for new files)
+  # so `ExAthena.Checkpoint.rewind/3` can restore. Always runs before
+  # mutation; failures are silently swallowed (the snapshot is a safety
+  # net, not a correctness contract).
+  defp maybe_snapshot(%ToolContext{session_id: sid, cwd: cwd}, path)
+       when is_binary(sid) and sid != "" do
+    _ = ExAthena.Checkpoint.snapshot(cwd, sid, path)
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  defp maybe_snapshot(_, _), do: :ok
 
   defp fetch_path(%{"path" => path}, ctx), do: ToolContext.resolve_path(ctx, path)
   defp fetch_path(_, _), do: {:error, :missing_path}
