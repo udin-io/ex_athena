@@ -5,7 +5,7 @@ if Code.ensure_loaded?(Igniter) do
     @moduledoc """
     Installs ExAthena into your project.
 
-    Run once after adding `{:ex_athena, "~> 0.1"}` to `mix.exs`, or via Igniter:
+    Run once after adding `{:ex_athena, "~> 0.4"}` to `mix.exs`, or via Igniter:
 
         mix igniter.install ex_athena
         mix ex_athena.install
@@ -17,10 +17,23 @@ if Code.ensure_loaded?(Igniter) do
       * Writes sensible per-provider defaults for Ollama (base URL pointing at
         `http://localhost:11434`), OpenAI-compatible (`https://api.openai.com/v1`),
         and Claude (picks up `ANTHROPIC_API_KEY` from env).
+      * Scaffolds `.exathena/.gitignore` so v0.4 runtime artifacts (session
+        JSONL logs, file-history snapshots, worktree cache) aren't
+        accidentally committed.
       * Does NOT write API keys inline — the installer uses
         `{:system, "VAR"}` tuples so secrets stay in the environment.
 
     Idempotent: re-running preserves whatever you've already set.
+
+    ## Upgrading
+
+    From an older version of ex_athena, run:
+
+        mix igniter.upgrade ex_athena
+
+    which routes through `mix ex_athena.upgrade` and applies any
+    version-specific migrations (e.g. notices about the v0.4
+    tool-result-split breaking change).
     """
 
     use Igniter.Mix.Task
@@ -42,9 +55,12 @@ if Code.ensure_loaded?(Igniter) do
       |> configure_ollama()
       |> configure_openai_compatible()
       |> configure_claude()
+      |> ensure_exathena_gitignore()
       |> Igniter.add_notice("""
       ExAthena installed.
 
+      Providers
+      ─────────
       • Default provider set to :ollama (pointing at http://localhost:11434).
       • To use OpenAI / OpenRouter / LM Studio / llama.cpp, set
         `config :ex_athena, default_provider: :openai_compatible` and point
@@ -52,7 +68,19 @@ if Code.ensure_loaded?(Igniter) do
       • To use Anthropic Claude, set
         `config :ex_athena, default_provider: :claude` and provide
         ANTHROPIC_API_KEY in the environment.
-      • Full docs: https://hexdocs.pm/ex_athena.
+
+      v0.4 features available out of the box
+      ──────────────────────────────────────
+      • Memory: drop AGENTS.md at your project root for project-wide
+        rules the agent honours on every turn.
+      • Skills: drop SKILL.md files under .exathena/skills/<name>/
+        for progressive-disclosure knowledge.
+      • Agents: define custom subagents in .exathena/agents/<name>.md
+        with optional git-worktree isolation.
+      • Sessions: pass `store: :jsonl` to ExAthena.Session for durable
+        conversations with Session.resume/2.
+
+      Full docs: https://hexdocs.pm/ex_athena.
       """)
     end
 
@@ -105,6 +133,29 @@ if Code.ensure_loaded?(Igniter) do
         "claude-opus-4-5",
         updater: &keep_existing/1
       )
+    end
+
+    # Scaffold a .gitignore for the v0.4 runtime artifact directories
+    # so users don't accidentally commit session JSONL logs, file-history
+    # snapshots, or the worktree cache. Idempotent: if the file already
+    # exists, leave it alone (don't overwrite the user's customisations).
+    defp ensure_exathena_gitignore(igniter) do
+      path = ".exathena/.gitignore"
+
+      if Igniter.exists?(igniter, path) do
+        igniter
+      else
+        Igniter.create_new_file(
+          igniter,
+          path,
+          """
+          # ex_athena runtime artifacts — should not be committed.
+          sessions/
+          file-history/
+          """,
+          on_exists: :skip
+        )
+      end
     end
 
     # Preserve whatever the user already has.
