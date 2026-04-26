@@ -24,8 +24,9 @@ defmodule ExAthena.Compactors.Summary do
   """
 
   @behaviour ExAthena.Compactor
+  @behaviour ExAthena.Compactor.Stage
 
-  alias ExAthena.{Budget, Messages, Request}
+  alias ExAthena.{Budget, Compactor, Messages, Request}
   alias ExAthena.Loop.State
   alias ExAthena.Messages.Message
 
@@ -38,6 +39,9 @@ defmodule ExAthena.Compactors.Summary do
     threshold = compact_at(state)
     max > 0 and tokens >= trunc(threshold * max)
   end
+
+  @impl ExAthena.Compactor.Stage
+  def name, do: :summary
 
   @impl ExAthena.Compactor
   def compact(%State{} = state, estimate) do
@@ -56,6 +60,31 @@ defmodule ExAthena.Compactors.Summary do
 
       true ->
         do_compact(prefix, middle, suffix, state, estimate)
+    end
+  end
+
+  # Pipeline-stage entry point. Adapts the legacy {:compact, msgs, meta}
+  # tuple to the Stage `{:ok, state, estimate}` shape expected by
+  # `Compactor.Pipeline`. The Compactor.compact/2 callback above is
+  # what direct Compactor consumers (and pre-PR2 loop installs) call.
+  @impl ExAthena.Compactor.Stage
+  @spec compact_stage(State.t(), Compactor.estimate()) :: ExAthena.Compactor.Stage.result()
+  def compact_stage(%State{} = state, estimate) do
+    case compact(state, estimate) do
+      {:compact, new_messages, metadata} ->
+        new_state = %{
+          state
+          | messages: new_messages,
+            budget: Map.get(metadata, :budget, state.budget)
+        }
+
+        {:ok, new_state, %{estimate | tokens: Map.get(metadata, :after, estimate.tokens)}}
+
+      :skip ->
+        :skip
+
+      {:error, _} = err ->
+        err
     end
   end
 

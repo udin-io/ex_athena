@@ -131,6 +131,9 @@ defmodule ExAthena.Loop do
               {:halt, new_state} ->
                 new_state
 
+              {:error, :error_prompt_too_long} ->
+                handle_prompt_too_long(state)
+
               {:error, reason} ->
                 state
                 |> Map.put(:halted_reason, reason)
@@ -142,6 +145,84 @@ defmodule ExAthena.Loop do
             |> Map.put(:halted_reason, reason)
             |> set_finish_reason(:error_compaction_failed)
         end
+    end
+  end
+
+  # Reactive recovery on `:error_prompt_too_long`: run the compaction
+  # pipeline forcing every stage, then retry the same iteration once.
+  # If still too large (or compaction itself failed), terminate with
+  # `:error_prompt_too_long` so the caller sees a typed capacity
+  # failure rather than a noisy `:error_during_execution`.
+  defp handle_prompt_too_long(state) do
+    if Keyword.get(reactive_compact_opts(state), :enabled, true) do
+      case force_compact(state) do
+        {:ok, state} ->
+          case state.mode.iterate(state) do
+            {:continue, new_state} ->
+              loop(%{new_state | iterations: new_state.iterations + 1})
+
+            {:halt, new_state} ->
+              new_state
+
+            {:error, _reason} ->
+              state |> set_finish_reason(:error_prompt_too_long)
+          end
+
+        {:error, reason} ->
+          state
+          |> Map.put(:halted_reason, reason)
+          |> set_finish_reason(:error_prompt_too_long)
+      end
+    else
+      state |> set_finish_reason(:error_prompt_too_long)
+    end
+  end
+
+  defp force_compact(%State{} = state) do
+    compactor = compactor_module(state)
+
+    estimate = %{
+      tokens: ExAthena.Compactor.estimate_tokens(state.messages),
+      max_tokens: state.capabilities[:max_tokens] || 128_000,
+      force: true
+    }
+
+    if function_exported?(compactor, :run, 3) do
+      case compactor.run(state, estimate, force: true) do
+        {:compact, new_messages, metadata} ->
+          new_budget = Map.get(metadata, :budget, state.budget)
+          Events.emit(state.on_event, {:compaction, metadata})
+          {:ok, %{state | messages: new_messages, budget: new_budget}}
+
+        :skip ->
+          {:ok, state}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    else
+      # Legacy compactor without `run/3` — fall back to a single compact pass.
+      case compactor.compact(state, estimate) do
+        {:compact, new_messages, metadata} ->
+          new_budget = Map.get(metadata, :budget, state.budget)
+          Events.emit(state.on_event, {:compaction, metadata})
+          {:ok, %{state | messages: new_messages, budget: new_budget}}
+
+        :skip ->
+          {:ok, state}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  defp reactive_compact_opts(%State{meta: meta}) do
+    case Map.get(meta, :reactive_compact) do
+      nil -> [enabled: true]
+      false -> [enabled: false]
+      true -> [enabled: true]
+      kw when is_list(kw) -> kw
     end
   end
 
@@ -191,7 +272,7 @@ defmodule ExAthena.Loop do
   defp compactor_module(%State{meta: meta}) do
     Map.get(meta, :compactor) ||
       Application.get_env(:ex_athena, :compactor_module) ||
-      ExAthena.Compactors.Summary
+      ExAthena.Compactor.Pipeline
   end
 
   defp set_finish_reason(%State{} = state, reason) do
