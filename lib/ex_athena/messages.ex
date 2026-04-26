@@ -20,15 +20,31 @@ defmodule ExAthena.Messages do
   end
 
   defmodule ToolResult do
-    @moduledoc "The outcome of a tool execution, replayed back to the model."
+    @moduledoc """
+    The outcome of a tool execution, replayed back to the model.
+
+    `content` is the LLM-facing text — what the model sees on the next
+    iteration. `ui_payload` is an optional structured map that hosts
+    (TUIs, LiveView frontends) can render as rich content (diffs, file
+    previews, process output) without parsing the text.
+
+    `ui_payload` is `nil` for tools that only return text; the loop
+    only emits `:tool_ui` events when a payload is present.
+    """
 
     @enforce_keys [:tool_call_id, :content]
-    defstruct [:tool_call_id, :content, :is_error]
+    defstruct [:tool_call_id, :content, :is_error, :ui_payload]
+
+    @type ui_payload :: %{
+            required(:kind) => atom(),
+            required(:payload) => map()
+          }
 
     @type t :: %__MODULE__{
             tool_call_id: String.t(),
             content: String.t(),
-            is_error: boolean() | nil
+            is_error: boolean() | nil,
+            ui_payload: ui_payload() | nil
           }
   end
 
@@ -64,12 +80,18 @@ defmodule ExAthena.Messages do
     do: %Message{role: :system, content: content}
 
   @doc "Build a tool-result message replaying the output of a tool call."
-  @spec tool_result(String.t(), String.t(), boolean() | nil) :: Message.t()
-  def tool_result(tool_call_id, content, is_error \\ nil) do
+  @spec tool_result(String.t(), String.t(), boolean() | nil, ToolResult.ui_payload() | nil) ::
+          Message.t()
+  def tool_result(tool_call_id, content, is_error \\ nil, ui_payload \\ nil) do
     %Message{
       role: :tool,
       tool_results: [
-        %ToolResult{tool_call_id: tool_call_id, content: content, is_error: is_error}
+        %ToolResult{
+          tool_call_id: tool_call_id,
+          content: content,
+          is_error: is_error,
+          ui_payload: ui_payload
+        }
       ]
     }
   end

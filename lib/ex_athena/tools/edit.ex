@@ -22,8 +22,7 @@ defmodule ExAthena.Tools.Edit do
 
   @impl true
   def description,
-    do:
-      "Replace a unique string in a file. Set replace_all: true to replace every occurrence."
+    do: "Replace a unique string in a file. Set replace_all: true to replace every occurrence."
 
   @impl true
   def schema do
@@ -49,7 +48,22 @@ defmodule ExAthena.Tools.Edit do
          {:ok, updated} <- replace(body, old_s, new_s, replace_all?),
          :ok <- File.write(path, updated) do
       count = if replace_all?, do: occurrences(body, old_s), else: 1
-      {:ok, "edited #{Path.relative_to(path, ctx.cwd)} (#{count} replacement#{if count == 1, do: "", else: "s"})"}
+
+      llm =
+        "edited #{Path.relative_to(path, ctx.cwd)} " <>
+          "(#{count} replacement#{if count == 1, do: "", else: "s"})"
+
+      ui = %{
+        kind: :diff,
+        payload: %{
+          path: path,
+          before: body,
+          after: updated,
+          replacements: count
+        }
+      }
+
+      {:ok, llm, ui}
     end
   end
 

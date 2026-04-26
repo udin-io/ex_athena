@@ -48,7 +48,16 @@ defmodule ExAthena.Tools.Glob do
       |> Enum.map(&Path.relative_to(&1, cwd))
       |> Enum.take(max)
 
-    {:ok, format(results)}
+    ui = %{
+      kind: :matches,
+      payload: %{
+        pattern: pattern,
+        count: length(results),
+        items: results
+      }
+    }
+
+    {:ok, format(results), ui}
   end
 
   def execute(_, _), do: {:error, :missing_pattern}

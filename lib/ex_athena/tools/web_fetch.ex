@@ -46,8 +46,17 @@ defmodule ExAthena.Tools.WebFetch do
     timeout = Map.get(args, "timeout_ms", @default_timeout)
 
     with {:ok, uri} <- validate(url),
-         {:ok, body} <- fetch(uri, timeout) do
-      {:ok, body}
+         {:ok, body, status} <- fetch(uri, timeout) do
+      ui = %{
+        kind: :webpage,
+        payload: %{
+          url: URI.to_string(uri),
+          status: status,
+          truncated?: String.ends_with?(body, "[...truncated...]")
+        }
+      }
+
+      {:ok, body, ui}
     end
   end
 
@@ -73,11 +82,14 @@ defmodule ExAthena.Tools.WebFetch do
       {:ok, %Req.Response{status: s, body: body}} when s in 200..299 ->
         body = to_binary(body)
 
-        if byte_size(body) > @max_bytes do
-          {:ok, binary_part(body, 0, @max_bytes) <> "\n\n[...truncated...]"}
-        else
-          {:ok, body}
-        end
+        body =
+          if byte_size(body) > @max_bytes do
+            binary_part(body, 0, @max_bytes) <> "\n\n[...truncated...]"
+          else
+            body
+          end
+
+        {:ok, body, s}
 
       {:ok, %Req.Response{status: status}} ->
         {:error, {:http_error, status}}

@@ -48,8 +48,32 @@ defmodule ExAthena.Tools.Read do
          :ok <- check_size(stat),
          :ok <- check_regular(stat),
          {:ok, body} <- File.read(path) do
-      {:ok, format(body, args)}
+      formatted = format(body, args)
+
+      offset = Map.get(args, "offset")
+      limit = Map.get(args, "limit")
+
+      ui = %{
+        kind: :file,
+        payload: %{
+          path: path,
+          content: body,
+          line_range: line_range(body, offset, limit)
+        }
+      }
+
+      {:ok, formatted, ui}
     end
+  end
+
+  defp line_range(_body, nil, nil), do: nil
+
+  defp line_range(body, offset, limit) do
+    total = body |> String.split("\n") |> length()
+    start_line = max(offset || 1, 1)
+    take = limit || max(total - start_line + 1, 0)
+    end_line = min(start_line + take - 1, total)
+    {start_line, end_line}
   end
 
   defp fetch_path(%{"path" => path}, ctx), do: ToolContext.resolve_path(ctx, path)

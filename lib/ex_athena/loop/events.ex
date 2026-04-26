@@ -12,6 +12,11 @@ defmodule ExAthena.Loop.Events do
     * `{:content, text}` — partial or full assistant text.
     * `{:tool_call, ToolCall.t()}` — model requested a tool call.
     * `{:tool_result, ToolResult.t()}` — tool produced a result (or error).
+    * `{:tool_ui, %{tool_call_id:, kind:, payload:}}` — structured UI
+      payload for hosts that render rich previews (diffs, file
+      contents, process output). Only emitted when a tool returns
+      the `{:ok, %{llm:, ui:}}` shape; the LLM-facing string still
+      flows through `:tool_result`.
     * `{:iteration, n}` — a new iteration is starting.
     * `{:compaction, %{before:, after:, reason:}}` — context compacted.
     * `{:subagent_spawn, %{id:, prompt:}}` — a sub-agent started.
@@ -31,18 +36,31 @@ defmodule ExAthena.Loop.Events do
           {:content, String.t()}
           | {:tool_call, ToolCall.t()}
           | {:tool_result, ToolResult.t()}
+          | {:tool_ui,
+             %{
+               required(:tool_call_id) => String.t(),
+               required(:kind) => atom(),
+               required(:payload) => map()
+             }}
           | {:iteration, non_neg_integer()}
-          | {:compaction, %{required(:before) => integer(), required(:after) => integer(), required(:reason) => term()}}
+          | {:compaction,
+             %{
+               required(:before) => integer(),
+               required(:after) => integer(),
+               required(:reason) => term()
+             }}
           | {:subagent_spawn, %{required(:id) => term(), required(:prompt) => String.t()}}
           | {:subagent_result, %{required(:id) => term(), required(:text) => String.t()}}
           | {:usage, map()}
-          | {:structured_retry, %{required(:attempt) => non_neg_integer(), required(:error) => term()}}
+          | {:structured_retry,
+             %{required(:attempt) => non_neg_integer(), required(:error) => term()}}
           | {:error, term()}
           | {:done, Result.t()}
 
   @doc "Emit an event via the supplied callback (nil is a no-op)."
   @spec emit((t() -> term()) | nil, t()) :: :ok
   def emit(nil, _event), do: :ok
+
   def emit(callback, event) when is_function(callback, 1) do
     callback.(event)
     :ok

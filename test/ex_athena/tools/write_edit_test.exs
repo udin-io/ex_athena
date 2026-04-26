@@ -43,7 +43,7 @@ defmodule ExAthena.Tools.WriteEditTest do
       path = Path.join(dir, "edit.txt")
       File.write!(path, "Hello world")
 
-      assert {:ok, msg} =
+      assert {:ok, msg, ui} =
                Edit.execute(
                  %{"path" => "edit.txt", "old_string" => "world", "new_string" => "there"},
                  ctx
@@ -51,6 +51,11 @@ defmodule ExAthena.Tools.WriteEditTest do
 
       assert msg =~ "1 replacement"
       assert File.read!(path) == "Hello there"
+
+      assert ui.kind == :diff
+      assert ui.payload.before == "Hello world"
+      assert ui.payload.after == "Hello there"
+      assert ui.payload.replacements == 1
     end
 
     test "rejects ambiguous matches unless replace_all", %{dir: dir, ctx: ctx} do
@@ -61,7 +66,7 @@ defmodule ExAthena.Tools.WriteEditTest do
                Edit.execute(%{"path" => "dup.txt", "old_string" => "a", "new_string" => "b"}, ctx)
 
       # replace_all lifts the uniqueness constraint
-      assert {:ok, _} =
+      assert {:ok, _, _ui} =
                Edit.execute(
                  %{
                    "path" => "dup.txt",
@@ -91,7 +96,10 @@ defmodule ExAthena.Tools.WriteEditTest do
       File.write!(path, "content")
 
       assert {:error, :empty_old_string} =
-               Edit.execute(%{"path" => "empty.txt", "old_string" => "", "new_string" => "x"}, ctx)
+               Edit.execute(
+                 %{"path" => "empty.txt", "old_string" => "", "new_string" => "x"},
+                 ctx
+               )
     end
   end
 end

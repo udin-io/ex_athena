@@ -15,16 +15,20 @@ defmodule ExAthena.Tools.ReadTest do
     path = Path.join(dir, "hello.txt")
     File.write!(path, "one\ntwo\nthree")
 
-    assert {:ok, body} = Read.execute(%{"path" => "hello.txt"}, ctx)
+    assert {:ok, body, ui} = Read.execute(%{"path" => "hello.txt"}, ctx)
     assert body =~ "1\tone"
     assert body =~ "2\ttwo"
     assert body =~ "3\tthree"
+
+    assert ui.kind == :file
+    assert ui.payload.path == path
+    assert ui.payload.content == "one\ntwo\nthree"
   end
 
   test "accepts absolute paths", %{dir: dir, ctx: ctx} do
     path = Path.join(dir, "abs.txt")
     File.write!(path, "abs")
-    assert {:ok, body} = Read.execute(%{"path" => path}, ctx)
+    assert {:ok, body, _ui} = Read.execute(%{"path" => path}, ctx)
     assert body =~ "abs"
   end
 
@@ -45,9 +49,13 @@ defmodule ExAthena.Tools.ReadTest do
     path = Path.join(dir, "big.txt")
     File.write!(path, Enum.join(Enum.map(1..10, &"line-#{&1}"), "\n"))
 
-    assert {:ok, body} = Read.execute(%{"path" => "big.txt", "offset" => 3, "limit" => 2}, ctx)
+    assert {:ok, body, ui} =
+             Read.execute(%{"path" => "big.txt", "offset" => 3, "limit" => 2}, ctx)
+
     assert body =~ "line-3"
     assert body =~ "line-4"
     refute body =~ "line-5"
+
+    assert ui.payload.line_range == {3, 4}
   end
 end

@@ -208,6 +208,16 @@ defmodule ExAthena.Modes.ReAct do
             result = Messages.tool_result(call.id, to_string(msg))
             after_post_hook(state, call, result)
 
+          {:ok, text, %{kind: kind, payload: payload}} ->
+            # Tool returned the structured split — LLM-facing text plus a
+            # UI payload hosts can render natively. The tool-result
+            # message carries the text for the model; ui_payload tags it
+            # for the next :tool_ui event.
+            ui = %{kind: kind, payload: payload}
+            result = Messages.tool_result(call.id, stringify(text), nil, ui)
+            state = reset_mistakes(state)
+            after_post_hook(state, call, result)
+
           {:ok, payload} ->
             result = Messages.tool_result(call.id, stringify(payload))
             state = reset_mistakes(state)

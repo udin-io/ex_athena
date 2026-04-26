@@ -62,11 +62,12 @@ defmodule ExAthena.Tools.Bash do
         cd: cwd
       ])
 
-    deadline = System.monotonic_time(:millisecond) + timeout
-    collect(port, [], deadline)
+    started_at = System.monotonic_time(:millisecond)
+    deadline = started_at + timeout
+    collect(port, [], deadline, command, started_at)
   end
 
-  defp collect(port, acc, deadline) do
+  defp collect(port, acc, deadline, command, started_at) do
     remaining = deadline - System.monotonic_time(:millisecond)
 
     cond do
@@ -77,11 +78,24 @@ defmodule ExAthena.Tools.Bash do
       true ->
         receive do
           {^port, {:data, data}} ->
-            collect(port, [data | acc], deadline)
+            collect(port, [data | acc], deadline, command, started_at)
 
           {^port, {:exit_status, code}} ->
             body = acc |> Enum.reverse() |> IO.iodata_to_binary()
-            {:ok, "exit #{code}\n" <> body}
+            duration_ms = System.monotonic_time(:millisecond) - started_at
+            llm = "exit #{code}\n" <> body
+
+            ui = %{
+              kind: :process,
+              payload: %{
+                command: command,
+                exit_code: code,
+                stdout: body,
+                duration_ms: duration_ms
+              }
+            }
+
+            {:ok, llm, ui}
         after
           remaining ->
             kill(port)

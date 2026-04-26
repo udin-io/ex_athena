@@ -22,7 +22,8 @@ defmodule ExAthena.Tools.Grep do
 
   @impl true
   def description,
-    do: "Search file contents with a regex under the working directory. Optionally narrow by glob."
+    do:
+      "Search file contents with a regex under the working directory. Optionally narrow by glob."
 
   @impl true
   def schema do
@@ -64,12 +65,23 @@ defmodule ExAthena.Tools.Grep do
       |> maybe_prepend_glob(glob)
 
     case System.cmd(rg, args, cd: cwd, stderr_to_stdout: true) do
-      {output, 0} -> {:ok, take_lines(output, max)}
+      {output, 0} -> build_payload(pattern, take_lines(output, max))
       # ripgrep exit 1 = no matches
-      {"", 1} -> {:ok, "(no matches)"}
-      {output, 1} -> {:ok, take_lines(output, max)}
+      {"", 1} -> build_payload(pattern, [])
+      {output, 1} -> build_payload(pattern, take_lines(output, max))
       {output, code} -> {:error, {:rg_failed, code, output}}
     end
+  end
+
+  defp build_payload(pattern, items) when is_list(items) do
+    llm = if items == [], do: "(no matches)", else: Enum.join(items, "\n")
+
+    ui = %{
+      kind: :matches,
+      payload: %{pattern: pattern, count: length(items), items: items}
+    }
+
+    {:ok, llm, ui}
   end
 
   defp maybe_prepend_glob(args, nil), do: args
@@ -93,7 +105,7 @@ defmodule ExAthena.Tools.Grep do
         end)
         |> Enum.take(max)
 
-      {:ok, if(matches == [], do: "(no matches)", else: Enum.join(matches, "\n"))}
+      build_payload(pattern, matches)
     else
       {:error, {msg, _offset}} -> {:error, {:invalid_regex, to_string(msg)}}
     end
@@ -114,6 +126,5 @@ defmodule ExAthena.Tools.Grep do
     output
     |> String.split("\n", trim: true)
     |> Enum.take(max)
-    |> Enum.join("\n")
   end
 end

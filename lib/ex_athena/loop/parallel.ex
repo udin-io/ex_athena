@@ -200,8 +200,27 @@ defmodule ExAthena.Loop.Parallel do
     Events.emit(state.on_event, {:tool_call, call})
 
     case tool_message.tool_results do
-      [tr | _] -> Events.emit(state.on_event, {:tool_result, tr})
-      _ -> :ok
+      [tr | _] = trs ->
+        Events.emit(state.on_event, {:tool_result, tr})
+
+        # Emit :tool_ui after :tool_result for any tool result carrying a
+        # structured payload. Hosts that don't care about UI payloads can
+        # ignore the event; ones that do use it to render rich content.
+        Enum.each(trs, fn
+          %{ui_payload: %{kind: kind, payload: payload}, tool_call_id: id} ->
+            Events.emit(
+              state.on_event,
+              {:tool_ui, %{tool_call_id: id, kind: kind, payload: payload}}
+            )
+
+          _ ->
+            :ok
+        end)
+
+        :ok
+
+      _ ->
+        :ok
     end
   end
 end
