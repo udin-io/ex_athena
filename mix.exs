@@ -1,7 +1,7 @@
 defmodule ExAthena.MixProject do
   use Mix.Project
 
-  @version "0.3.1"
+  @version "0.4.0"
   @source_url "https://github.com/udin-io/ex_athena"
 
   def project do
@@ -75,6 +75,12 @@ defmodule ExAthena.MixProject do
         "guides/tool_calls.md",
         "guides/tools.md",
         "guides/agent_loop.md",
+        "guides/memory_and_skills.md",
+        "guides/compaction_pipeline.md",
+        "guides/hooks_reference.md",
+        "guides/permissions.md",
+        "guides/agents_subagents.md",
+        "guides/sessions_and_checkpoints.md",
         "LICENSE"
       ],
       groups_for_extras: [
@@ -134,7 +140,38 @@ defmodule ExAthena.MixProject do
           ExAthena.Tools.PlanMode,
           ExAthena.Tools.SpawnAgent
         ],
+        "Memory + Skills": [
+          ExAthena.Memory,
+          ExAthena.Skills,
+          ExAthena.Skills.Skill
+        ],
+        "Compaction pipeline": [
+          ExAthena.Compactor,
+          ExAthena.Compactor.Pipeline,
+          ExAthena.Compactor.Stage,
+          ExAthena.Compactors.Summary,
+          ExAthena.Compactors.BudgetReduction,
+          ExAthena.Compactors.Snip,
+          ExAthena.Compactors.Microcompact,
+          ExAthena.Compactors.ContextCollapse
+        ],
         "Permissions + hooks": [ExAthena.Permissions, ExAthena.Hooks],
+        Agents: [
+          ExAthena.Agents,
+          ExAthena.Agents.Definition,
+          ExAthena.Agents.Worktree,
+          ExAthena.Agents.WorktreeSweeper,
+          ExAthena.Agents.Sidechain
+        ],
+        Sessions: [
+          ExAthena.Sessions.Store,
+          ExAthena.Sessions.Stores.InMemory,
+          ExAthena.Sessions.Stores.Jsonl
+        ],
+        Checkpointing: [
+          ExAthena.Checkpoint,
+          ExAthena.Checkpoint.Sweeper
+        ],
         Streaming: [ExAthena.Streaming, ExAthena.Streaming.Event],
         Errors: [ExAthena.Error]
       ]

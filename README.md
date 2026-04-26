@@ -10,12 +10,21 @@ Code SDK that runs on **Ollama**, **OpenAI-compatible endpoints**
 or **Anthropic Claude** itself — with the same tools, hooks, permissions,
 and streaming semantics across every provider.
 
-> **Status (v0.2):** feature-complete for agent work. Multi-turn loop, 10
-> builtin tools (Read/Glob/Grep/Write/Edit/Bash/WebFetch/TodoWrite/PlanMode/
-> SpawnAgent), permissions (`:plan`/`:default`/`:bypass`), lifecycle hooks
-> (PreToolUse/PostToolUse/Stop/…), `ExAthena.Session` GenServer for multi-turn
-> conversation state, and structured JSON extraction with schema validation.
-> Claude Code drop-in replacement.
+> **Status (v0.4):** the operational-harness release. Builds on v0.3's
+> loop kernel with file-based memory (`AGENTS.md`/`CLAUDE.md`),
+> Claude Code-style skills (`SKILL.md` with progressive disclosure), a
+> five-stage compaction pipeline with reactive recovery on
+> context-window errors, 14 hook events with `{:inject, msg}` /
+> `{:transform, prompt}` returns, five permission modes (`:plan` /
+> `:default` / `:accept_edits` / `:trusted` / `:bypass_permissions`),
+> structured tool results with rich UI payloads, custom agent
+> definitions with optional git-worktree isolation, sidechain
+> transcripts, and append-only session storage with file-checkpointing
+> + `/rewind`. Backed by 248 tests.
+>
+> See the [v0.4.0 changelog](CHANGELOG.md#v040--operational-harness-memory-skills-hooks-modes-agents-storage)
+> for the full list and migration notes (one breaking change: 6 builtin
+> tools now return `{:ok, text, ui}` 3-tuples).
 
 ## Why
 
@@ -38,7 +47,7 @@ Or manually — add to `mix.exs`:
 ```elixir
 def deps do
   [
-    {:ex_athena, "~> 0.1"},
+    {:ex_athena, "~> 0.4"},
     # optional — only needed for the Claude provider:
     {:claude_code, "~> 0.36"}
   ]
@@ -133,11 +142,74 @@ ExAthena.query("…",
 The agent loop (Phase 2) will pick the protocol based on the provider's
 declared capabilities, and fall back when the model gets it wrong.
 
+## What's in v0.4
+
+The "1.6% reasoning, 98.4% harness" upgrade — built around the
+[Claude Code paper](https://arxiv.org/abs/2604.14228)'s observation
+that production agent value comes from the operational scaffolding,
+not the loop itself.
+
+**File-based context.** Drop an `AGENTS.md` (or `CLAUDE.md`) at the
+project root and ex_athena prepends it as user-context on every turn.
+Drop a `SKILL.md` with YAML frontmatter under `.exathena/skills/<name>/`
+and its description joins the system-prompt catalog at ~50 tokens; the
+body loads only when the model writes `[skill: <name>]`. See the
+[memory + skills guide](guides/memory_and_skills.md).
+
+**Five-stage compaction.** The default
+[Compactor.Pipeline](guides/compaction_pipeline.md) runs cheapest-first:
+budget reduction (truncate huge tool results) → snip (drop stale
+ones) → microcompact (collapse runs of identical calls) → context
+collapse (read-time-only projection) → LLM summary. When a provider
+returns "context too long" the pipeline forces every stage and
+retries.
+
+**14-event hook surface.** Every transition in the loop is
+observable + interceptable: `SessionStart/End`, `UserPromptSubmit`,
+`ChatParams`, `Stop`, `StopFailure`, all the `*ToolUse*` variants,
+`PermissionRequest/Denied`, `Subagent*`, three compaction events,
+`Notification`. Hooks can `{:inject, msg}` to add context or
+`{:transform, prompt}` to rewrite the user's message. See
+[hooks reference](guides/hooks_reference.md).
+
+**Five permission modes.** Add `:accept_edits` (auto-allow file
+edits, still prompt for `bash`) and `:trusted` (skip prompts; with
+optional `respect_denylist: false` for full YOLO) on top of the
+existing `:plan` / `:default` / `:bypass_permissions`. The denylist
+always wins, including in bypass — that's locked in a doctest. See
+[permissions](guides/permissions.md).
+
+**Subagents v2.** Define custom agents in `.exathena/agents/<name>.md`
+with frontmatter (`tools`, `permissions`, `mode`, `isolation`); spawn
+by name via `agent: "explore"`. Optional git-worktree isolation
+creates an isolated checkout per subagent (with safety checks +
+graceful fallback). Sidechain transcripts persist the full subagent
+conversation to disk so the parent only spends tokens on the final
+text. Three builtin definitions ship: `general`, `explore`, `plan`.
+See [agents + subagents](guides/agents_subagents.md).
+
+**Storage + checkpoint.** `ExAthena.Sessions.Store` is an
+append-only event log behaviour with two stores: in-memory (default)
+and ETS-buffered JSONL with periodic flush. Sessions emit
+`:user_message` / `:assistant_message` / `:tool_result` events;
+`Session.resume/2` rebuilds the message history from any store.
+File-checkpoint snapshots fire before every `Edit` / `Write`, and
+`Checkpoint.rewind/3` restores files + truncates the session log to
+a chosen UUID. See [sessions + checkpoints](guides/sessions_and_checkpoints.md).
+
 ## Guides
 
 - [Getting started](guides/getting_started.md)
 - [Providers](guides/providers.md)
 - [Tool calls](guides/tool_calls.md)
+- [The agent loop](guides/agent_loop.md)
+- [Tools (incl. tool-result split)](guides/tools.md)
+- [Memory + skills](guides/memory_and_skills.md) — v0.4
+- [Compaction pipeline](guides/compaction_pipeline.md) — v0.4
+- [Hooks reference](guides/hooks_reference.md) — v0.4
+- [Permissions](guides/permissions.md) — v0.4
+- [Agents + subagents](guides/agents_subagents.md) — v0.4
+- [Sessions + checkpoints](guides/sessions_and_checkpoints.md) — v0.4
 
 ## License
 

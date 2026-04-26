@@ -5,6 +5,298 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.0 — operational harness (memory, skills, hooks, modes, agents, storage)
+
+The "1.6% reasoning, 98.4% harness" upgrade. Where v0.3 perfected the
+loop kernel, v0.4 builds the *operational harness* the [Claude Code paper](https://arxiv.org/abs/2604.14228)
+calls out as the bulk of a production agent's value: file-based memory
++ skills, a five-stage compaction pipeline with reactive recovery, a
+14-event hook surface with `{:inject, msg}` / `{:transform, prompt}`
+returns, two new permission modes, structured tool results, custom
+agent definitions with optional git-worktree isolation, and append-only
+session storage with file-checkpointing + `/rewind`.
+
+Landed as seven tightly-scoped commits (PR0 → PR5) — each one keeps the
+existing test suite passing and adds focused new tests on top.
+
+### PR0 — Foundation
+
+#### Added
+
+- `:session_id` and `:parent_session_id` plumbed through `Loop.State`,
+  `Loop.run/2` opts, the resulting `ToolContext`, and the `SessionStart`
+  hook payload. The `Session` GenServer auto-generates a stable id at
+  start_link, reuses it on every turn, and refuses to let per-call
+  `extra_opts` redirect mid-conversation. PR4 + PR5 read these.
+- `:error_prompt_too_long` finish-reason in `Loop.Terminations` with
+  category `:capacity`. Modes signal context-window-exceeded uniformly;
+  PR2's reactive compaction switches on this.
+- Doctest in `Permissions.check/4` documenting and locking the
+  deny-first ordering (`:disallowed_tools` survives `:bypass_permissions`,
+  `:allowed_tools` survives a permissive callback).
+
+### PR1 — Memory + Skills (file-based context)
+
+#### Added — `ExAthena.Memory`
+
+- Loads `AGENTS.md` (preferred) / `CLAUDE.md` from a 3-level hierarchy:
+  user (`~/.config/ex_athena/`) → project (`<cwd>/`) → local override
+  (`<cwd>/AGENTS.local.md`).
+- Each file becomes a single user-role message tagged `name: "memory"`
+  placed at the front of the conversation. The Claude Code paper notes
+  Claude Code uses user-context (not system) for probabilistic
+  compliance — we copy the pattern.
+- `AGENTS.md` wins over `CLAUDE.md` at the same level (matches opencode).
+
+#### Added — `ExAthena.Skills`
+
+- Claude Code-style progressive disclosure. `SKILL.md` files have YAML
+  frontmatter (`name`, `description`, `disable-model-invocation`,
+  `allowed-tools`) plus a markdown body. The frontmatter is auto-injected
+  into the system prompt as a `## Available Skills` catalog (~50 tokens
+  per skill); bodies stay on disk until needed.
+- Two activation paths: a `[skill: name]` sentinel the model writes in
+  its response, or the new `:preload_skills` opt for hosts that know
+  up-front what's needed.
+- Loaded from `~/.config/ex_athena/skills/<name>/SKILL.md` and
+  `<cwd>/.exathena/skills/<name>/SKILL.md`. Project overrides user.
+
+#### Added — `Loop.run/2` options
+
+- `:memory` — `:auto` (default), `false`, or explicit message list.
+- `:skills` — `:auto` (default), `false`, or explicit map.
+- `:preload_skills` — list of skill names to activate up-front.
+
+#### Changed
+
+- `Compactors.Summary` extends its effective pinned-prefix by
+  `meta[:memory_count] + meta[:preloaded_skill_count]` so memory + pre-loaded
+  skills survive every compaction cycle.
+
+### PR2 — Five-layer compaction pipeline + reactive recovery
+
+#### Added — pipeline architecture
+
+- `ExAthena.Compactor.Pipeline` — the new default compactor. Walks a
+  configurable list of `Compactor.Stage` modules cheapest-first, short-
+  circuiting once the conversation falls below target. Each stage runs
+  inside its own `[:ex_athena, :compaction, <:stage_name>, :start | :stop]`
+  telemetry span.
+- `ExAthena.Compactor.Stage` behaviour with `compact_stage/2` + `name/0`
+  callbacks. Existing `Compactors.Summary` keeps its legacy
+  `Compactor.compact/2` callback AND now implements `Stage` via a thin
+  adapter — fully backward-compatible for direct callers.
+
+#### Added — five built-in stages
+
+1. **`Compactors.BudgetReduction`** — replaces oversized tool-result
+   bodies (>16k chars by default) with a `[truncated; ref=<id>]` pointer.
+   Full payload moves to `state.meta[:tool_result_archive]`. Pure-Elixir.
+2. **`Compactors.Snip`** — drops stale tool-result bodies older than
+   `:snip_age_iterations` whose paired assistant turn already happened,
+   replacing each with a `<snipped: stale tool-result for call …>` marker.
+3. **`Compactors.Microcompact`** — collapses runs of 3+ adjacent
+   tool-result messages into a single elided summary tagged
+   `name: "microcompact"`. Pure-Elixir.
+4. **`Compactors.ContextCollapse`** — non-destructive view-time
+   projection. Detects superseded reads (file later edited) and
+   consecutive duplicate tool calls; writes the projection to
+   `state.meta[:compact_view]` for the next request to consume. The
+   authoritative `state.messages` is never mutated, so resume / replay
+   / rewind (PR5) stay correct.
+5. **`Compactors.Summary`** — existing LLM summary stage, refactored.
+
+#### Added — reactive recovery
+
+- When a mode returns `{:error, :error_prompt_too_long}` (PR0
+  finish-reason), the loop runs the pipeline with `force: true`
+  unconditionally and retries the same iteration once. Gated by
+  `:reactive_compact` opt (default `true`).
+
+#### Configuration
+
+- `:compaction_pipeline` — host-overridable stage list. Default is
+  `[BudgetReduction, Snip, Microcompact, ContextCollapse, Summary]`.
+
+### PR3a — Hooks expansion + permission modes
+
+#### Added — hook events (14 total)
+
+- `Hooks.events/0` exposes the catalog: `SessionStart`, `SessionEnd`,
+  `UserPromptSubmit`, `ChatParams`, `Stop`, `StopFailure`, `PreToolUse`,
+  `PostToolUse`, `PostToolUseFailure`, `PermissionRequest`,
+  `PermissionDenied`, `SubagentStart`, `SubagentStop`, `PreCompact`,
+  `PreCompactStage`, `PostCompact`, `Notification`.
+- New return values for hook callbacks:
+  - `{:inject, message_or_messages}` — append context to the conversation.
+    opencode's `experimental.chat.system.transform` pattern.
+  - `{:transform, prompt}` — only meaningful from `UserPromptSubmit`;
+    rewrites the user prompt before it enters the loop.
+- `run_lifecycle_with_outputs/3` returns `%{halt:, injects:, transform:}`
+  for callers that need the richer outputs. `run_lifecycle/3` keeps its
+  `:ok | {:halt, _}` shape.
+
+#### Newly fired events
+
+- `Stop` / `StopFailure` / `SessionEnd` from `to_result/2`.
+- `UserPromptSubmit` from `build_initial_state/2`.
+- `ChatParams` from `Modes.ReAct.iterate/1`, just before each provider call.
+- `PostToolUseFailure` when a tool returns `{:error, _}`.
+- `PermissionDenied` whenever the gate decides `{:deny, _}`.
+- `SubagentStart` / `SubagentStop` from `Tools.SpawnAgent`.
+- `PreCompactStage` / `PostCompact` from the compaction pipeline.
+
+#### Added — permission modes
+
+- `:accept_edits` — auto-allow Read/Glob/Grep/WebFetch + Edit/Write/TodoWrite
+  + plan_mode/spawn_agent. Bash + custom tools still consult `can_use_tool`.
+- `:trusted` — skip the `can_use_tool` callback for every tool. Still
+  respects the denylist by default; pass `respect_denylist: false` to
+  disable that. The `:auto` name is reserved for the future ML safety
+  classifier.
+
+`:bypass_permissions` continues to respect the denylist (deny-first
+invariant from PR0's doctest is preserved).
+
+### PR3b — Tool-result split (LLM content + UI payload) ⚠️ Breaking
+
+Tools may now return a 3-tuple `{:ok, llm, ui}` in addition to the
+existing `{:ok, text}`. The `llm` is the LLM-facing string the model
+sees on the next iteration; `ui` is a `%{kind:, payload:}` map hosts
+(TUIs, Phoenix LiveView frontends) can render as rich content
+(diffs, file previews, process output, match lists) without parsing
+the text. This is the Pi-style split adapted to Elixir's pattern-match
+idiom.
+
+#### Added
+
+- `Messages.ToolResult` grows `ui_payload :: %{kind:, payload:} | nil`.
+- `Loop.Events` adds `{:tool_ui, %{tool_call_id:, kind:, payload:}}`.
+- New event emitted after `:tool_result` for any tool result carrying a payload.
+
+#### Built-in payload shapes
+
+- `Read` → `:file` { path, content, line_range }
+- `Edit` → `:diff` { path, before, after, replacements }
+- `Bash` → `:process` { command, exit_code, stdout, duration_ms }
+- `Glob` → `:matches` { pattern, count, items }
+- `Grep` → `:matches` { pattern, count, items }
+- `WebFetch` → `:webpage` { url, status, truncated? }
+- `Write`, `TodoWrite`, `PlanMode` — text-only, unchanged.
+- `SpawnAgent` (PR4) → `:subagent` { iterations, cost_usd, isolation, … }
+
+#### Breaking change — direct tool callers
+
+The 6 builtins listed above (`Read`, `Edit`, `Bash`, `Glob`, `Grep`,
+`WebFetch`) now return `{:ok, text, ui}` 3-tuples instead of the
+`{:ok, text}` 2-tuple. Callers using these tools through the loop are
+unaffected — `Result.text` still surfaces the LLM-facing string. Code
+that calls these tools' `execute/2` directly needs to update its
+pattern matches. The `{:ok, text}` 2-tuple remains a fully supported
+return shape for custom and third-party tools.
+
+### PR4 — Subagents v2 (Agents.md + worktrees + sidechains)
+
+#### Added — `ExAthena.Agents`
+
+- File-based agent definitions in markdown + YAML frontmatter, loaded
+  from a 3-level hierarchy (builtin → user → project). Frontmatter
+  fields: `name`, `description`, `model`, `provider`, `tools`,
+  `permissions`, `mode`, `isolation`. Body becomes a system-prompt
+  addendum.
+- Builtin definitions shipped in `priv/agents/`:
+  - `general` — full-tool default (matches the prior SpawnAgent behaviour).
+  - `explore` — read-only fast investigation.
+  - `plan` — analysis only with writes restricted to `.exathena/plans/`.
+- `Agents.apply_to_opts/2` merges definition fields into spawn opts.
+
+#### Added — worktree isolation
+
+- `ExAthena.Agents.Worktree.resolve/3` runs three safety checks before
+  creating a git worktree (git on PATH, cwd inside repo, clean tree).
+  If any check fails, the subagent transparently falls back to
+  `:in_process`.
+- Worktrees live under `~/.cache/ex_athena/worktrees/<sess>/<name>-<n>`,
+  branched from `HEAD`. After the subagent finishes:
+  - Changes left → worktree is kept; path + branch surface in the spawn
+    result's `ui_payload` for review/merge.
+  - Clean → `git worktree remove --force` cleans up.
+- `ExAthena.Agents.WorktreeSweeper` is a one-shot at boot under the
+  application supervisor that runs `git worktree prune` and removes
+  cache entries older than 7 days.
+- All internal git invocations bypass the parent's permission gate via
+  `System.cmd/3` directly — otherwise a parent in `:plan` mode could
+  never spawn a worktree-isolated subagent.
+
+#### Added — sidechain transcripts
+
+- `ExAthena.Agents.Sidechain.write/1` persists each subagent's full
+  transcript to `<cwd>/.exathena/sessions/<parent_session_id>/sidechains/<subagent_id>.jsonl`.
+  Parent only sees the subagent's final `text`; the full conversation
+  lives here.
+
+#### `SpawnAgent` updates
+
+- New `agent: "<name>"` arg resolves a named definition and applies its
+  fields to the sub-loop opts.
+- `SubagentStart` payload now includes `:agent` and `:isolation`.
+- `SubagentStop` payload includes the finalized isolation state.
+- Spawn returns the `{:ok, llm, ui}` 3-tuple from PR3b with a
+  `:subagent` UI payload carrying iterations / tool_calls_made /
+  cost_usd / duration_ms / isolation.
+
+### PR5 — Append-only session storage + checkpointing + rewind
+
+#### Added — `ExAthena.Sessions.Store`
+
+- Behaviour for append-only event storage with `append/2`, `read/1`,
+  `list/0`, `tail/2`. Each event carries an ISO 8601 timestamp + uuid.
+- `Sessions.Stores.InMemory` — ETS-backed default. The application
+  supervisor keeps a single named GenServer alive so the table is shared
+  across the BEAM.
+- `Sessions.Stores.Jsonl` — ETS-buffered, periodic flush (default 250ms).
+  Hot-path appends never block on I/O. Files at
+  `<root>/<session_id>.jsonl`. Synchronous `flush/1` for tests + clean
+  shutdown.
+
+#### Session integration
+
+- `Session.start_link/1` accepts `:store` opt: `:in_memory` (default),
+  `:jsonl`, or a custom module.
+- On every `send_message/2`: emits `:user_message`, then walks
+  `result.messages` after the loop and emits `:assistant_message` /
+  `:tool_result` for new entries.
+- `Session.resume/2` reads events back, filters to user/assistant
+  messages, and returns the reconstructed message list. Permissions
+  deliberately don't survive resume (Claude Code's pattern: trust is
+  re-established per session).
+
+#### Added — `ExAthena.Checkpoint`
+
+- File-history backups before each `Tools.Edit` / `Tools.Write` at
+  `<cwd>/.exathena/file-history/<session_id>/<sha>/<version>.bin`.
+  SHA-256 of the absolute path; versions are 0-indexed and idempotent.
+  Tombstones (`<v>.tombstone`) mark "this file didn't exist at
+  checkpoint time".
+- `Checkpoint.rewind/3` modes:
+  - `:code_and_history` — restore each file to its version-0 snapshot
+    AND truncate the JSONL session log to the chosen `to_uuid`.
+  - `:history_only` — only truncate the JSONL.
+- `ExAthena.Checkpoint.Sweeper` — startup task that GCs file-history
+  directories older than 30 days.
+
+### Distribution
+
+- `mix.exs` `:files` now includes `priv/` so the builtin agent
+  definitions ship with the package on Hex.
+
+### Tests
+
+- 248 tests + 2 doctests, 0 failures (was 147 + 0 in v0.3.1).
+- Backward-compatible by design: existing v0.3 tests untouched, except
+  for the 6 builtin tools whose return shape changed (PR3b — tightened
+  to `{:ok, text, ui}`).
+
 ## v0.3.1 — per-token streaming in the ReAct mode
 
 ### Added

@@ -81,8 +81,35 @@ ExAthena.run("describe https://example.com", tools: [MyApp.Tools.DescribePage])
 | Return | Behaviour |
 |---|---|
 | `{:ok, result}` | Stringified and replayed to the model. |
-| `{:error, reason}` | Replayed as an error tool-result; loop continues. |
+| `{:ok, llm, ui}` | LLM text + structured UI payload. The model sees `llm`; hosts get a `:tool_ui` event with the `ui` map. |
+| `{:error, reason}` | Replayed as an error tool-result; loop continues. The kernel fires the `PostToolUseFailure` hook. |
 | `{:halt, reason}` | Loop stops immediately (emergency brake). |
+
+#### Structured tool results (`{:ok, llm, ui}`)
+
+The 3-tuple lets a tool return one string for the LLM and a richer
+payload for hosts (TUIs, Phoenix LiveView frontends) that want to
+render rich previews without parsing text. The `ui` shape is
+`%{kind: atom(), payload: map()}`. The loop emits a `:tool_ui` event
+after `:tool_result` for any tool that returned the 3-tuple.
+
+Built-in payload shapes:
+
+| Tool | `kind` | Payload fields |
+|---|---|---|
+| `Read` | `:file` | `path`, `content`, `line_range` |
+| `Edit` | `:diff` | `path`, `before`, `after`, `replacements` |
+| `Bash` | `:process` | `command`, `exit_code`, `stdout`, `duration_ms` |
+| `Glob` | `:matches` | `pattern`, `count`, `items` |
+| `Grep` | `:matches` | `pattern`, `count`, `items` |
+| `WebFetch` | `:webpage` | `url`, `status`, `truncated?` |
+| `SpawnAgent` | `:subagent` | `subagent_id`, `iterations`, `cost_usd`, `duration_ms`, `isolation` |
+| `Write`, `TodoWrite`, `PlanMode` | — | text-only, no UI payload |
+
+Custom tools use any atom `kind` they like — hosts pattern-match on
+`{:tool_ui, %{kind: :my_kind}}` events. Returning `{:ok, text}`
+remains fully supported and the loop simply skips the `:tool_ui`
+event.
 
 ### Using `ctx.assigns`
 

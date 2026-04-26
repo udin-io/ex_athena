@@ -61,9 +61,20 @@ ExAthena.Session.stop(pid)
 
 ## Permissions
 
+Five modes, with deny-first ordering — denylist always wins:
+
 ```elixir
 # Read-only exploration
 ExAthena.run("explore", tools: :all, phase: :plan)
+
+# Auto-allow edits, still prompt for bash + custom tools
+ExAthena.run("refactor", tools: :all, phase: :accept_edits, can_use_tool: ask)
+
+# Trust mode — skip the callback for every tool. Denylist still respected.
+ExAthena.run("CI agent", tools: :all, phase: :trusted)
+
+# Full YOLO — opt-in only:
+ExAthena.run("CI agent", tools: :all, phase: :trusted, respect_denylist: false)
 
 # Deny specific tools regardless of phase
 ExAthena.run("refactor", tools: :all, disallowed_tools: ["web_fetch"])
@@ -74,7 +85,7 @@ ExAthena.run("summarise", tools: :all, allowed_tools: ["read", "glob"])
 # Interactive approval
 can_use_tool = fn name, args, _ctx ->
   case name do
-    "bash" -> ask_user("Run `#{args["command"]}`?")  # your impl
+    "bash" -> ask_user("Run `#{args["command"]}`?")
     _ -> :allow
   end
 end
@@ -82,13 +93,22 @@ end
 ExAthena.run("deploy", tools: :all, can_use_tool: can_use_tool)
 ```
 
+See the [permissions guide](permissions.md) for the full ordering, the
+`:auto` reservation, and `can_use_tool` callback contract.
+
 ## Hooks
 
-Hooks fire at lifecycle points so hosts can:
+Hooks fire at 14 lifecycle events so hosts can:
 
 - Deny specific tool calls mid-loop (`PreToolUse` returning `{:deny, reason}`)
 - Capture tool outputs (`PostToolUse`)
-- React to conversation end (`Stop`)
+- React to conversation end (`Stop` / `StopFailure` / `SessionEnd`)
+- Inject context (`{:inject, msg}` from any event)
+- Rewrite the user's prompt (`{:transform, prompt}` from `UserPromptSubmit`)
+- Observe permission denials, subagent spawns, compaction stages
+
+See the [hooks reference](hooks_reference.md) for the full event
+catalog + payload shapes.
 
 ```elixir
 deny_protected = fn %{tool_name: name, tool_input: %{"path" => path}}, _id ->
@@ -127,24 +147,81 @@ ExAthena.run("explain the architecture",
   on_event: fn event -> send(live_pid, {:athena_event, event}) end)
 ```
 
-The event shape is `%ExAthena.Streaming.Event{type: atom, data: term}`:
-`:text_delta`, `:tool_call_start`, `:tool_call_end`, `:usage`, `:stop`.
+The loop emits flat tuples: `{:content, text}`, `{:tool_call, tc}`,
+`{:tool_result, tr}`, `{:tool_ui, %{tool_call_id, kind, payload}}`,
+`{:iteration, n}`, `{:compaction, metadata}`, `{:subagent_spawn, ...}`,
+`{:subagent_result, ...}`, `{:usage, map}`, `{:done, Result.t()}`.
+
+`:tool_ui` is the structured-payload sibling of `:tool_result` — see
+the [tools guide](tools.md) for the per-tool kinds.
 
 ## Sub-agents
 
 The `SpawnAgent` tool lets a model delegate focused work to a fresh
-sub-conversation — useful for summarisation or exploration that would bloat
-the parent's token budget:
+sub-conversation. v0.4 ships three builtin agent definitions — invoke
+by name:
 
 ```elixir
-ExAthena.run("refactor the project",
+# Read-only investigation
+ExAthena.run("find the bug",
   tools: :all,
-  assigns: %{
-    spawn_agent_opts: [tools: [ExAthena.Tools.Read, ExAthena.Tools.Glob]]
-  })
+  assigns: %{spawn_agent_opts: [provider: :ollama, model: "qwen2.5-coder"]})
+
+# Inside the loop, the model emits:
+# spawn_agent(prompt: "explore the auth module", agent: "explore")
 ```
 
-The parent sees only the sub-agent's final text, not its intermediate steps.
+Built-in defs: `general` (full-tool default), `explore` (read-only +
+`web_fetch`), `plan` (writes restricted to `.exathena/plans/*.md`).
+Custom defs live at `.exathena/agents/<name>.md`. With
+`isolation: :worktree` set in frontmatter, the subagent runs in an
+isolated git checkout. The parent sees only the subagent's final text.
+
+See [agents + subagents](agents_subagents.md) for the full surface.
+
+## Memory + Skills
+
+Drop an `AGENTS.md` at your project root for project-specific rules;
+ex_athena prepends it as user-context on every turn. Drop `SKILL.md`
+files under `.exathena/skills/<name>/` and they appear in the
+system-prompt catalog at ~50 tokens; the body loads when the model
+emits `[skill: <name>]`.
+
+Override discovery on a per-call basis:
+
+```elixir
+ExAthena.run("hi", tools: :all, memory: false, skills: false)
+ExAthena.run("hi", tools: :all, preload_skills: ["deploy", "audit"])
+```
+
+See [memory + skills](memory_and_skills.md).
+
+## Sessions + checkpointing
+
+`Session.start_link/1` accepts `:store` — `:in_memory` (default) or
+`:jsonl` for durable storage. Resume a prior session:
+
+```elixir
+{:ok, prior_messages} = ExAthena.Session.resume("session-id-from-disk", store: :jsonl)
+
+{:ok, pid} = ExAthena.Session.start_link(
+  store: :jsonl,
+  session_id: "session-id-from-disk",
+  messages: prior_messages,
+  provider: :ollama, model: "qwen2.5-coder",
+  tools: :all
+)
+```
+
+Every `Edit` / `Write` snapshots the prior file contents to
+`.exathena/file-history/<session>/<sha>/<v>.bin`. `/rewind` restores
+files + truncates the session log:
+
+```elixir
+ExAthena.Checkpoint.rewind(session_id, :code_and_history, to_uuid: uuid)
+```
+
+See [sessions + checkpoints](sessions_and_checkpoints.md).
 
 ## Structured extraction
 
