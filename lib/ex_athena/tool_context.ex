@@ -19,7 +19,7 @@ defmodule ExAthena.ToolContext do
             tool_call_id: nil,
             assigns: %{}
 
-  @type phase :: :plan | :default | :bypass_permissions
+  @type phase :: :plan | :default | :accept_edits | :trusted | :bypass_permissions
 
   @type t :: %__MODULE__{
           cwd: Path.t(),

@@ -10,32 +10,75 @@ defmodule ExAthena.Hooks do
         Stop: [&log_stop/2]
       }
 
-  Each hook callback receives `(input_map, tool_use_id)` and returns either:
+  Each hook callback receives `(input_map, tool_use_id)` and returns one of:
 
-    * `:ok` / `{:allow, []}` — continue
-    * `{:deny, permission_decision_reason: reason}` — deny the tool call
-    * `{:halt, reason}` — stop the loop
+    * `:ok` — continue with no side effects.
+    * `{:deny, reason}` — only meaningful from `PreToolUse` /
+      `PermissionRequest`; deny the tool call.
+    * `{:halt, reason}` — stop the loop immediately.
+    * `{:inject, message_or_messages}` — append the given message
+      (or list of messages) to the conversation. Useful for
+      `experimental.chat.system.transform`-style context injection.
+    * `{:transform, new_prompt}` — only valid from `UserPromptSubmit`;
+      rewrites the incoming user prompt before it enters the loop.
 
   Hooks are matched by `:matcher` (regex run against `tool_name`); a `nil`
   matcher or a missing `:matcher` key fires for every tool. Lifecycle-only
-  hooks (`Stop`, `SessionStart`, `SessionEnd`, `Notification`, `PreCompact`)
-  are passed as plain function lists, not wrapped in matcher maps.
+  events are passed as plain function lists, not wrapped in matcher maps.
+
+  ## Catalog of supported events
+
+    * Session: `:SessionStart`, `:SessionEnd`
+    * Per-turn: `:UserPromptSubmit`, `:ChatParams`, `:Stop`, `:StopFailure`
+    * Per-tool: `:PreToolUse`, `:PostToolUse`, `:PostToolUseFailure`,
+      `:PermissionRequest`, `:PermissionDenied`
+    * Subagent: `:SubagentStart`, `:SubagentStop`
+    * Compaction: `:PreCompact`, `:PreCompactStage`, `:PostCompact`
+    * Notification: `:Notification`
   """
+
+  alias ExAthena.Messages.Message
 
   @type matcher :: String.t() | Regex.t() | nil
   @type hook_fun :: (map(), String.t() -> term())
   @type matcher_group :: %{matcher: matcher(), hooks: [hook_fun()]}
 
   @type t :: %{
-          optional(:PreToolUse) => [matcher_group()],
-          optional(:PostToolUse) => [matcher_group()],
-          optional(:PostToolUseFailure) => [matcher_group()],
-          optional(:Stop) => [hook_fun()],
-          optional(:Notification) => [hook_fun()],
-          optional(:PreCompact) => [hook_fun()],
-          optional(:SessionStart) => [hook_fun()],
-          optional(:SessionEnd) => [hook_fun()]
+          optional(atom()) => [matcher_group()] | [hook_fun()]
         }
+
+  @type lifecycle_outputs :: %{
+          halt: nil | {:halt, term()},
+          injects: [Message.t()],
+          transform: nil | String.t()
+        }
+
+  @doc """
+  Catalog of every hook event ex_athena fires today. Useful for hosts
+  that want to enumerate or validate user-supplied hook tables.
+  """
+  @spec events() :: [atom()]
+  def events do
+    [
+      :SessionStart,
+      :SessionEnd,
+      :UserPromptSubmit,
+      :ChatParams,
+      :Stop,
+      :StopFailure,
+      :PreToolUse,
+      :PostToolUse,
+      :PostToolUseFailure,
+      :PermissionRequest,
+      :PermissionDenied,
+      :SubagentStart,
+      :SubagentStop,
+      :PreCompact,
+      :PreCompactStage,
+      :PostCompact,
+      :Notification
+    ]
+  end
 
   @doc "Fire `PreToolUse` hooks matching `tool_name`."
   @spec run_pre_tool_use(t(), String.t(), map(), String.t() | nil) ::
@@ -55,15 +98,55 @@ defmodule ExAthena.Hooks do
     end
   end
 
-  @doc "Fire lifecycle hooks that aren't scoped to a tool (Stop, SessionStart, etc.)."
+  @doc """
+  Fire lifecycle hooks that aren't scoped to a tool (Stop, SessionStart,
+  etc.). Backward-compatible: returns `:ok | {:halt, reason}` like before.
+  Use `run_lifecycle_with_outputs/3` for events that may inject messages
+  or transform prompts.
+  """
   @spec run_lifecycle(t(), atom(), map()) :: :ok | {:halt, term()}
   def run_lifecycle(hooks, event, payload) do
+    case run_lifecycle_with_outputs(hooks, event, payload) do
+      %{halt: {:halt, _} = h} -> h
+      _ -> :ok
+    end
+  end
+
+  @doc """
+  Like `run_lifecycle/3` but returns a structured outputs map so callers
+  can act on `{:inject, msg}` and `{:transform, prompt}` returns. Used
+  by the kernel to thread `UserPromptSubmit` transforms and
+  `:inject`-driven message injection across hook events.
+
+  Returns `%{halt:, injects:, transform:}`. `halt` short-circuits the
+  remaining callbacks (denies / halts always win); `injects` accumulates
+  in order; `transform` is last-write-wins.
+  """
+  @spec run_lifecycle_with_outputs(t(), atom(), map()) :: lifecycle_outputs()
+  def run_lifecycle_with_outputs(hooks, event, payload) do
     fns = hooks[event] || []
 
-    Enum.reduce_while(fns, :ok, fn fun, _acc ->
-      case safe_call(fun, payload, nil) do
-        {:halt, _} = h -> {:halt, h}
-        _ -> {:cont, :ok}
+    initial = %{halt: nil, injects: [], transform: nil}
+
+    Enum.reduce_while(fns, initial, fn fun, acc ->
+      case safe_call(fun, payload, payload[:tool_use_id] || payload[:session_id]) do
+        :ok ->
+          {:cont, acc}
+
+        {:halt, _} = h ->
+          {:halt, %{acc | halt: h}}
+
+        {:inject, %Message{} = msg} ->
+          {:cont, %{acc | injects: acc.injects ++ [msg]}}
+
+        {:inject, list} when is_list(list) ->
+          {:cont, %{acc | injects: acc.injects ++ list}}
+
+        {:transform, prompt} when is_binary(prompt) ->
+          {:cont, %{acc | transform: prompt}}
+
+        _ ->
+          {:cont, acc}
       end
     end)
   end

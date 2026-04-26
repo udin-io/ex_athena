@@ -50,7 +50,10 @@ defmodule ExAthena.Tools.SpawnAgent do
 
     sub_opts =
       (ctx.assigns[:spawn_agent_opts] || [])
-      |> Keyword.put_new(:max_iterations, Map.get(args, "max_iterations", @default_max_iterations))
+      |> Keyword.put_new(
+        :max_iterations,
+        Map.get(args, "max_iterations", @default_max_iterations)
+      )
       |> maybe_put(:system_prompt, Map.get(args, "system_prompt"))
       |> maybe_put(:tools, resolve_tools(Map.get(args, "tools"), ctx))
       |> Keyword.put(:assigns, ctx.assigns)
@@ -58,12 +61,24 @@ defmodule ExAthena.Tools.SpawnAgent do
 
     sub_id = "subagent_" <> (:crypto.strong_rand_bytes(6) |> Base.url_encode64(padding: false))
 
+    parent_hooks = Map.get(ctx.assigns || %{}, :hooks, %{})
+
     emit_event(ctx, {:subagent_spawn, %{id: sub_id, prompt: prompt}})
+
+    _ =
+      ExAthena.Hooks.run_lifecycle(parent_hooks, :SubagentStart, %{
+        subagent_id: sub_id,
+        prompt: prompt,
+        parent_session_id: ctx.session_id
+      })
 
     ExAthena.Telemetry.event(
       [:ex_athena, :subagent, :spawn],
       %{},
-      %{subagent_id: sub_id, parent_conversation_id: Map.get(ctx.assigns || %{}, :conversation_id)}
+      %{
+        subagent_id: sub_id,
+        parent_conversation_id: Map.get(ctx.assigns || %{}, :conversation_id)
+      }
     )
 
     # Run the sub-loop under a supervised Task so a crash doesn't bring
@@ -76,8 +91,15 @@ defmodule ExAthena.Tools.SpawnAgent do
 
     result =
       case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-        {:ok, {:ok, %{text: text}}} ->
+        {:ok, {:ok, %{text: text} = sub_result}} ->
           emit_event(ctx, {:subagent_result, %{id: sub_id, text: text || ""}})
+
+          _ =
+            ExAthena.Hooks.run_lifecycle(parent_hooks, :SubagentStop, %{
+              subagent_id: sub_id,
+              outcome: :ok,
+              result: sub_result
+            })
 
           ExAthena.Telemetry.event(
             [:ex_athena, :subagent, :stop],
@@ -88,12 +110,32 @@ defmodule ExAthena.Tools.SpawnAgent do
           {:ok, text || ""}
 
         {:ok, {:error, reason}} ->
+          _ =
+            ExAthena.Hooks.run_lifecycle(parent_hooks, :SubagentStop, %{
+              subagent_id: sub_id,
+              outcome: :error,
+              reason: reason
+            })
+
           {:error, {:sub_agent_failed, reason}}
 
         {:exit, reason} ->
+          _ =
+            ExAthena.Hooks.run_lifecycle(parent_hooks, :SubagentStop, %{
+              subagent_id: sub_id,
+              outcome: :crash,
+              reason: reason
+            })
+
           {:error, {:sub_agent_crashed, reason}}
 
         nil ->
+          _ =
+            ExAthena.Hooks.run_lifecycle(parent_hooks, :SubagentStop, %{
+              subagent_id: sub_id,
+              outcome: :timeout
+            })
+
           {:error, {:sub_agent_timeout, timeout}}
       end
 

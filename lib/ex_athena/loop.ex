@@ -107,6 +107,11 @@ defmodule ExAthena.Loop do
 
   defp loop(%State{} = state) do
     cond do
+      reason = Map.get(state.meta, :early_halt) ->
+        state
+        |> Map.put(:halted_reason, reason)
+        |> set_finish_reason(:error_halted)
+
       state.iterations >= state.max_iterations ->
         state
         |> set_finish_reason(:error_max_turns)
@@ -256,6 +261,11 @@ defmodule ExAthena.Loop do
             %{reason: Map.get(metadata, :reason)}
           )
 
+          _ =
+            ExAthena.Hooks.run_lifecycle(state.hooks, :PostCompact, %{
+              metadata: metadata
+            })
+
           {:ok, %{state | messages: new_messages, budget: new_budget}}
 
         :skip ->
@@ -304,9 +314,38 @@ defmodule ExAthena.Loop do
       telemetry: %{}
     }
 
+    fire_terminal_hooks(state, result)
+
     Events.emit(state.on_event, {:done, result})
 
     {:ok, result}
+  end
+
+  # Stop (success) / StopFailure (error) fire before SessionEnd so any
+  # cleanup hook attached to SessionEnd can read both. Halts in any of
+  # these are recorded but don't override the already-set finish_reason
+  # (we're past the loop body).
+  defp fire_terminal_hooks(
+         %State{hooks: hooks, session_id: sid, parent_session_id: psid},
+         %Result{
+           finish_reason: reason
+         } = result
+       ) do
+    payload = %{
+      session_id: sid,
+      parent_session_id: psid,
+      finish_reason: reason,
+      result: result
+    }
+
+    if reason == :stop do
+      _ = ExAthena.Hooks.run_lifecycle(hooks, :Stop, payload)
+    else
+      _ = ExAthena.Hooks.run_lifecycle(hooks, :StopFailure, payload)
+    end
+
+    _ = ExAthena.Hooks.run_lifecycle(hooks, :SessionEnd, payload)
+    :ok
   end
 
   defp extract_final_text(%State{messages: messages}) do
@@ -353,6 +392,13 @@ defmodule ExAthena.Loop do
         can_use_tool: Keyword.get(opts, :can_use_tool)
       }
 
+      hooks_table = Keyword.get(opts, :hooks, %{})
+
+      # Tools that fire hooks (e.g. SpawnAgent for SubagentStart/Stop) read
+      # them from ctx.assigns[:hooks]. Carrying them through the context
+      # avoids tools needing direct access to Loop.State.
+      assigns = Map.put_new(assigns, :hooks, hooks_table)
+
       ctx =
         ExAthena.ToolContext.new(
           cwd: cwd,
@@ -367,6 +413,18 @@ defmodule ExAthena.Loop do
 
       initial_messages =
         memory_messages ++ preloaded_skills ++ request_template.messages
+
+      # UserPromptSubmit fires before the first iteration. Hooks can
+      # `{:inject, msg}` to add context, `{:transform, new_prompt}` to
+      # rewrite the user message, or `{:halt, reason}` to abort. Only
+      # the most-recently-added user message (the prompt the caller
+      # passed) is replaced when transformed.
+      {initial_messages, ups_halt} =
+        apply_user_prompt_submit(hooks_table, initial_messages, %{
+          prompt: prompt,
+          session_id: session_id,
+          parent_session_id: parent_session_id
+        })
 
       state = %State{
         messages: initial_messages,
@@ -396,6 +454,7 @@ defmodule ExAthena.Loop do
           |> Map.put(:skills, skills)
           |> Map.put(:memory_count, length(memory_messages))
           |> Map.put(:preloaded_skill_count, length(preloaded_skills))
+          |> maybe_put_halt(ups_halt)
       }
 
       _ =
@@ -407,6 +466,45 @@ defmodule ExAthena.Loop do
       {:ok, state}
     end
   end
+
+  defp apply_user_prompt_submit(hooks, messages, payload) do
+    outputs = ExAthena.Hooks.run_lifecycle_with_outputs(hooks, :UserPromptSubmit, payload)
+
+    new_messages =
+      messages
+      |> apply_transform(outputs.transform)
+      |> Kernel.++(outputs.injects)
+
+    {new_messages, outputs.halt}
+  end
+
+  # Replace the last user-role message's content with the transformed prompt.
+  # If there's no user message in the list (system-prompt-only opening), we
+  # append the transformed prompt as a user message.
+  defp apply_transform(messages, nil), do: messages
+
+  defp apply_transform(messages, prompt) when is_binary(prompt) do
+    case last_user_index(messages) do
+      nil ->
+        messages ++ [ExAthena.Messages.user(prompt)]
+
+      idx ->
+        List.update_at(messages, idx, fn msg -> %{msg | content: prompt} end)
+    end
+  end
+
+  defp last_user_index(messages) do
+    messages
+    |> Enum.with_index()
+    |> Enum.reverse()
+    |> Enum.find_value(fn
+      {%{role: :user}, idx} -> idx
+      _ -> nil
+    end)
+  end
+
+  defp maybe_put_halt(meta, nil), do: meta
+  defp maybe_put_halt(meta, {:halt, reason}), do: Map.put(meta, :early_halt, reason)
 
   defp generate_session_id do
     16

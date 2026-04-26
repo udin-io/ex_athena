@@ -34,6 +34,24 @@ defmodule ExAthena.Modes.ReAct do
   def iterate(%State{} = state) do
     request = build_request(state)
 
+    # ChatParams hooks fire just before the provider call so callers can
+    # adjust temperature / tools / system_prompt per turn without
+    # subclassing the mode. `{:inject, msg}` returns appended to the
+    # request's messages; `{:halt, _}` short-circuits.
+    case apply_chat_params(state, request) do
+      {:halt, reason} ->
+        state =
+          %{state | halted_reason: reason}
+          |> set_finish_reason(:error_halted)
+
+        {:halt, state}
+
+      {:ok, request, state} ->
+        do_iterate(state, request)
+    end
+  end
+
+  defp do_iterate(%State{} = state, request) do
     chat_meta =
       Telemetry.genai_meta(
         operation: "chat",
@@ -111,6 +129,38 @@ defmodule ExAthena.Modes.ReAct do
     end
   end
 
+  # Fire ChatParams hooks. Returns {:ok, request, state} (possibly with
+  # injected messages appended) or {:halt, reason} when a hook bailed.
+  defp apply_chat_params(state, request) do
+    payload = %{
+      request: request,
+      session_id: state.session_id,
+      messages: request.messages
+    }
+
+    outputs = ExAthena.Hooks.run_lifecycle_with_outputs(state.hooks, :ChatParams, payload)
+
+    case outputs.halt do
+      {:halt, reason} ->
+        {:halt, reason}
+
+      _ ->
+        request_with_injects =
+          case outputs.injects do
+            [] -> request
+            list -> %{request | messages: request.messages ++ list}
+          end
+
+        state =
+          case outputs.injects do
+            [] -> state
+            list -> %{state | messages: state.messages ++ list}
+          end
+
+        {:ok, request_with_injects, state}
+    end
+  end
+
   # ── Tool execution for one call ───────────────────────────────────
 
   defp run_single_tool_call(%ToolCall{} = call, state) do
@@ -166,6 +216,16 @@ defmodule ExAthena.Modes.ReAct do
           {:error, reason} ->
             result = Messages.tool_result(call.id, "error: #{stringify(reason)}", true)
             state = bump_mistake(state)
+            # PostToolUseFailure fires only on tool error; PostToolUse
+            # fires on success (in after_post_hook below). Both ignore
+            # `:deny` returns since it's too late, but `:halt` is honoured.
+            _ =
+              ExAthena.Hooks.run_lifecycle(state.hooks, :PostToolUseFailure, %{
+                tool_name: call.name,
+                tool_use_id: call.id,
+                reason: reason
+              })
+
             after_post_hook(state, call, result)
 
           {:halt, reason} ->

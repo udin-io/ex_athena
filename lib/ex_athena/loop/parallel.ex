@@ -116,7 +116,9 @@ defmodule ExAthena.Loop.Parallel do
         # One task crashed or timed out — surface as an error result for the
         # corresponding call but don't halt. The kernel converts it to a
         # tool-error replay message.
-        err_result = Messages.tool_result("unknown", "parallel task failed: #{inspect(reason)}", true)
+        err_result =
+          Messages.tool_result("unknown", "parallel task failed: #{inspect(reason)}", true)
+
         {:cont, {:ok, acc ++ [{nil, err_result}], state}}
     end)
   end
@@ -153,20 +155,43 @@ defmodule ExAthena.Loop.Parallel do
   @spec pre_tool_gate(ToolCall.t(), map()) ::
           :allow | {:deny, term()} | {:halt, term()}
   def pre_tool_gate(%ToolCall{name: name, arguments: args, id: id}, state) do
-    case Permissions.check(%ToolCall{id: id, name: name, arguments: args}, state.ctx, state.permissions_opts) do
+    case Permissions.check(
+           %ToolCall{id: id, name: name, arguments: args},
+           state.ctx,
+           state.permissions_opts
+         ) do
       :allow ->
         # Hooks.run_pre_tool_use returns :ok (continue), {:deny, reason}, or
         # {:halt, reason}. Normalise :ok → :allow so the caller can match
         # on one surface.
         case Hooks.run_pre_tool_use(state.hooks, name, args, id) do
-          :ok -> :allow
-          {:deny, _} = deny -> deny
-          {:halt, _} = halt -> halt
+          :ok ->
+            :allow
+
+          {:deny, reason} = deny ->
+            fire_permission_denied(state, name, args, id, reason)
+            deny
+
+          {:halt, _} = halt ->
+            halt
         end
 
-      {:deny, _reason} = deny ->
+      {:deny, reason} = deny ->
+        fire_permission_denied(state, name, args, id, reason)
         deny
     end
+  end
+
+  defp fire_permission_denied(state, name, args, id, reason) do
+    _ =
+      Hooks.run_lifecycle(state.hooks, :PermissionDenied, %{
+        tool_name: name,
+        tool_use_id: id,
+        arguments: args,
+        reason: reason
+      })
+
+    :ok
   end
 
   @doc "Emit tool-call / tool-result events and update counters."

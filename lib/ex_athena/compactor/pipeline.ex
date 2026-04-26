@@ -113,6 +113,12 @@ defmodule ExAthena.Compactor.Pipeline do
         {state, estimate, log}
 
       true ->
+        _ =
+          ExAthena.Hooks.run_lifecycle(state.hooks, :PreCompactStage, %{
+            stage: stage.name(),
+            estimate: estimate
+          })
+
         result =
           Telemetry.span(
             [:ex_athena, :compaction, stage.name()],

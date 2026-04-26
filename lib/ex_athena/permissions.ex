@@ -3,7 +3,7 @@ defmodule ExAthena.Permissions do
   Decides whether a tool call is allowed.
 
   Every tool call runs through `check/4` before execution. The check combines
-  three sources — in this order, first decisive wins:
+  four sources — in this order, first decisive wins:
 
     1. **`disallowed_tools`** — an explicit blocklist. Always denies.
     2. **`allowed_tools`** — an explicit allowlist. If non-nil, denies anything
@@ -12,11 +12,23 @@ defmodule ExAthena.Permissions do
        * `:plan` — read-only. Writes and shell execution are denied.
        * `:default` — read + write. `can_use_tool` callback (if supplied) can
          ask the user.
+       * `:accept_edits` — auto-allow Read/Edit/Write/Glob/Grep/WebFetch
+         + `plan_mode` / `spawn_agent`; still consults `can_use_tool` for
+         everything else (e.g. `bash`, custom tools).
+       * `:trusted` — skip the `can_use_tool` callback for every tool.
+         Still respects the disallow / allowlist by default; pass
+         `respect_denylist: false` to disable that too (equivalent to
+         `:bypass_permissions`).
        * `:bypass_permissions` — everything allowed without asking.
+    4. **`can_use_tool`** — caller-supplied callback (only in `:default`
+       and unconditionally-allowed-tool slots of `:accept_edits`).
 
   The `can_use_tool` callback is a function `(tool_name, arguments, ctx ->
   :allow | :deny | {:deny, reason})` that the loop calls in `:default` mode
   for anything the caller marked as sensitive. See `Permissions.Opts` below.
+
+  Reserved name: `:auto` is reserved for the future ML safety classifier
+  mode the Claude Code paper describes; do not use it.
 
   ## Deny-first ordering
 
@@ -48,6 +60,10 @@ defmodule ExAthena.Permissions do
 
   @readonly_tools ~w(read glob grep web_fetch plan_mode spawn_agent)
   @mutating_tools ~w(write edit bash todo_write)
+  # `:accept_edits` auto-allows file edits + every read-only tool,
+  # but still falls through to the callback for everything else
+  # (bash, custom tools).
+  @auto_allow_in_accept_edits ~w(read glob grep web_fetch plan_mode spawn_agent write edit todo_write)
 
   @type result ::
           :allow
@@ -57,7 +73,8 @@ defmodule ExAthena.Permissions do
           optional(:phase) => ToolContext.phase(),
           optional(:allowed_tools) => [String.t()] | nil,
           optional(:disallowed_tools) => [String.t()] | nil,
-          optional(:can_use_tool) => (String.t(), map(), ToolContext.t() -> result())
+          optional(:can_use_tool) => (String.t(), map(), ToolContext.t() -> result()),
+          optional(:respect_denylist) => boolean()
         }
 
   @doc """
@@ -66,15 +83,30 @@ defmodule ExAthena.Permissions do
   """
   @spec check(ToolCall.t(), ToolContext.t(), opts()) :: result()
   def check(%ToolCall{name: name, arguments: args}, %ToolContext{} = ctx, opts) do
-    with :allow <- check_disallowed(name, opts),
+    with :allow <- check_disallowed(name, ctx.phase, opts),
          :allow <- check_allowed(name, opts),
          :allow <- check_phase(name, ctx.phase),
-         :allow <- check_callback(name, args, ctx, opts) do
+         :allow <- check_callback(name, args, ctx, ctx.phase, opts) do
       :allow
     end
   end
 
-  defp check_disallowed(name, opts) do
+  # Deny-first ordering is preserved. The denylist always wins, including
+  # in `:bypass_permissions` mode (the "absolutely never" list is the
+  # user's explicit veto). The only escape hatch is `:trusted` with
+  # `respect_denylist: false` — opt-in for very-trusted automation
+  # contexts where the host is sure no per-tool denials should apply.
+  defp check_disallowed(name, :trusted, opts) do
+    if opts[:respect_denylist] == false do
+      :allow
+    else
+      check_disallowed_list(name, opts)
+    end
+  end
+
+  defp check_disallowed(name, _phase, opts), do: check_disallowed_list(name, opts)
+
+  defp check_disallowed_list(name, opts) do
     case opts[:disallowed_tools] do
       nil -> :allow
       list when is_list(list) -> if name in list, do: {:deny, {:disallowed, name}}, else: :allow
@@ -100,9 +132,27 @@ defmodule ExAthena.Permissions do
   end
 
   defp check_phase(_name, :bypass_permissions), do: :allow
+  defp check_phase(_name, :trusted), do: :allow
+  defp check_phase(_name, :accept_edits), do: :allow
   defp check_phase(_name, _), do: :allow
 
-  defp check_callback(name, args, ctx, opts) do
+  # `:trusted`, `:bypass_permissions`, and the auto-allow set of
+  # `:accept_edits` skip the callback. Everything else (default mode +
+  # the non-auto-allow tools in accept_edits) consults it.
+  defp check_callback(_name, _args, _ctx, :bypass_permissions, _opts), do: :allow
+  defp check_callback(_name, _args, _ctx, :trusted, _opts), do: :allow
+
+  defp check_callback(name, args, ctx, :accept_edits, opts) do
+    if name in @auto_allow_in_accept_edits do
+      :allow
+    else
+      do_callback(name, args, ctx, opts)
+    end
+  end
+
+  defp check_callback(name, args, ctx, _phase, opts), do: do_callback(name, args, ctx, opts)
+
+  defp do_callback(name, args, ctx, opts) do
     case opts[:can_use_tool] do
       nil -> :allow
       fun when is_function(fun, 3) -> normalize(fun.(name, args, ctx))
