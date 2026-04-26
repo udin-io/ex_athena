@@ -5,13 +5,26 @@ defmodule ExAthena.Application do
 
   @impl Application
   def start(_type, _args) do
-    children = [
-      # Subagents spawn under this supervisor so a sub-loop crash can't
-      # take down the parent run. `Task.Supervisor.async_nolink` + timeout
-      # gives us unlinked concurrency we can reap on deadline.
-      {Task.Supervisor, name: ExAthena.Tasks}
-    ]
+    children =
+      [
+        # Subagents spawn under this supervisor so a sub-loop crash can't
+        # take down the parent run. `Task.Supervisor.async_nolink` + timeout
+        # gives us unlinked concurrency we can reap on deadline.
+        {Task.Supervisor, name: ExAthena.Tasks}
+      ]
+      |> maybe_add_sweeper()
 
     Supervisor.start_link(children, strategy: :one_for_one, name: ExAthena.Supervisor)
+  end
+
+  # WorktreeSweeper is a transient one-shot at boot. We skip it in the test
+  # environment so unit tests don't trigger filesystem GC; tests opt in
+  # explicitly when they want to exercise it.
+  defp maybe_add_sweeper(children) do
+    if Application.get_env(:ex_athena, :enable_worktree_sweeper, true) do
+      children ++ [ExAthena.Agents.WorktreeSweeper]
+    else
+      children
+    end
   end
 end

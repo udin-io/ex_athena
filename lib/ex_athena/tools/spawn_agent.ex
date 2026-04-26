@@ -9,6 +9,10 @@ defmodule ExAthena.Tools.SpawnAgent do
   Arguments:
 
     * `prompt` (required) — the sub-agent's opening message.
+    * `agent` (optional) — name of an `ExAthena.Agents` definition (e.g.
+      `"explore"`). The definition's `model`, `provider`, `tools`,
+      `permissions`, `mode`, `isolation`, and system-prompt body apply
+      automatically; explicit args still override.
     * `tools` (optional) — list of tool names to expose to the sub-agent; defaults
       to whatever the parent had (minus PlanMode + SpawnAgent to avoid loops).
     * `max_iterations` (optional, default 10) — cap on agent-loop iterations.
@@ -16,7 +20,18 @@ defmodule ExAthena.Tools.SpawnAgent do
 
   Inherits the parent's provider / model / permissions unless overridden in
   `ctx.assigns[:spawn_agent_opts]`.
+
+  ## Worktree isolation
+
+  When the chosen agent definition declares `isolation: :worktree` and the
+  parent's cwd is a clean git repo with `git` on PATH, the subagent runs
+  in a freshly-created worktree under `~/.cache/ex_athena/worktrees/<sess>/<name>-<n>`.
+  If safety checks fail, the subagent transparently falls back to
+  `:in_process` — no error.
   """
+
+  alias ExAthena.Agents
+  alias ExAthena.Agents.{Sidechain, Worktree}
 
   @behaviour ExAthena.Tool
 
@@ -36,6 +51,10 @@ defmodule ExAthena.Tools.SpawnAgent do
       type: "object",
       properties: %{
         prompt: %{type: "string"},
+        agent: %{
+          type: "string",
+          description: "Name of an agent definition (e.g. \"explore\", \"plan\"). Optional."
+        },
         tools: %{type: "array", items: %{type: "string"}},
         max_iterations: %{type: "integer"},
         system_prompt: %{type: "string"}
@@ -48,8 +67,10 @@ defmodule ExAthena.Tools.SpawnAgent do
   def execute(%{"prompt" => prompt} = args, ctx) when is_binary(prompt) do
     timeout = Map.get(args, "timeout_ms", 300_000)
 
+    {agent_def, base_opts} = resolve_agent(args, ctx)
+
     sub_opts =
-      (ctx.assigns[:spawn_agent_opts] || [])
+      base_opts
       |> Keyword.put_new(
         :max_iterations,
         Map.get(args, "max_iterations", @default_max_iterations)
@@ -57,7 +78,12 @@ defmodule ExAthena.Tools.SpawnAgent do
       |> maybe_put(:system_prompt, Map.get(args, "system_prompt"))
       |> maybe_put(:tools, resolve_tools(Map.get(args, "tools"), ctx))
       |> Keyword.put(:assigns, ctx.assigns)
-      |> Keyword.put(:cwd, ctx.cwd)
+      |> Keyword.put(:parent_session_id, ctx.session_id)
+
+    # Worktree isolation lives between resolving the agent and starting the
+    # sub-loop so the sub-loop's `:cwd` becomes the worktree path. Falls back
+    # to the parent's cwd transparently if any safety check fails.
+    {sub_opts, isolation_info} = apply_isolation(agent_def, sub_opts, ctx)
 
     sub_id = "subagent_" <> (:crypto.strong_rand_bytes(6) |> Base.url_encode64(padding: false))
 
@@ -69,7 +95,9 @@ defmodule ExAthena.Tools.SpawnAgent do
       ExAthena.Hooks.run_lifecycle(parent_hooks, :SubagentStart, %{
         subagent_id: sub_id,
         prompt: prompt,
-        parent_session_id: ctx.session_id
+        parent_session_id: ctx.session_id,
+        agent: agent_def && agent_def.name,
+        isolation: isolation_info
       })
 
     ExAthena.Telemetry.event(
@@ -89,8 +117,27 @@ defmodule ExAthena.Tools.SpawnAgent do
         ExAthena.Loop.run(prompt, sub_opts)
       end)
 
+    raw_result = Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill)
+
+    # Persist the sidechain transcript (best-effort; never fails the spawn).
+    _ =
+      Sidechain.write(%{
+        cwd: ctx.cwd,
+        parent_session_id: ctx.session_id || "unknown",
+        subagent_id: sub_id,
+        prompt: prompt,
+        opts: sub_opts,
+        result:
+          case raw_result do
+            {:ok, r} -> r
+            other -> other
+          end
+      })
+
+    finalized_isolation = finalize_isolation(isolation_info)
+
     result =
-      case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+      case raw_result do
         {:ok, {:ok, %{text: text} = sub_result}} ->
           emit_event(ctx, {:subagent_result, %{id: sub_id, text: text || ""}})
 
@@ -98,7 +145,8 @@ defmodule ExAthena.Tools.SpawnAgent do
             ExAthena.Hooks.run_lifecycle(parent_hooks, :SubagentStop, %{
               subagent_id: sub_id,
               outcome: :ok,
-              result: sub_result
+              result: sub_result,
+              isolation: finalized_isolation
             })
 
           ExAthena.Telemetry.event(
@@ -107,14 +155,16 @@ defmodule ExAthena.Tools.SpawnAgent do
             %{subagent_id: sub_id, outcome: :ok}
           )
 
-          {:ok, text || ""}
+          ui = subagent_ui(sub_id, sub_result, finalized_isolation)
+          {:ok, text || "", ui}
 
         {:ok, {:error, reason}} ->
           _ =
             ExAthena.Hooks.run_lifecycle(parent_hooks, :SubagentStop, %{
               subagent_id: sub_id,
               outcome: :error,
-              reason: reason
+              reason: reason,
+              isolation: finalized_isolation
             })
 
           {:error, {:sub_agent_failed, reason}}
@@ -124,7 +174,8 @@ defmodule ExAthena.Tools.SpawnAgent do
             ExAthena.Hooks.run_lifecycle(parent_hooks, :SubagentStop, %{
               subagent_id: sub_id,
               outcome: :crash,
-              reason: reason
+              reason: reason,
+              isolation: finalized_isolation
             })
 
           {:error, {:sub_agent_crashed, reason}}
@@ -133,7 +184,8 @@ defmodule ExAthena.Tools.SpawnAgent do
           _ =
             ExAthena.Hooks.run_lifecycle(parent_hooks, :SubagentStop, %{
               subagent_id: sub_id,
-              outcome: :timeout
+              outcome: :timeout,
+              isolation: finalized_isolation
             })
 
           {:error, {:sub_agent_timeout, timeout}}
@@ -162,4 +214,60 @@ defmodule ExAthena.Tools.SpawnAgent do
   end
 
   defp emit_event(_ctx, _event), do: :ok
+
+  # ── Agent + isolation resolution ──────────────────────────────────
+
+  defp resolve_agent(args, ctx) do
+    base_opts =
+      (ctx.assigns[:spawn_agent_opts] || [])
+      |> Keyword.put_new(:cwd, ctx.cwd)
+
+    case Map.get(args, "agent") do
+      nil ->
+        {nil, base_opts}
+
+      name when is_binary(name) ->
+        agents = Map.get(ctx.assigns || %{}, :agents) || Agents.discover(ctx.cwd)
+
+        case Agents.fetch(agents, name) do
+          {:ok, def} -> {def, Agents.apply_to_opts(def, base_opts)}
+          {:error, :not_found} -> {nil, base_opts}
+        end
+    end
+  end
+
+  defp apply_isolation(nil, opts, _ctx), do: {opts, nil}
+
+  defp apply_isolation(def, opts, ctx) do
+    case Worktree.resolve(def, ctx.cwd, ctx.session_id || "session") do
+      {:worktree, info} ->
+        {Keyword.put(opts, :cwd, info.path), {:worktree, info}}
+
+      {:in_process, reason} ->
+        {opts, {:in_process, reason}}
+    end
+  end
+
+  defp finalize_isolation({:worktree, info}) do
+    case Worktree.finalize(info) do
+      {:kept, kept} -> {:worktree_kept, kept}
+      {:removed, removed} -> {:worktree_removed, removed}
+      {:error, reason} -> {:worktree_error, Map.put(info, :reason, reason)}
+    end
+  end
+
+  defp finalize_isolation(other), do: other
+
+  defp subagent_ui(sub_id, sub_result, isolation) do
+    payload = %{
+      subagent_id: sub_id,
+      iterations: Map.get(sub_result, :iterations),
+      tool_calls_made: Map.get(sub_result, :tool_calls_made),
+      cost_usd: Map.get(sub_result, :cost_usd),
+      duration_ms: Map.get(sub_result, :duration_ms),
+      isolation: isolation
+    }
+
+    %{kind: :subagent, payload: payload}
+  end
 end

@@ -59,7 +59,7 @@ defmodule ExAthena.MixProject do
     [
       licenses: ["Apache-2.0"],
       links: %{"GitHub" => @source_url},
-      files: ~w(lib guides .formatter.exs mix.exs README.md LICENSE CHANGELOG.md),
+      files: ~w(lib priv guides .formatter.exs mix.exs README.md LICENSE CHANGELOG.md),
       maintainers: ["Peter Shoukry"]
     ]
   end
