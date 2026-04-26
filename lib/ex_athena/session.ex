@@ -60,6 +60,10 @@ defmodule ExAthena.Session do
   @spec messages(GenServer.server()) :: [map()]
   def messages(server), do: GenServer.call(server, :messages)
 
+  @doc "Return the stable session id assigned at start."
+  @spec session_id(GenServer.server()) :: String.t()
+  def session_id(server), do: GenServer.call(server, :session_id)
+
   @doc "Stop the session."
   @spec stop(GenServer.server()) :: :ok
   def stop(server), do: GenServer.stop(server, :normal)
@@ -68,9 +72,16 @@ defmodule ExAthena.Session do
 
   @impl GenServer
   def init(opts) do
+    # A Session has a stable id reused on every turn so hooks, telemetry, and
+    # storage can correlate messages. Generated once if the caller didn't
+    # provide one.
+    session_id = Keyword.get(opts, :session_id) || generate_session_id()
+    opts = Keyword.put(opts, :session_id, session_id)
+
     {:ok,
      %{
        opts: opts,
+       session_id: session_id,
        messages: [],
        usage: nil
      }}
@@ -79,11 +90,14 @@ defmodule ExAthena.Session do
   @impl GenServer
   def handle_call({:send_message, message, extra_opts}, _from, state) do
     # Merge per-call opts on top of the session's base opts, then append the
-    # running message history so the loop sees the full context.
+    # running message history so the loop sees the full context. The session
+    # id is forced — extra_opts must not override it, otherwise downstream
+    # storage / sidechain paths would diverge mid-conversation.
     loop_opts =
       state.opts
       |> Keyword.merge(extra_opts)
       |> Keyword.put(:messages, state.messages)
+      |> Keyword.put(:session_id, state.session_id)
 
     case Loop.run(message, loop_opts) do
       {:ok, result} ->
@@ -102,6 +116,8 @@ defmodule ExAthena.Session do
 
   def handle_call(:messages, _from, state), do: {:reply, state.messages, state}
 
+  def handle_call(:session_id, _from, state), do: {:reply, state.session_id, state}
+
   # ── Internal ────────────────────────────────────────────────────────
 
   defp merge_usage(nil, new), do: new
@@ -118,4 +134,10 @@ defmodule ExAthena.Session do
   defp sum(nil, b), do: b
   defp sum(a, nil), do: a
   defp sum(a, b), do: a + b
+
+  defp generate_session_id do
+    16
+    |> :crypto.strong_rand_bytes()
+    |> Base.url_encode64(padding: false)
+  end
 end

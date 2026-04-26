@@ -17,6 +17,30 @@ defmodule ExAthena.Permissions do
   The `can_use_tool` callback is a function `(tool_name, arguments, ctx ->
   :allow | :deny | {:deny, reason})` that the loop calls in `:default` mode
   for anything the caller marked as sensitive. See `Permissions.Opts` below.
+
+  ## Deny-first ordering
+
+  The check chain is **disallowed → allowed → phase → callback**, with the
+  first decisive answer winning. A blocked tool stays blocked even when
+  `:bypass_permissions` would otherwise allow everything:
+
+      iex> alias ExAthena.{Permissions, ToolContext}
+      iex> alias ExAthena.Messages.ToolCall
+      iex> tc = %ToolCall{id: "1", name: "bash", arguments: %{}}
+      iex> ctx = ToolContext.new(cwd: "/tmp", phase: :bypass_permissions)
+      iex> Permissions.check(tc, ctx, %{disallowed_tools: ["bash"]})
+      {:deny, {:disallowed, "bash"}}
+
+  Likewise, an allowlist denies everything outside it even if a callback
+  would have allowed:
+
+      iex> alias ExAthena.{Permissions, ToolContext}
+      iex> alias ExAthena.Messages.ToolCall
+      iex> tc = %ToolCall{id: "1", name: "bash", arguments: %{}}
+      iex> ctx = ToolContext.new(cwd: "/tmp", phase: :default)
+      iex> opts = %{allowed_tools: ["read"], can_use_tool: fn _, _, _ -> :allow end}
+      iex> Permissions.check(tc, ctx, opts)
+      {:deny, {:not_in_allowlist, "bash"}}
   """
 
   alias ExAthena.Messages.ToolCall

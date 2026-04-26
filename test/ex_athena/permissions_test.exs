@@ -4,6 +4,8 @@ defmodule ExAthena.PermissionsTest do
   alias ExAthena.Messages.ToolCall
   alias ExAthena.{Permissions, ToolContext}
 
+  doctest ExAthena.Permissions
+
   defp ctx(phase \\ :default) do
     ToolContext.new(cwd: "/tmp", phase: phase)
   end
@@ -14,9 +16,7 @@ defmodule ExAthena.PermissionsTest do
 
   test "disallowed_tools wins over everything" do
     assert {:deny, {:disallowed, "bash"}} =
-             Permissions.check(call("bash"), ctx(:bypass_permissions),
-               disallowed_tools: ["bash"]
-             )
+             Permissions.check(call("bash"), ctx(:bypass_permissions), disallowed_tools: ["bash"])
   end
 
   test "allowed_tools when set denies anything not in it" do

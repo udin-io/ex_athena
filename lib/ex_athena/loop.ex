@@ -48,6 +48,13 @@ defmodule ExAthena.Loop do
       streaming. Events are flat tuples (`{:content, text}`,
       `{:tool_call, tc}`, `{:tool_result, tr}`, `{:iteration, n}`,
       `{:usage, u}`, `{:error, reason}`, `{:done, Result}`).
+    * `:session_id` — stable identifier for this run. Threaded into the
+      `ToolContext` and used by hooks / storage / sidechain transcripts.
+      Auto-generated when omitted.
+    * `:parent_session_id` — when this run is a subagent of another run,
+      the parent's `session_id`. `nil` for top-level runs. Used by
+      `ExAthena.Sessions.Stores.Jsonl` (PR5) to write subagent
+      sidechains and by `ExAthena.Agents` (PR4) to scope worktrees.
 
   ## Returns
 
@@ -233,6 +240,8 @@ defmodule ExAthena.Loop do
     phase = Keyword.get(opts, :phase, :default)
     assigns = Keyword.get(opts, :assigns, %{})
     mode = opts |> Keyword.get(:mode, :react) |> Mode.resolve()
+    session_id = Keyword.get(opts, :session_id) || generate_session_id()
+    parent_session_id = Keyword.get(opts, :parent_session_id)
 
     tool_modules = opts |> Tools.resolve() |> normalize_tool_list()
 
@@ -251,7 +260,7 @@ defmodule ExAthena.Loop do
         ExAthena.ToolContext.new(
           cwd: cwd,
           phase: phase,
-          session_id: Keyword.get(opts, :session_id),
+          session_id: session_id,
           assigns: assigns
         )
 
@@ -275,13 +284,25 @@ defmodule ExAthena.Loop do
         max_concurrency: Keyword.get(opts, :max_concurrency, @default_max_concurrency),
         mode: mode,
         mode_state: %{},
+        session_id: session_id,
+        parent_session_id: parent_session_id,
         meta: compaction_meta(opts)
       }
 
-      _ = ExAthena.Hooks.run_lifecycle(state.hooks, :SessionStart, %{})
+      _ =
+        ExAthena.Hooks.run_lifecycle(state.hooks, :SessionStart, %{
+          session_id: session_id,
+          parent_session_id: parent_session_id
+        })
 
       {:ok, state}
     end
+  end
+
+  defp generate_session_id do
+    16
+    |> :crypto.strong_rand_bytes()
+    |> Base.url_encode64(padding: false)
   end
 
   defp normalize_tool_list(list) do

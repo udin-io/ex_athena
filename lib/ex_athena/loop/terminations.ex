@@ -19,6 +19,10 @@ defmodule ExAthena.Loop.Terminations do
     * `:error_consecutive_mistakes` — mistake counter threshold hit.
     * `:error_halted` — hook or tool returned `:halt`.
     * `:error_compaction_failed` — context compaction failed.
+    * `:error_prompt_too_long` — provider rejected the request because the
+      assembled prompt exceeded the model's context window. Modes signal this
+      to the kernel so the compaction pipeline can attempt reactive recovery
+      before the run terminates.
   """
 
   @type subtype ::
@@ -30,6 +34,7 @@ defmodule ExAthena.Loop.Terminations do
           | :error_consecutive_mistakes
           | :error_halted
           | :error_compaction_failed
+          | :error_prompt_too_long
 
   @all_subtypes [
     :stop,
@@ -39,7 +44,8 @@ defmodule ExAthena.Loop.Terminations do
     :error_max_structured_output_retries,
     :error_consecutive_mistakes,
     :error_halted,
-    :error_compaction_failed
+    :error_compaction_failed,
+    :error_prompt_too_long
   ]
 
   @doc "All known termination subtypes."
@@ -72,6 +78,7 @@ defmodule ExAthena.Loop.Terminations do
   def category(:error_max_structured_output_retries), do: :capacity
   def category(:error_consecutive_mistakes), do: :capacity
   def category(:error_during_execution), do: :retryable
+  def category(:error_prompt_too_long), do: :capacity
   def category(:error_halted), do: :fatal
   def category(:error_compaction_failed), do: :fatal
 end

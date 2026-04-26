@@ -13,6 +13,7 @@ defmodule ExAthena.Loop.TerminationsTest do
       assert :error_consecutive_mistakes in Terminations.all()
       assert :error_halted in Terminations.all()
       assert :error_compaction_failed in Terminations.all()
+      assert :error_prompt_too_long in Terminations.all()
     end
   end
 
@@ -40,6 +41,7 @@ defmodule ExAthena.Loop.TerminationsTest do
       assert Terminations.category(:error_max_budget_usd) == :capacity
       assert Terminations.category(:error_max_structured_output_retries) == :capacity
       assert Terminations.category(:error_consecutive_mistakes) == :capacity
+      assert Terminations.category(:error_prompt_too_long) == :capacity
     end
 
     test "execution errors are :retryable" do

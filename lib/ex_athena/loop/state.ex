@@ -24,6 +24,12 @@ defmodule ExAthena.Loop.State do
   - `iterations`, `tool_calls_made`, `consecutive_mistakes` — counters.
   - `mode`, `mode_state` — Mode module + its private state.
   - `halted_reason` — populated when a tool / hook returns `:halt`.
+  - `session_id` — stable id for this run. Distinct from `ctx.session_id`,
+    which is what tools see; this one is what the loop / hooks / storage
+    use. Generated automatically when not supplied.
+  - `parent_session_id` — when this run was spawned as a subagent, the
+    parent's `session_id`. `nil` for top-level runs. Used by sidechain
+    storage and session-resume (PR4 + PR5).
   - `meta` — free-form map for Mode-specific data that doesn't fit
     anywhere else.
   """
@@ -53,6 +59,8 @@ defmodule ExAthena.Loop.State do
             mode: nil,
             mode_state: %{},
             halted_reason: nil,
+            session_id: nil,
+            parent_session_id: nil,
             meta: %{}
 
   @type t :: %__MODULE__{
@@ -78,6 +86,8 @@ defmodule ExAthena.Loop.State do
           mode: module() | nil,
           mode_state: map(),
           halted_reason: term() | nil,
+          session_id: String.t() | nil,
+          parent_session_id: String.t() | nil,
           meta: map()
         }
 end
