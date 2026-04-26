@@ -22,7 +22,7 @@ defmodule ExAthena.Modes.ReAct do
 
   @behaviour ExAthena.Loop.Mode
 
-  alias ExAthena.{Budget, Messages, Telemetry}
+  alias ExAthena.{Budget, Messages, Skills, Telemetry}
   alias ExAthena.Loop.{Events, Parallel, State}
   alias ExAthena.Messages.ToolCall
   alias ExAthena.Tools
@@ -81,6 +81,8 @@ defmodule ExAthena.Modes.ReAct do
                   | messages: state.messages ++ tool_messages,
                     tool_calls_made: state.tool_calls_made + length(tool_calls)
                 }
+
+                state = maybe_attach_skills(state, response.text)
 
                 {:continue, state}
 
@@ -261,14 +263,54 @@ defmodule ExAthena.Modes.ReAct do
   defp stringify(value) when is_binary(value), do: value
   defp stringify(value), do: inspect(value, pretty: true, limit: :infinity)
 
+  # ── Skill auto-load via [skill: name] sentinel ────────────────────
+
+  # When the model emits `[skill: name]` in its response text, append the
+  # skill body to the conversation so it's visible on the next iteration.
+  # Idempotent (already-loaded skills are no-ops). Unknown skill names
+  # are silently ignored — the catalog already lists what's available.
+  defp maybe_attach_skills(%State{} = state, nil), do: state
+  defp maybe_attach_skills(%State{} = state, ""), do: state
+
+  defp maybe_attach_skills(%State{meta: meta} = state, text) when is_binary(text) do
+    skills = Map.get(meta, :skills, %{})
+
+    case Skills.extract_sentinels(text) do
+      [] ->
+        state
+
+      names ->
+        already = Skills.loaded_skills(state.messages)
+
+        extras =
+          names
+          |> Enum.reject(&MapSet.member?(already, &1))
+          |> Enum.flat_map(fn name ->
+            case Skills.activation_message(skills, name) do
+              {:ok, msg} -> [msg]
+              {:error, _} -> []
+            end
+          end)
+
+        case extras do
+          [] -> state
+          msgs -> %{state | messages: state.messages ++ msgs}
+        end
+    end
+  end
+
   defp extract_cost(nil), do: nil
 
   defp extract_cost(usage) when is_map(usage) do
     # req_llm uses :total_cost (in USD). Some providers may emit
     # input_cost/output_cost split with no total — sum them on the fly.
     cond do
-      cost = Map.get(usage, :total_cost) -> cost
-      cost = Map.get(usage, "total_cost") -> cost
+      cost = Map.get(usage, :total_cost) ->
+        cost
+
+      cost = Map.get(usage, "total_cost") ->
+        cost
+
       ic = Map.get(usage, :input_cost) || Map.get(usage, "input_cost") ->
         oc = Map.get(usage, :output_cost) || Map.get(usage, "output_cost") || 0
         ic + oc

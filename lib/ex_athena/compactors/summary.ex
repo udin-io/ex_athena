@@ -41,7 +41,7 @@ defmodule ExAthena.Compactors.Summary do
 
   @impl ExAthena.Compactor
   def compact(%State{} = state, estimate) do
-    pinned = pinned_prefix_count(state)
+    pinned = effective_pinned_prefix_count(state)
     live = live_suffix_count(state)
 
     {prefix, middle, suffix} = split_messages(state.messages, pinned, live)
@@ -132,11 +132,25 @@ defmodule ExAthena.Compactors.Summary do
     end
   end
 
+  # Effective pinned prefix = configured prefix slots + however many
+  # memory-context messages and pre-loaded skill activation messages got
+  # prepended at run start. Memory and pre-loaded skills (PR1) live at
+  # the top of the message list, so we extend the pin floor to keep
+  # them safe across compactions.
+  defp effective_pinned_prefix_count(%State{meta: meta} = state) do
+    pinned_prefix_count(state) +
+      Map.get(meta, :memory_count, 0) +
+      Map.get(meta, :preloaded_skill_count, 0)
+  end
+
   defp pinned_prefix_count(%State{meta: meta}),
-    do: Map.get(meta, :pinned_prefix_count) || config(:pinned_prefix_count, @default_pinned_prefix_count)
+    do:
+      Map.get(meta, :pinned_prefix_count) ||
+        config(:pinned_prefix_count, @default_pinned_prefix_count)
 
   defp live_suffix_count(%State{meta: meta}),
-    do: Map.get(meta, :live_suffix_count) || config(:live_suffix_count, @default_live_suffix_count)
+    do:
+      Map.get(meta, :live_suffix_count) || config(:live_suffix_count, @default_live_suffix_count)
 
   defp compact_at(%State{meta: meta}),
     do: Map.get(meta, :compact_at) || config(:compact_at, @default_compact_at)

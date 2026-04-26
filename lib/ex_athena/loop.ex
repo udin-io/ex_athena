@@ -55,6 +55,15 @@ defmodule ExAthena.Loop do
       the parent's `session_id`. `nil` for top-level runs. Used by
       `ExAthena.Sessions.Stores.Jsonl` (PR5) to write subagent
       sidechains and by `ExAthena.Agents` (PR4) to scope worktrees.
+    * `:memory` — `:auto` (default — discover `AGENTS.md`/`CLAUDE.md`
+      from `cwd` and `~/.config/ex_athena/`), `false` (skip memory
+      entirely), or an explicit list of `Message.t()` to prepend.
+    * `:skills` — `:auto` (default — discover skills from
+      `<cwd>/.exathena/skills/` and `~/.config/ex_athena/skills/`),
+      `false` (skip), or an explicit `%{name => %Skill{}}` map.
+    * `:preload_skills` — list of skill names whose bodies should be
+      activated up-front (skips the `[skill: name]` sentinel
+      round-trip).
 
   ## Returns
 
@@ -65,7 +74,7 @@ defmodule ExAthena.Loop do
       (e.g. unknown provider, bad tool module).
   """
 
-  alias ExAthena.{Budget, Config, Error, Request, Result, Telemetry, Tools}
+  alias ExAthena.{Budget, Config, Error, Memory, Request, Result, Skills, Telemetry, Tools}
   alias ExAthena.Loop.{Events, Mode, State}
 
   @default_max_iterations 25
@@ -247,7 +256,14 @@ defmodule ExAthena.Loop do
 
     with :ok <- validate_tools(tool_modules) do
       capabilities = provider_mod.capabilities()
-      request_template = Request.new(prompt, opts)
+
+      memory_messages = resolve_memory(cwd, opts)
+      skills = resolve_skills(cwd, opts)
+
+      request_template =
+        prompt
+        |> Request.new(opts)
+        |> apply_skills_catalog(skills)
 
       permissions_opts = %{
         phase: phase,
@@ -264,8 +280,15 @@ defmodule ExAthena.Loop do
           assigns: assigns
         )
 
+      preloaded_skills =
+        []
+        |> Skills.preload(skills, Keyword.get(opts, :preload_skills, []))
+
+      initial_messages =
+        memory_messages ++ preloaded_skills ++ request_template.messages
+
       state = %State{
-        messages: request_template.messages,
+        messages: initial_messages,
         tool_modules: tool_modules,
         capabilities: capabilities,
         provider_mod: provider_mod,
@@ -286,7 +309,12 @@ defmodule ExAthena.Loop do
         mode_state: %{},
         session_id: session_id,
         parent_session_id: parent_session_id,
-        meta: compaction_meta(opts)
+        meta:
+          opts
+          |> compaction_meta()
+          |> Map.put(:skills, skills)
+          |> Map.put(:memory_count, length(memory_messages))
+          |> Map.put(:preloaded_skill_count, length(preloaded_skills))
       }
 
       _ =
@@ -303,6 +331,40 @@ defmodule ExAthena.Loop do
     16
     |> :crypto.strong_rand_bytes()
     |> Base.url_encode64(padding: false)
+  end
+
+  # ── Memory + skills resolution ────────────────────────────────────
+
+  defp resolve_memory(_cwd, opts) do
+    case Keyword.get(opts, :memory, :auto) do
+      false -> []
+      :auto -> Memory.discover(opts |> Keyword.get(:cwd) || File.cwd!())
+      list when is_list(list) -> list
+    end
+  end
+
+  defp resolve_skills(_cwd, opts) do
+    case Keyword.get(opts, :skills, :auto) do
+      false -> %{}
+      :auto -> Skills.discover(opts |> Keyword.get(:cwd) || File.cwd!())
+      map when is_map(map) -> map
+    end
+  end
+
+  defp apply_skills_catalog(%Request{} = request, skills) when map_size(skills) == 0,
+    do: request
+
+  defp apply_skills_catalog(%Request{system_prompt: sp} = request, skills) do
+    catalog = Skills.catalog_section(skills)
+
+    new_sp =
+      case {sp, catalog} do
+        {_, ""} -> sp
+        {nil, c} -> c
+        {prefix, c} -> prefix <> "\n\n" <> c
+      end
+
+    %{request | system_prompt: new_sp}
   end
 
   defp normalize_tool_list(list) do
