@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.2 — Ollama tagged model spec follow-up
+
+### Fixed
+
+- `ExAthena.Providers.ReqLLM.resolve_model/2` no longer skips the
+  provider-tag prefix when the model id contains a colon. Ollama model
+  ids legitimately use `:` as the version separator
+  (`qwen2.5-coder:14b`, `qwen3-coder:30b`), so the previous "model
+  contains `:` ⇒ already tagged" heuristic shipped bare names like
+  `"qwen2.5-coder:14b"` to req_llm, which then split on the first
+  colon and tried to validate `"qwen2.5-coder"` as a provider name —
+  failing the `^[a-z0-9_-]+$` regex (rejects `.`) with
+  `{:error, :bad_provider}`. Now always prepends the tag unless the
+  model already starts with `"<tag>:"` (caller passed a fully-formed
+  spec).
+
 ## v0.4.1 — Ollama via OpenAI-compatible adapter
 
 ### Fixed
