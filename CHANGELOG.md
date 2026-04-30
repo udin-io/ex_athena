@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.3 — Convert tools to %ReqLLM.Tool{} structs at the adapter boundary
+
+### Fixed
+
+- `ExAthena.Providers.ReqLLM.build_opts/2` now converts the modes' tool
+  list (OpenAI-format maps from `Tools.describe_for_provider/1`) into
+  `%ReqLLM.Tool{}` structs before forwarding to req_llm. Without this,
+  req_llm 1.10's openai adapter raised
+  `no function clause matching in ReqLLM.Tool.to_schema/2` while building
+  the streaming request — `to_schema/2` only matches `%ReqLLM.Tool{}`.
+  The conversion sets a stub callback because ex_athena executes tools
+  server-side via the loop, not via req_llm's client-side dispatch.
+  Already-formed `%ReqLLM.Tool{}` structs and string-keyed maps are
+  passed through unchanged for forward compatibility.
+
 ## v0.4.2 — Ollama tagged model spec follow-up
 
 ### Fixed
