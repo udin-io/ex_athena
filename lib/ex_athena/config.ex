@@ -39,14 +39,26 @@ defmodule ExAthena.Config do
 
   # Map the ExAthena provider atom → the `req_llm` provider tag that belongs
   # in the `"tag:model-id"` spec. When an ExAthena caller says `:ollama`, the
-  # ReqLLM adapter turns a raw `model: "llama3.1"` into `"ollama:llama3.1"`.
+  # ReqLLM adapter turns a raw `model: "qwen3-coder"` into `"openai:qwen3-coder"`.
+  #
+  # Local Ollama and llama.cpp expose OpenAI-compatible APIs and have no
+  # entries in req_llm's llm_db catalog, so they must route through the
+  # `:openai` tag with a custom base_url. See `req_llm/guides/ollama.md`.
   @req_llm_provider_tag %{
-    ollama: "ollama",
+    ollama: "openai",
     openai: "openai",
     openai_compatible: "openai",
-    llamacpp: "llamacpp",
+    llamacpp: "openai",
     claude: "anthropic",
     anthropic: "anthropic"
+  }
+
+  # Provider atoms that talk to a local OpenAI-compatible server. These
+  # 1) need `/v1` appended to base_url if the caller didn't, and
+  # 2) get `openai_compatible_backend: <atom>` so req_llm's openai adapter
+  #    allows missing API keys (unauthenticated local deployments).
+  @local_openai_compatible_backends %{
+    ollama: :ollama
   }
 
   @doc """
@@ -69,6 +81,12 @@ defmodule ExAthena.Config do
       case req_llm_provider_tag(provider) do
         nil -> rest
         tag -> Keyword.put_new(rest, :req_llm_provider_tag, tag)
+      end
+
+    rest =
+      case Map.get(@local_openai_compatible_backends, provider) do
+        nil -> rest
+        backend -> Keyword.put_new(rest, :openai_compatible_backend, backend)
       end
 
     {provider_module(provider), rest}
