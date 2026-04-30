@@ -67,7 +67,9 @@ defmodule ExAthena.Providers.ReqLLMTest do
     alias ExAthena.Request
 
     test "prepends tag to bare model id" do
-      assert Adapter.resolve_model(%Request{messages: [], model: "gpt-4"}, req_llm_provider_tag: "openai") ==
+      assert Adapter.resolve_model(%Request{messages: [], model: "gpt-4"},
+               req_llm_provider_tag: "openai"
+             ) ==
                {:ok, "openai:gpt-4"}
     end
 
@@ -116,6 +118,74 @@ defmodule ExAthena.Providers.ReqLLMTest do
     test "errors when no model is supplied anywhere" do
       assert {:error, %ExAthena.Error{kind: :bad_request, message: "no model configured"}} =
                Adapter.resolve_model(%Request{messages: [], model: nil}, [])
+    end
+  end
+
+  describe "to_req_llm_tools/1" do
+    test "returns nil and [] unchanged" do
+      assert Adapter.to_req_llm_tools(nil) == nil
+      assert Adapter.to_req_llm_tools([]) == []
+    end
+
+    test "passes through %ReqLLM.Tool{} structs unchanged (forward compat)" do
+      tool = %ReqLLM.Tool{
+        name: "passthrough",
+        description: "already a struct",
+        parameter_schema: %{},
+        callback: fn _ -> {:ok, ""} end
+      }
+
+      assert [^tool] = Adapter.to_req_llm_tools([tool])
+    end
+
+    test "converts atom-keyed OpenAI-format maps (the modes/react.ex shape) to ReqLLM.Tool" do
+      # Regression: req_llm 1.10's openai adapter calls
+      # ReqLLM.Tool.to_schema(tool, :openai) on each entry, which only
+      # matches %ReqLLM.Tool{}. Previously these maps reached req_llm raw
+      # and crashed with "no function clause matching".
+      tool_map = %{
+        type: "function",
+        function: %{
+          name: "read",
+          description: "Read a file",
+          parameters: %{
+            type: "object",
+            properties: %{path: %{type: "string"}},
+            required: ["path"]
+          }
+        }
+      }
+
+      assert [%ReqLLM.Tool{} = tool] = Adapter.to_req_llm_tools([tool_map])
+      assert tool.name == "read"
+      assert tool.description == "Read a file"
+      assert tool.parameter_schema == tool_map.function.parameters
+      assert is_function(tool.callback, 1)
+    end
+
+    test "also accepts string-keyed OpenAI-format maps" do
+      tool_map = %{
+        "type" => "function",
+        "function" => %{
+          "name" => "grep",
+          "description" => "Search files",
+          "parameters" => %{"type" => "object", "properties" => %{}}
+        }
+      }
+
+      assert [%ReqLLM.Tool{} = tool] = Adapter.to_req_llm_tools([tool_map])
+      assert tool.name == "grep"
+      assert tool.description == "Search files"
+    end
+
+    test "the stub callback returns a tagged error so accidental use is loud" do
+      tool_map = %{
+        type: "function",
+        function: %{name: "x", description: "y", parameters: %{}}
+      }
+
+      [%ReqLLM.Tool{callback: cb}] = Adapter.to_req_llm_tools([tool_map])
+      assert cb.(%{}) == {:error, :tool_execution_handled_by_ex_athena}
     end
   end
 end

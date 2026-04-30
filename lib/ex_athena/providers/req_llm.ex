@@ -205,7 +205,7 @@ defmodule ExAthena.Providers.ReqLLM do
         temperature: request.temperature,
         top_p: request.top_p,
         stop: request.stop,
-        tools: request.tools,
+        tools: to_req_llm_tools(request.tools),
         tool_choice: request.tool_choice,
         receive_timeout: request.timeout_ms
       ]
@@ -214,6 +214,45 @@ defmodule ExAthena.Providers.ReqLLM do
     provider_opts = Keyword.get(opts, :provider_opts, [])
     {:ok, Keyword.merge(base_opts, provider_opts)}
   end
+
+  # ex_athena's modes (see `Tools.describe_for_provider/1`) build OpenAI-format
+  # tool maps (`%{type: "function", function: %{name, description, parameters}}`)
+  # directly. req_llm 1.10 expects each entry in `:tools` to be a `%ReqLLM.Tool{}`
+  # struct so it can call `ReqLLM.Tool.to_schema/2` per provider — passing maps
+  # raises `no function clause matching in ReqLLM.Tool.to_schema/2`. Convert
+  # here. The callback is a stub: req_llm uses it only for client-side execution
+  # and ex_athena executes tools server-side via `ExAthena.Tool.execute/2`.
+  @doc false
+  def to_req_llm_tools(nil), do: nil
+  def to_req_llm_tools([]), do: []
+  def to_req_llm_tools(tools) when is_list(tools), do: Enum.map(tools, &to_req_llm_tool/1)
+
+  defp to_req_llm_tool(%ReqLLM.Tool{} = tool), do: tool
+
+  defp to_req_llm_tool(%{function: %{name: name, description: desc, parameters: params}}) do
+    build_req_llm_tool(name, desc, params)
+  end
+
+  defp to_req_llm_tool(%{
+         "function" => %{"name" => name, "description" => desc, "parameters" => params}
+       }) do
+    build_req_llm_tool(name, desc, params)
+  end
+
+  defp build_req_llm_tool(name, desc, params) do
+    %ReqLLM.Tool{
+      name: name,
+      description: desc,
+      parameter_schema: params || %{},
+      callback: &noop_callback/1,
+      strict: false,
+      compiled: nil,
+      provider_options: %{}
+    }
+  end
+
+  defp noop_callback(_args),
+    do: {:error, :tool_execution_handled_by_ex_athena}
 
   # Local OpenAI-compatible servers (Ollama, llama.cpp) commonly accept either
   # the bare host (`http://localhost:11434`) or the OpenAI prefix
