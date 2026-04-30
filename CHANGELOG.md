@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.5 — Stream heartbeat + time-to-first-token (TTFT)
+
+### Added
+
+- `ExAthena.Providers.ReqLLM.consume_stream/3` now emits a heartbeat
+  log every 10 s while no chunk has arrived yet, and a one-time
+  TTFT line on the first content/tool_call chunk:
+  - `[ExAthena.ReqLLM] ⋯ waiting on stream (Ns elapsed)` (info,
+    repeats every 10 s during the prompt-processing phase, stops
+    automatically once chunks start flowing).
+  - `[ExAthena.ReqLLM] ←first_chunk after Yms (TTFT)` (info, fires
+    exactly once per stream).
+
+### Why
+
+Local Ollama / llama.cpp on a 14 B+ model regularly spends 30–120 s
+processing the prompt before emitting the first chunk. Until 0.4.5
+nothing surfaced on the wire during that wait — callers had no way
+to distinguish "slow but alive" from "stalled and silent". The
+heartbeat closes that gap with a single info-level line every 10 s,
+and the TTFT log captures the latency once tokens start flowing so
+operators can compare cold vs. warm runs. The heartbeat process
+exits as soon as the reduce returns (success or crash) via
+`try/after`, and self-checks `Process.alive?(parent)` before
+emitting in case the calling process was killed mid-stream.
+
 ## v0.4.4 — Adapter-boundary message logging (Claude Code-style)
 
 ### Added
