@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.4 — Adapter-boundary message logging (Claude Code-style)
+
+### Added
+
+- `ExAthena.Providers.ReqLLM` now emits structured Logger messages at
+  the adapter boundary, mirroring the Claude Code SDK's `[SDK]` log
+  style for parity with consumers that already grep for that prefix:
+  - `[ExAthena.ReqLLM] →query|→stream model=… msgs=N tools=K base_url=… backend=…`
+    (info level, one line per request).
+  - `[ExAthena.ReqLLM] →query system_prompt=…\n  msg[i] role: <preview>`
+    (debug level, full message body previews with whitespace collapsed
+    and capped at 200B/message).
+  - `[ExAthena.ReqLLM] ←text_delta NB: <preview>` per streamed chunk
+    (debug level).
+  - `[ExAthena.ReqLLM] ←tool_call name=… args=…` per tool call
+    (debug level).
+  - `[ExAthena.ReqLLM] ←meta finish_reason=…` and `←usage …`
+    (debug level).
+  - `[ExAthena.ReqLLM] ←done finish_reason=… text_chars=N tool_calls=K usage=…`
+    on completion (info level).
+  - `[ExAthena.ReqLLM] ←error …` when req_llm returns an error
+    (warning level).
+- All debug-level lines wrap their message construction in
+  `Logger.debug(fn -> … end)` so log assembly is skipped at higher
+  log levels — zero overhead in production.
+
+### Why
+
+Until 0.4.4 the adapter forwarded request/response data to req_llm
+without leaving any breadcrumb in the host application's log. When a
+streaming run stalled or the LLM returned unexpected content, callers
+had no way to see what was sent or what came back without attaching a
+telemetry handler. The new lines give the same kind of visibility
+ClaudeCode's SDK provides, so debugging Ollama/OpenAI/llama.cpp flows
+is a `tail -f phoenix_output.log | grep '\[ExAthena.ReqLLM\]'` away.
+
 ## v0.4.3 — Convert tools to %ReqLLM.Tool{} structs at the adapter boundary
 
 ### Fixed

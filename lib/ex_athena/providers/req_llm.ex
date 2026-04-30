@@ -38,8 +38,14 @@ defmodule ExAthena.Providers.ReqLLM do
 
   @behaviour ExAthena.Provider
 
+  require Logger
+
   alias ExAthena.{Error, Request, Response}
   alias ExAthena.Messages.{Message, ToolResult}
+
+  # Claude Code-style log prefix so callers can filter/tail the adapter
+  # boundary independently of other ex_athena components.
+  @log_prefix "[ExAthena.ReqLLM]"
 
   @impl ExAthena.Provider
   def capabilities do
@@ -59,11 +65,16 @@ defmodule ExAthena.Providers.ReqLLM do
     with {:ok, model_spec} <- resolve_model(request, opts),
          {:ok, messages} <- build_messages(request),
          {:ok, req_opts} <- build_opts(request, opts) do
+      log_request(:query, model_spec, request, messages, req_opts)
+
       case ReqLLM.generate_text(model_spec, messages, req_opts) do
         {:ok, %ReqLLM.Response{} = resp} ->
-          {:ok, to_response(resp, request)}
+          response = to_response(resp, request)
+          log_response(response)
+          {:ok, response}
 
         {:error, reason} ->
+          log_error(reason)
           {:error, to_error(reason)}
       end
     end
@@ -74,11 +85,16 @@ defmodule ExAthena.Providers.ReqLLM do
     with {:ok, model_spec} <- resolve_model(request, opts),
          {:ok, messages} <- build_messages(request),
          {:ok, req_opts} <- build_opts(request, opts) do
+      log_request(:stream, model_spec, request, messages, req_opts)
+
       case ReqLLM.stream_text(model_spec, messages, req_opts) do
         {:ok, %ReqLLM.StreamResponse{} = sr} ->
-          {:ok, consume_stream(sr, callback, request)}
+          response = consume_stream(sr, callback, request)
+          log_response(response)
+          {:ok, response}
 
         {:error, reason} ->
+          log_error(reason)
           {:error, to_error(reason)}
       end
     end
@@ -362,21 +378,103 @@ defmodule ExAthena.Providers.ReqLLM do
   end
 
   defp handle_chunk(%{type: :content, text: text}, callback, acc) when is_binary(text) do
+    Logger.debug(fn ->
+      "#{@log_prefix} ←text_delta #{byte_size(text)}B: #{preview(text, 80)}"
+    end)
+
     ExAthena.Streaming.text_delta(callback, text)
     %{acc | text: [text | acc.text]}
   end
 
   defp handle_chunk(%{type: :tool_call} = tc, _callback, acc) do
+    Logger.debug(fn ->
+      name = Map.get(tc, :name) || Map.get(tc, "name") || "<unknown>"
+      args = Map.get(tc, :arguments) || Map.get(tc, "arguments") || %{}
+
+      "#{@log_prefix} ←tool_call name=#{inspect(name)} args=#{inspect(args, limit: 3, printable_limit: 200)}"
+    end)
+
     %{acc | tool_calls: acc.tool_calls ++ [tc]}
   end
 
-  defp handle_chunk(%{type: :usage, usage: usage}, _callback, acc), do: %{acc | usage: usage}
+  defp handle_chunk(%{type: :usage, usage: usage}, _callback, acc) do
+    Logger.debug(fn -> "#{@log_prefix} ←usage #{inspect(usage)}" end)
+    %{acc | usage: usage}
+  end
 
   defp handle_chunk(%{type: :meta, finish_reason: reason}, _callback, acc)
-       when not is_nil(reason),
-       do: %{acc | finish_reason: reason}
+       when not is_nil(reason) do
+    Logger.debug(fn -> "#{@log_prefix} ←meta finish_reason=#{inspect(reason)}" end)
+    %{acc | finish_reason: reason}
+  end
 
   defp handle_chunk(_chunk, _callback, acc), do: acc
+
+  # ── Logging helpers (Claude Code-style adapter-boundary breadcrumbs) ──
+
+  defp log_request(kind, model_spec, %Request{} = request, messages, req_opts) do
+    base_url = Keyword.get(req_opts, :base_url) || "<provider default>"
+    backend = Keyword.get(req_opts, :openai_compatible_backend)
+    n_msgs = length(messages)
+    n_tools = length(Keyword.get(req_opts, :tools, []) || [])
+
+    Logger.info(
+      "#{@log_prefix} →#{kind} model=#{inspect(model_spec)} msgs=#{n_msgs} tools=#{n_tools} " <>
+        "base_url=#{base_url}#{if backend, do: " backend=#{inspect(backend)}", else: ""}"
+    )
+
+    Logger.debug(fn ->
+      sp_preview =
+        case request.system_prompt do
+          nil -> "nil"
+          "" -> "\"\""
+          str when is_binary(str) -> "#{byte_size(str)}B: #{preview(str, 200)}"
+        end
+
+      msg_lines =
+        messages
+        |> Enum.with_index()
+        |> Enum.map(fn {%ReqLLM.Message{role: role, content: parts}, i} ->
+          text = parts |> Enum.map(&content_part_text/1) |> Enum.join(" ")
+          "  msg[#{i}] #{role}: #{preview(text, 200)}"
+        end)
+        |> Enum.join("\n")
+
+      "#{@log_prefix} →#{kind} system_prompt=#{sp_preview}\n#{msg_lines}"
+    end)
+  end
+
+  defp log_response(%Response{} = resp) do
+    text_chars = byte_size(resp.text || "")
+    n_tool_calls = length(resp.tool_calls || [])
+
+    Logger.info(
+      "#{@log_prefix} ←done finish_reason=#{inspect(resp.finish_reason)} " <>
+        "text_chars=#{text_chars} tool_calls=#{n_tool_calls} " <>
+        "usage=#{inspect(resp.usage, limit: 5)}"
+    )
+
+    Logger.debug(fn ->
+      "#{@log_prefix} ←done text_preview=#{preview(resp.text || "", 300)}"
+    end)
+  end
+
+  defp log_error(reason) do
+    Logger.warning("#{@log_prefix} ←error #{inspect(reason, limit: 5, printable_limit: 500)}")
+  end
+
+  defp content_part_text(%ReqLLM.Message.ContentPart{text: text}) when is_binary(text), do: text
+  defp content_part_text(_), do: ""
+
+  defp preview(str, max) when is_binary(str) do
+    cleaned = String.replace(str, ~r/\s+/, " ")
+
+    if byte_size(cleaned) <= max do
+      inspect(cleaned)
+    else
+      inspect(binary_part(cleaned, 0, max) <> "…")
+    end
+  end
 
   # ── Error mapping ─────────────────────────────────────────────────
 
