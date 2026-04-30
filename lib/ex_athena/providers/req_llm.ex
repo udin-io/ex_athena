@@ -87,31 +87,39 @@ defmodule ExAthena.Providers.ReqLLM do
   # ── Model resolution ──────────────────────────────────────────────
 
   # Translate ExAthena-side provider atoms into req_llm model specs.
-  # Callers may pass a two-part string (`"ollama:llama3.1"`) OR a bare model
-  # id (`"llama3.1"`); when bare, Config threads the provider's `req_llm`
-  # tag through opts so we can build the full spec here.
-  defp resolve_model(%Request{model: model_str}, opts)
-       when is_binary(model_str) and model_str != "" do
-    if String.contains?(model_str, ":") do
-      {:ok, model_str}
-    else
-      case Keyword.get(opts, :req_llm_provider_tag) do
-        tag when is_binary(tag) and tag != "" -> {:ok, tag <> ":" <> model_str}
-        _ -> {:ok, model_str}
-      end
-    end
+  # Callers may pass a two-part string (`"openai:gpt-4"`) OR a bare model
+  # id (`"qwen2.5-coder:14b"`). When bare, Config threads the provider's
+  # `req_llm` tag through opts so we can build the full spec here.
+  #
+  # Note: bare Ollama model ids legitimately contain `:` (the version
+  # separator, e.g. `"qwen2.5-coder:14b"`) so we cannot use the presence
+  # of a colon as a "spec already tagged" signal — the tag is the source
+  # of truth. We only skip prefixing when the model string already begins
+  # with the same tag (caller passed a fully-formed spec).
+  @doc false
+  def resolve_model(%Request{model: model_str}, opts)
+      when is_binary(model_str) and model_str != "" do
+    {:ok, prepend_tag(model_str, opts)}
   end
 
-  defp resolve_model(_request, opts) do
+  def resolve_model(_request, opts) do
     case Keyword.get(opts, :model) do
       m when is_binary(m) and m != "" ->
-        case Keyword.get(opts, :req_llm_provider_tag) do
-          tag when is_binary(tag) and tag != "" -> {:ok, tag <> ":" <> m}
-          _ -> {:ok, m}
-        end
+        {:ok, prepend_tag(m, opts)}
 
       _ ->
         {:error, Error.new(:bad_request, "no model configured", provider: :req_llm)}
+    end
+  end
+
+  defp prepend_tag(model, opts) do
+    case Keyword.get(opts, :req_llm_provider_tag) do
+      tag when is_binary(tag) and tag != "" ->
+        prefix = tag <> ":"
+        if String.starts_with?(model, prefix), do: model, else: prefix <> model
+
+      _ ->
+        model
     end
   end
 
