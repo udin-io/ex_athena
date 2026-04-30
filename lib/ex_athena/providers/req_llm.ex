@@ -358,12 +358,27 @@ defmodule ExAthena.Providers.ReqLLM do
   # ── Streaming ─────────────────────────────────────────────────────
 
   defp consume_stream(%ReqLLM.StreamResponse{stream: stream}, callback, request) do
-    state = %{text: [], tool_calls: [], model: request.model, finish_reason: nil, usage: nil}
+    state = %{
+      text: [],
+      tool_calls: [],
+      model: request.model,
+      finish_reason: nil,
+      usage: nil,
+      first_chunk_logged: false,
+      stream_started_ms: System.monotonic_time(:millisecond)
+    }
+
+    heartbeat_pid = start_heartbeat(state.stream_started_ms)
 
     final =
-      Enum.reduce(stream, state, fn chunk, acc ->
-        handle_chunk(chunk, callback, acc)
-      end)
+      try do
+        Enum.reduce(stream, state, fn chunk, acc ->
+          acc = maybe_log_first_chunk(chunk, acc)
+          handle_chunk(chunk, callback, acc)
+        end)
+      after
+        stop_heartbeat(heartbeat_pid)
+      end
 
     ExAthena.Streaming.stop(callback, final.finish_reason || :stop)
 
@@ -376,6 +391,53 @@ defmodule ExAthena.Providers.ReqLLM do
       usage: final.usage
     }
   end
+
+  # ── Heartbeat / TTFT (visibility while Ollama is processing) ──────────
+  #
+  # Local Ollama on a 14B+ model can spend 30–120s processing the prompt
+  # before emitting the first chunk. Without any signal on the wire,
+  # callers can't tell a slow-but-alive request from a stalled one. Emit a
+  # `⋯ waiting on stream (Ns elapsed)` heartbeat every 10s until the first
+  # content/tool_call chunk arrives, then log the TTFT exactly once.
+
+  @heartbeat_interval_ms 10_000
+
+  defp start_heartbeat(start_ms) do
+    parent = self()
+
+    spawn(fn ->
+      heartbeat_loop(parent, start_ms)
+    end)
+  end
+
+  defp heartbeat_loop(parent, start_ms) do
+    receive do
+      :stop -> :ok
+    after
+      @heartbeat_interval_ms ->
+        if Process.alive?(parent) do
+          elapsed_s = div(System.monotonic_time(:millisecond) - start_ms, 1000)
+          Logger.info("#{@log_prefix} ⋯ waiting on stream (#{elapsed_s}s elapsed)")
+          heartbeat_loop(parent, start_ms)
+        else
+          :ok
+        end
+    end
+  end
+
+  defp stop_heartbeat(pid) when is_pid(pid) do
+    send(pid, :stop)
+    :ok
+  end
+
+  defp maybe_log_first_chunk(%{type: type}, %{first_chunk_logged: false} = acc)
+       when type in [:content, :tool_call] do
+    elapsed_ms = System.monotonic_time(:millisecond) - acc.stream_started_ms
+    Logger.info("#{@log_prefix} ←first_chunk after #{elapsed_ms}ms (TTFT)")
+    %{acc | first_chunk_logged: true}
+  end
+
+  defp maybe_log_first_chunk(_chunk, acc), do: acc
 
   defp handle_chunk(%{type: :content, text: text}, callback, acc) when is_binary(text) do
     Logger.debug(fn ->
