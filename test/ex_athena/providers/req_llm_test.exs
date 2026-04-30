@@ -27,9 +27,19 @@ defmodule ExAthena.Providers.ReqLLMTest do
   end
 
   describe "Config threads the req_llm provider tag into opts" do
-    test ":ollama + bare model gets prefixed to ollama:model" do
+    test ":ollama uses the openai tag (Ollama is OpenAI-compatible)" do
       {_mod, opts} = Config.pop_provider!(provider: :ollama)
-      assert Keyword.get(opts, :req_llm_provider_tag) == "ollama"
+      assert Keyword.get(opts, :req_llm_provider_tag) == "openai"
+    end
+
+    test ":ollama threads openai_compatible_backend so missing API keys are tolerated" do
+      {_mod, opts} = Config.pop_provider!(provider: :ollama)
+      assert Keyword.get(opts, :openai_compatible_backend) == :ollama
+    end
+
+    test ":llamacpp uses the openai tag (llama.cpp is OpenAI-compatible)" do
+      {_mod, opts} = Config.pop_provider!(provider: :llamacpp)
+      assert Keyword.get(opts, :req_llm_provider_tag) == "openai"
     end
 
     test ":claude translates to anthropic tag" do
@@ -40,6 +50,11 @@ defmodule ExAthena.Providers.ReqLLMTest do
     test ":openai_compatible uses openai tag" do
       {_mod, opts} = Config.pop_provider!(provider: :openai_compatible)
       assert Keyword.get(opts, :req_llm_provider_tag) == "openai"
+    end
+
+    test ":openai_compatible does NOT inject the ollama backend marker" do
+      {_mod, opts} = Config.pop_provider!(provider: :openai_compatible)
+      refute Keyword.has_key?(opts, :openai_compatible_backend)
     end
 
     test ":mock has no tag" do

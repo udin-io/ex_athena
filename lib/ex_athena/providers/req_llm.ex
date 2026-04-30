@@ -90,7 +90,8 @@ defmodule ExAthena.Providers.ReqLLM do
   # Callers may pass a two-part string (`"ollama:llama3.1"`) OR a bare model
   # id (`"llama3.1"`); when bare, Config threads the provider's `req_llm`
   # tag through opts so we can build the full spec here.
-  defp resolve_model(%Request{model: model_str}, opts) when is_binary(model_str) and model_str != "" do
+  defp resolve_model(%Request{model: model_str}, opts)
+       when is_binary(model_str) and model_str != "" do
     if String.contains?(model_str, ":") do
       {:ok, model_str}
     else
@@ -116,7 +117,8 @@ defmodule ExAthena.Providers.ReqLLM do
 
   # ── Messages ──────────────────────────────────────────────────────
 
-  defp build_messages(%Request{messages: [], system_prompt: sp}) when is_binary(sp) and sp != "" do
+  defp build_messages(%Request{messages: [], system_prompt: sp})
+       when is_binary(sp) and sp != "" do
     # System-prompt-only request — req_llm requires at least one user msg.
     {:error, Error.new(:bad_request, "no messages supplied", provider: :req_llm)}
   end
@@ -165,6 +167,7 @@ defmodule ExAthena.Providers.ReqLLM do
 
   defp text_parts(nil), do: []
   defp text_parts(""), do: []
+
   defp text_parts(content) when is_binary(content),
     do: [ReqLLM.Message.ContentPart.text(content)]
 
@@ -181,10 +184,15 @@ defmodule ExAthena.Providers.ReqLLM do
   # ── Options ────────────────────────────────────────────────────────
 
   defp build_opts(%Request{} = request, opts) do
+    backend = Keyword.get(opts, :openai_compatible_backend)
+    base_url = normalize_base_url(Keyword.get(opts, :base_url), backend)
+    api_key = resolve_api_key(Keyword.get(opts, :api_key), backend)
+
     base_opts =
       [
-        api_key: Keyword.get(opts, :api_key),
-        base_url: Keyword.get(opts, :base_url),
+        api_key: api_key,
+        base_url: base_url,
+        openai_compatible_backend: backend,
         max_tokens: request.max_tokens,
         temperature: request.temperature,
         top_p: request.top_p,
@@ -198,6 +206,29 @@ defmodule ExAthena.Providers.ReqLLM do
     provider_opts = Keyword.get(opts, :provider_opts, [])
     {:ok, Keyword.merge(base_opts, provider_opts)}
   end
+
+  # Local OpenAI-compatible servers (Ollama, llama.cpp) commonly accept either
+  # the bare host (`http://localhost:11434`) or the OpenAI prefix
+  # (`http://localhost:11434/v1`). req_llm's openai adapter expects the prefix
+  # to already include `/v1`. Append it when the caller passed the bare host.
+  defp normalize_base_url(nil, _backend), do: nil
+  defp normalize_base_url(url, nil), do: url
+
+  defp normalize_base_url(url, _backend) when is_binary(url) do
+    trimmed = String.trim_trailing(url, "/")
+
+    cond do
+      String.ends_with?(trimmed, "/v1") -> trimmed
+      true -> trimmed <> "/v1"
+    end
+  end
+
+  # req_llm's openai adapter requires *some* api_key value even when
+  # `openai_compatible_backend: :ollama` allows missing auth — the underlying
+  # HTTP request still sets an Authorization header. Local servers ignore it,
+  # so substitute a placeholder when the caller didn't supply one.
+  defp resolve_api_key(nil, :ollama), do: "ollama"
+  defp resolve_api_key(key, _backend), do: key
 
   # ── Response mapping ──────────────────────────────────────────────
 
@@ -294,8 +325,9 @@ defmodule ExAthena.Providers.ReqLLM do
 
   defp handle_chunk(%{type: :usage, usage: usage}, _callback, acc), do: %{acc | usage: usage}
 
-  defp handle_chunk(%{type: :meta, finish_reason: reason}, _callback, acc) when not is_nil(reason),
-    do: %{acc | finish_reason: reason}
+  defp handle_chunk(%{type: :meta, finish_reason: reason}, _callback, acc)
+       when not is_nil(reason),
+       do: %{acc | finish_reason: reason}
 
   defp handle_chunk(_chunk, _callback, acc), do: acc
 

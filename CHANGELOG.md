@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.1 — Ollama via OpenAI-compatible adapter
+
+### Fixed
+
+- `provider: :ollama` now talks to local Ollama through `req_llm`'s OpenAI
+  adapter instead of looking up an `:ollama` provider in `llm_db`'s
+  catalog. `llm_db` 2026.4.x removed first-class local-Ollama support
+  (it only catalogues `:ollama_cloud` now), so `"ollama:<model>"` model
+  specs were rejected with `{:error, :unknown_provider}` from
+  `LLMDB.Spec`. The fix routes `:ollama` (and `:llamacpp`) through the
+  `"openai:<model>"` tag and threads
+  `openai_compatible_backend: :ollama` so `req_llm` 1.10's openai
+  adapter tolerates the missing API key on unauthenticated local
+  deployments. Mirrors the recipe in `req_llm/guides/ollama.md`.
+- `base_url` for Ollama now auto-appends `/v1` when callers pass the
+  bare host (`http://localhost:11434`) — req_llm's openai adapter
+  expects the prefix to already include `/v1`.
+- A placeholder `api_key` (`"ollama"`) is substituted when the
+  `:ollama` backend marker is set and no key was supplied — Ollama
+  ignores the Authorization header but `req_llm`'s HTTP layer still
+  emits one, so a non-nil value is required.
+
+### Internal
+
+- `ExAthena.Config.@req_llm_provider_tag[:ollama]` now resolves to
+  `"openai"` (was `"ollama"`).
+- New `@local_openai_compatible_backends` map drives
+  `openai_compatible_backend` injection in `Config.pop_provider!/1`.
+- `ExAthena.Providers.ReqLLM.build_opts/2` reads the backend marker,
+  normalises base_url, and falls back to the placeholder api_key.
+
 ## v0.4.0 — operational harness (memory, skills, hooks, modes, agents, storage)
 
 The "1.6% reasoning, 98.4% harness" upgrade. Where v0.3 perfected the
