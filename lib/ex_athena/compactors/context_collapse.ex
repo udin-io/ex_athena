@@ -130,7 +130,7 @@ defmodule ExAthena.Compactors.ContextCollapse do
           (sig = repeat_signature(msg)) && sig == last_sig ->
             {acc ++ [mark_repeat(msg)], sig}
 
-          (sig = repeat_signature(msg)) ->
+          sig = repeat_signature(msg) ->
             {acc ++ [msg], sig}
 
           true ->

@@ -18,8 +18,11 @@ defmodule ExAthena.StructuredTest do
     }
 
     assert {:ok, %{"name" => "Ada", "age" => 36}} =
-             Structured.extract("tell me about Ada", schema: schema, provider: :mock,
-               mock: [responder: responder])
+             Structured.extract("tell me about Ada",
+               schema: schema,
+               provider: :mock,
+               mock: [responder: responder]
+             )
   end
 
   test "extracts JSON from a fenced block when not in JSON mode" do
@@ -43,8 +46,11 @@ defmodule ExAthena.StructuredTest do
     }
 
     assert {:ok, %{"status" => "ok", "count" => 3}} =
-             Structured.extract("hi", schema: schema, provider: :mock,
-               mock: [responder: responder])
+             Structured.extract("hi",
+               schema: schema,
+               provider: :mock,
+               mock: [responder: responder]
+             )
   end
 
   test "validates required keys" do
@@ -116,8 +122,11 @@ defmodule ExAthena.StructuredTest do
         :counters.add(counter, 1, 1)
 
         case :counters.get(counter, 1) do
-          1 -> %Response{text: ~s({"name": "Ada"}), provider: :mock, finish_reason: :stop}
-          _ -> %Response{text: ~s({"name": "Ada", "age": 36}), provider: :mock, finish_reason: :stop}
+          1 ->
+            %Response{text: ~s({"name": "Ada"}), provider: :mock, finish_reason: :stop}
+
+          _ ->
+            %Response{text: ~s({"name": "Ada", "age": 36}), provider: :mock, finish_reason: :stop}
         end
       end
 

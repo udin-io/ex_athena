@@ -64,7 +64,11 @@ defmodule ExAthena.Agents.WorktreeTest do
       _ = System.cmd("git", ["commit", "-q", "-m", "init"], cd: dir)
 
       assert {:worktree, info} =
-               Worktree.resolve(def_isolated(:worktree), dir, "session-test-#{System.unique_integer([:positive])}")
+               Worktree.resolve(
+                 def_isolated(:worktree),
+                 dir,
+                 "session-test-#{System.unique_integer([:positive])}"
+               )
 
       assert File.dir?(info.path)
       assert info.branch =~ "ex_athena/session-test-"

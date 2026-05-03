@@ -34,7 +34,11 @@ defmodule ExAthena.ToolCalls.Native do
   end
 
   defp parse_one(%{type: "function", id: id, function: fun}) do
-    build(id, fetch(fun, :name) || fetch(fun, "name"), fetch(fun, :arguments) || fetch(fun, "arguments"))
+    build(
+      id,
+      fetch(fun, :name) || fetch(fun, "name"),
+      fetch(fun, :arguments) || fetch(fun, "arguments")
+    )
   end
 
   defp parse_one(%{"type" => "tool_use", "id" => id, "name" => name, "input" => input}) do

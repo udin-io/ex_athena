@@ -45,12 +45,16 @@ defmodule ExAthena.ToolCalls.RawJson do
         Enum.reverse(acc)
 
       brace_pos ->
-        case scan_balanced(text, brace_pos) do
-          {:ok, end_pos} ->
-            candidate = binary_part(text, brace_pos, end_pos - brace_pos)
+        # Slice to the char after `{`; scan_balanced tracks depth from 1.
+        after_brace = binary_part(text, brace_pos + 1, byte_size(text) - brace_pos - 1)
+
+        case scan_balanced(after_brace, 1, false, false, 1) do
+          {:ok, length} ->
+            # length includes the leading `{` (consumed starts at 1).
+            candidate = binary_part(text, brace_pos, length)
 
             case decode_tool_call(candidate) do
-              {:ok, tc} -> scan_all(text, end_pos, [tc | acc])
+              {:ok, tc} -> scan_all(text, brace_pos + length, [tc | acc])
               :skip -> scan_all(text, brace_pos + 1, acc)
             end
 
@@ -69,46 +73,48 @@ defmodule ExAthena.ToolCalls.RawJson do
 
   defp find_open_brace(_text, _offset), do: nil
 
-  # Scan from the `{` at `brace_pos`; return {:ok, end_pos} (exclusive) or :error.
-  # Tracks in-string state and backslash escapes to avoid counting braces inside strings.
-  defp scan_balanced(text, brace_pos) do
-    scan_loop(text, brace_pos + 1, 1, false, false)
+  # Slice-and-pass balanced-brace scanner. `rest` is the binary starting at the
+  # character after the opening `{` (depth starts at 1, consumed starts at 1).
+  # Returns {:ok, total_bytes} where total_bytes includes the leading `{`.
+  # Tracks in-string state and backslash escapes to skip braces inside strings.
+  defp scan_balanced(<<>>, _depth, _in_string, _escaped, _consumed), do: :error
+
+  defp scan_balanced(<<_ch, rest::binary>>, depth, true, true, consumed) do
+    # Previous char was a backslash inside a string: skip this char, clear escape.
+    scan_balanced(rest, depth, true, false, consumed + 1)
   end
 
-  defp scan_loop(text, pos, depth, in_string, escaped) when pos < byte_size(text) do
-    <<_::binary-size(pos), ch, _::binary>> = text
-
-    cond do
-      escaped ->
-        scan_loop(text, pos + 1, depth, in_string, false)
-
-      in_string and ch == ?\\ ->
-        scan_loop(text, pos + 1, depth, true, true)
-
-      in_string and ch == ?" ->
-        scan_loop(text, pos + 1, depth, false, false)
-
-      in_string ->
-        scan_loop(text, pos + 1, depth, true, false)
-
-      ch == ?" ->
-        scan_loop(text, pos + 1, depth, true, false)
-
-      ch == ?{ ->
-        scan_loop(text, pos + 1, depth + 1, false, false)
-
-      ch == ?} and depth == 1 ->
-        {:ok, pos + 1}
-
-      ch == ?} ->
-        scan_loop(text, pos + 1, depth - 1, false, false)
-
-      true ->
-        scan_loop(text, pos + 1, depth, false, false)
-    end
+  defp scan_balanced(<<?\\, rest::binary>>, depth, true, false, consumed) do
+    scan_balanced(rest, depth, true, true, consumed + 1)
   end
 
-  defp scan_loop(_text, _pos, _depth, _in_string, _escaped), do: :error
+  defp scan_balanced(<<?", rest::binary>>, depth, true, false, consumed) do
+    scan_balanced(rest, depth, false, false, consumed + 1)
+  end
+
+  defp scan_balanced(<<_ch, rest::binary>>, depth, true, false, consumed) do
+    scan_balanced(rest, depth, true, false, consumed + 1)
+  end
+
+  defp scan_balanced(<<?", rest::binary>>, depth, false, false, consumed) do
+    scan_balanced(rest, depth, true, false, consumed + 1)
+  end
+
+  defp scan_balanced(<<?{, rest::binary>>, depth, false, false, consumed) do
+    scan_balanced(rest, depth + 1, false, false, consumed + 1)
+  end
+
+  defp scan_balanced(<<?}, _rest::binary>>, 1, false, false, consumed) do
+    {:ok, consumed + 1}
+  end
+
+  defp scan_balanced(<<?}, rest::binary>>, depth, false, false, consumed) do
+    scan_balanced(rest, depth - 1, false, false, consumed + 1)
+  end
+
+  defp scan_balanced(<<_ch, rest::binary>>, depth, false, false, consumed) do
+    scan_balanced(rest, depth, false, false, consumed + 1)
+  end
 
   defp decode_tool_call(json) do
     with {:ok, map} when is_map(map) <- Jason.decode(json),

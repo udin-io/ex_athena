@@ -2,22 +2,31 @@ defmodule ExAthena.ToolCalls do
   @moduledoc """
   Extracts tool calls from a provider response.
 
-  Two protocols, two parsers:
+  Three parsers:
 
     * `ExAthena.ToolCalls.Native` — structured `tool_calls` array from the
       provider (OpenAI-style `function` + `arguments`, Claude `tool_use`
       blocks, Ollama's OpenAI-compatible payload).
     * `ExAthena.ToolCalls.TextTagged` — prompt-engineered
       `~~~tool_call <json> ~~~` blocks embedded in the assistant's text.
+    * `ExAthena.ToolCalls.RawJson` — bare or `` ```json ``-fenced JSON objects
+      emitted by weak open-weight models that ignore both native tool-call
+      APIs and the `~~~tool_call` fence format.
 
   ## Auto-fallback
 
-  `extract/2` picks the protocol based on `provider_capabilities.native_tool_calls`.
-  If native is claimed but the parser finds no tool calls AND the assistant
-  text contains `~~~tool_call` fences, it falls back to TextTagged. Conversely,
-  if native returns tool calls, TextTagged is skipped. The agent loop (Phase 2)
-  uses `augment_system_prompt/2` to add text-tagged instructions when a
-  provider lacks native support.
+  `extract/2` cascades through three tiers based on the response content and
+  `provider_capabilities.native_tool_calls`:
+
+    1. Structured `tool_calls` present → `Native.parse/1`.
+    2. Text contains `~~~tool_call` fences, or provider declared no native
+       support → `TextTagged.parse/1`.
+    3. Text looks like a raw JSON tool call (has both `"name"` and
+       `"arguments"` substrings) → `RawJson.parse/1`.
+    4. No match → `{:ok, []}`.
+
+  The agent loop uses `augment_system_prompt/2` to add text-tagged instructions
+  when a provider lacks native support.
   """
 
   alias ExAthena.Messages.ToolCall

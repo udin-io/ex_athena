@@ -41,9 +41,9 @@ defmodule ExAthena.Compactors.SnipTest do
   test "replaces stale tool-result bodies with a marker" do
     # Layout: pinned (1) + 8 turns including tool messages + 1 final assistant.
     # The early tool messages should be 4+ turns from the last assistant.
+    # Assistant + tool turn (these are old relative to last_assistant)
     messages =
       [Messages.system("sp")] ++
-        # Assistant + tool turn (these are old relative to last_assistant)
         for i <- 1..8 do
           if rem(i, 2) == 1 do
             Messages.assistant("turn #{i}")

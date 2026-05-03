@@ -71,8 +71,7 @@ defmodule ExAthena.Modes.PlanAndSolve do
         new_messages =
           state.messages ++ [ExAthena.Messages.assistant(response.text || "")]
 
-        {:continue,
-         %{state | messages: new_messages, mode_state: %{phase: :executing}}}
+        {:continue, %{state | messages: new_messages, mode_state: %{phase: :executing}}}
 
       {:error, reason} ->
         {:error, {:plan_and_solve_planning_failed, reason}}
