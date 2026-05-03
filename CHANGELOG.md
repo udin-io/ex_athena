@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.7 — `:llamacpp` placeholder api_key (parity with `:ollama`)
+
+### Fixed
+
+- `ExAthena.Providers.ReqLLM.build_opts/2` now substitutes a placeholder
+  `api_key: "llamacpp"` when `provider: :llamacpp` is selected and no
+  `:api_key` is supplied. Mirrors the `:ollama` path added in v0.4.1.
+  Without this, `req_llm` 1.10/1.11's openai adapter rejected the
+  request with `Invalid parameter: :api_key option, ...` before any HTTP
+  call left the BEAM — manifesting downstream as
+  `ExAthena.Error{kind: :server_error, message: "{:http_streaming_failed,
+  {:provider_build_failed, ... 'Failed to build streaming request: ...'}}"}`,
+  which retry/recovery layers then classified as `:api_error` and
+  hammered every 3 minutes until the recovery budget exhausted.
+- `ExAthena.Config.@local_openai_compatible_backends` now includes
+  `llamacpp: :llamacpp` so the backend marker is threaded through
+  `Config.pop_provider!/1` for `provider: :llamacpp` as it already was
+  for `provider: :ollama`.
+
+### Why
+
+Local llama-server (the `:llamacpp` provider) accepts unauthenticated
+HTTP just like Ollama; the OpenAI-compatible adapter in `req_llm`
+nevertheless requires *some* non-nil `:api_key`. Both bugs (no backend
+marker + no placeholder) had to land together for `:llamacpp` to work
+end-to-end against an unauthenticated local server. Verified against
+udin_code's failing planning run on
+`http://localhost:8080` with model auto-detected from `/v1/models`.
+
 ## v0.4.6 — Weak-model reliability: raw-JSON tool calls, compact schemas, strict structured output
 
 ### Added — `ExAthena.ToolCalls.RawJson` (ADR 0001)
