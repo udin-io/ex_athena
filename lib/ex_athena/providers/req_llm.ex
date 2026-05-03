@@ -291,10 +291,11 @@ defmodule ExAthena.Providers.ReqLLM do
   end
 
   # req_llm's openai adapter requires *some* api_key value even when
-  # `openai_compatible_backend: :ollama` allows missing auth — the underlying
-  # HTTP request still sets an Authorization header. Local servers ignore it,
-  # so substitute a placeholder when the caller didn't supply one.
+  # `openai_compatible_backend: :ollama | :llamacpp` allows missing auth — the
+  # underlying HTTP request still sets an Authorization header. Local servers
+  # ignore it, so substitute a placeholder when the caller didn't supply one.
   defp resolve_api_key(nil, :ollama), do: "ollama"
+  defp resolve_api_key(nil, :llamacpp), do: "llamacpp"
   defp resolve_api_key(key, _backend), do: key
 
   # ── Response mapping ──────────────────────────────────────────────

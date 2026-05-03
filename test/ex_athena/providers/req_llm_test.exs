@@ -46,6 +46,11 @@ defmodule ExAthena.Providers.ReqLLMTest do
       assert Keyword.get(opts, :req_llm_provider_tag) == "openai"
     end
 
+    test ":llamacpp threads openai_compatible_backend so missing API keys are tolerated" do
+      {_mod, opts} = Config.pop_provider!(provider: :llamacpp)
+      assert Keyword.get(opts, :openai_compatible_backend) == :llamacpp
+    end
+
     test ":claude translates to anthropic tag" do
       {_mod, opts} = Config.pop_provider!(provider: :claude)
       assert Keyword.get(opts, :req_llm_provider_tag) == "anthropic"
@@ -190,6 +195,37 @@ defmodule ExAthena.Providers.ReqLLMTest do
 
       [%ReqLLM.Tool{callback: cb}] = Adapter.to_req_llm_tools([tool_map])
       assert cb.(%{}) == {:error, :tool_execution_handled_by_ex_athena}
+    end
+  end
+
+  describe "build_opts/2 substitutes a placeholder api_key for backends that ignore auth" do
+    alias ExAthena.Request
+
+    test ":ollama backend with no api_key gets the \"ollama\" placeholder" do
+      request = %Request{messages: []}
+      {:ok, opts} = Adapter.build_opts(request, openai_compatible_backend: :ollama)
+      assert Keyword.get(opts, :api_key) == "ollama"
+    end
+
+    test ":llamacpp backend with no api_key gets the \"llamacpp\" placeholder" do
+      request = %Request{messages: []}
+      {:ok, opts} = Adapter.build_opts(request, openai_compatible_backend: :llamacpp)
+      assert Keyword.get(opts, :api_key) == "llamacpp"
+    end
+
+    test "explicit api_key wins over the placeholder for :llamacpp" do
+      request = %Request{messages: []}
+
+      {:ok, opts} =
+        Adapter.build_opts(request, openai_compatible_backend: :llamacpp, api_key: "real-key")
+
+      assert Keyword.get(opts, :api_key) == "real-key"
+    end
+
+    test "no backend marker means no placeholder substitution" do
+      request = %Request{messages: []}
+      {:ok, opts} = Adapter.build_opts(request, [])
+      refute Keyword.has_key?(opts, :api_key)
     end
   end
 

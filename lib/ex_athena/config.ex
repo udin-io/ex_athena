@@ -58,7 +58,8 @@ defmodule ExAthena.Config do
   # 2) get `openai_compatible_backend: <atom>` so req_llm's openai adapter
   #    allows missing API keys (unauthenticated local deployments).
   @local_openai_compatible_backends %{
-    ollama: :ollama
+    ollama: :ollama,
+    llamacpp: :llamacpp
   }
 
   @doc """
