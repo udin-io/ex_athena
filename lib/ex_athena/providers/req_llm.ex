@@ -207,6 +207,7 @@ defmodule ExAthena.Providers.ReqLLM do
   defp encode_arguments(nil), do: "{}"
   defp encode_arguments(args) when is_binary(args), do: args
   defp encode_arguments(args) when is_map(args), do: Jason.encode!(args)
+  defp encode_arguments(args), do: raise(ArgumentError, "unexpected tool_call arguments type: #{inspect(args)}")
 
   # ── Options ────────────────────────────────────────────────────────
 
