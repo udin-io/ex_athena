@@ -229,6 +229,62 @@ defmodule ExAthena.Providers.ReqLLMTest do
     end
   end
 
+  describe "to_req_llm_message/1 assistant tool_calls replay shape" do
+    alias ExAthena.Messages.{Message, ToolCall}
+
+    test "map arguments are JSON-encoded into ReqLLM.ToolCall with type: function" do
+      msg = %Message{
+        role: :assistant,
+        content: nil,
+        tool_calls: [%ToolCall{id: "call_1", name: "read_file", arguments: %{"path" => "x"}}]
+      }
+
+      %ReqLLM.Message{tool_calls: [tc]} = Adapter.to_req_llm_message(msg)
+
+      assert %ReqLLM.ToolCall{} = tc
+      assert tc.id == "call_1"
+      assert tc.type == "function"
+      assert tc.function.name == "read_file"
+      assert tc.function.arguments == ~s({"path":"x"})
+    end
+
+    test "nil arguments produce empty JSON object string" do
+      msg = %Message{
+        role: :assistant,
+        content: nil,
+        tool_calls: [%ToolCall{id: "call_2", name: "list_files", arguments: nil}]
+      }
+
+      %ReqLLM.Message{tool_calls: [tc]} = Adapter.to_req_llm_message(msg)
+
+      assert tc.function.arguments == "{}"
+    end
+
+    test "pre-encoded binary arguments are passed through unchanged" do
+      json = ~s({"key":"val"})
+
+      msg = %Message{
+        role: :assistant,
+        content: nil,
+        tool_calls: [%ToolCall{id: "call_3", name: "write_file", arguments: json}]
+      }
+
+      %ReqLLM.Message{tool_calls: [tc]} = Adapter.to_req_llm_message(msg)
+
+      assert tc.function.arguments == json
+    end
+
+    test "absent tool_calls produces nil in the message" do
+      msg = %Message{role: :assistant, content: "hello", tool_calls: nil}
+      assert %ReqLLM.Message{tool_calls: nil} = Adapter.to_req_llm_message(msg)
+    end
+
+    test "empty tool_calls list produces nil in the message" do
+      msg = %Message{role: :assistant, content: "hello", tool_calls: []}
+      assert %ReqLLM.Message{tool_calls: nil} = Adapter.to_req_llm_message(msg)
+    end
+  end
+
   describe "build_opts/2 forwards response_format" do
     alias ExAthena.Request
 

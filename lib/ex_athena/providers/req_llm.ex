@@ -161,15 +161,16 @@ defmodule ExAthena.Providers.ReqLLM do
     {:ok, base ++ converted}
   end
 
-  defp to_req_llm_message(%Message{role: :system, content: content}) do
+  @doc false
+  def to_req_llm_message(%Message{role: :system, content: content}) do
     %ReqLLM.Message{role: :system, content: text_parts(content)}
   end
 
-  defp to_req_llm_message(%Message{role: :user, content: content}) do
+  def to_req_llm_message(%Message{role: :user, content: content}) do
     %ReqLLM.Message{role: :user, content: text_parts(content)}
   end
 
-  defp to_req_llm_message(%Message{role: :assistant, content: content, tool_calls: calls}) do
+  def to_req_llm_message(%Message{role: :assistant, content: content, tool_calls: calls}) do
     %ReqLLM.Message{
       role: :assistant,
       content: text_parts(content),
@@ -177,7 +178,7 @@ defmodule ExAthena.Providers.ReqLLM do
     }
   end
 
-  defp to_req_llm_message(%Message{role: :tool, tool_results: [%ToolResult{} = first | _]}) do
+  def to_req_llm_message(%Message{role: :tool, tool_results: [%ToolResult{} = first | _]}) do
     %ReqLLM.Message{
       role: :tool,
       content: text_parts(first.content),
@@ -186,7 +187,7 @@ defmodule ExAthena.Providers.ReqLLM do
     }
   end
 
-  defp to_req_llm_message(%Message{role: :tool, content: content}) when is_binary(content) do
+  def to_req_llm_message(%Message{role: :tool, content: content}) when is_binary(content) do
     # Older shape — no tool_call_id available; forward as user-visible text.
     %ReqLLM.Message{role: :user, content: text_parts(content)}
   end
@@ -199,13 +200,14 @@ defmodule ExAthena.Providers.ReqLLM do
 
   defp format_tool_calls(calls) do
     Enum.map(calls, fn tc ->
-      %{
-        id: tc.id,
-        name: tc.name,
-        arguments: tc.arguments || %{}
-      }
+      ReqLLM.ToolCall.new(tc.id, tc.name, encode_arguments(tc.arguments))
     end)
   end
+
+  defp encode_arguments(nil), do: "{}"
+  defp encode_arguments(args) when is_binary(args), do: args
+  defp encode_arguments(args) when is_map(args), do: Jason.encode!(args)
+  defp encode_arguments(args), do: raise(ArgumentError, "unexpected tool_call arguments type: #{inspect(args)}")
 
   # ── Options ────────────────────────────────────────────────────────
 
