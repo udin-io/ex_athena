@@ -81,10 +81,21 @@ defmodule ExAthena.ToolCalls do
 
   The agent loop (Phase 2) calls this when the chosen provider lacks native
   tool-call support, or when the user has forced TextTagged mode.
+
+  ## Options
+
+    * `:compact` — when `true`, emits a one-line-per-tool signature instead
+      of the full JSON schema. Useful for weak open-weight models that degrade
+      past ~4 KB system prompts. Default: `false`.
   """
-  @spec augment_system_prompt(String.t() | nil, [map()]) :: String.t()
-  def augment_system_prompt(existing, tools) when is_list(tools) do
+  @spec augment_system_prompt(String.t() | nil, [map()], keyword()) :: String.t()
+  def augment_system_prompt(existing, tools, opts \\ []) when is_list(tools) do
     existing = existing || ""
+
+    formatter =
+      if Keyword.get(opts, :compact, false),
+        do: &format_tool_list_compact/1,
+        else: &format_tool_list/1
 
     preamble = """
     You have access to the following tools. When you want to call a tool,
@@ -101,7 +112,7 @@ defmodule ExAthena.ToolCalls do
 
     Available tools:
 
-    #{format_tool_list(tools)}
+    #{formatter.(tools)}
     """
 
     if String.trim(existing) == "" do
@@ -124,4 +135,86 @@ defmodule ExAthena.ToolCalls do
       """
     end)
   end
+
+  defp format_tool_list_compact(tools) do
+    Enum.map_join(tools, "\n", &compact_tool_line/1)
+  end
+
+  defp compact_tool_line(tool) do
+    name = Map.get(tool, :name) || Map.get(tool, "name") || "<unnamed>"
+    desc = Map.get(tool, :description) || Map.get(tool, "description") || ""
+    schema = Map.get(tool, :schema) || Map.get(tool, "schema") || %{}
+
+    sig = "#{name}(#{compact_params(schema)})"
+    short = short_desc(desc)
+
+    if short == "", do: "- #{sig}", else: "- #{sig} — #{short}"
+  end
+
+  defp compact_params(schema) do
+    properties = Map.get(schema, :properties) || Map.get(schema, "properties")
+
+    required =
+      (Map.get(schema, :required) || Map.get(schema, "required") || []) |> Enum.map(&to_string/1)
+
+    case properties do
+      nil ->
+        ""
+
+      props when map_size(props) == 0 ->
+        ""
+
+      props ->
+        props
+        |> Enum.sort_by(fn {k, _} -> {to_string(k) not in required, to_string(k)} end)
+        |> Enum.map(fn {k, v} ->
+          key = to_string(k)
+          type_str = compact_type(v)
+          if key in required, do: "#{key}: #{type_str}", else: "#{key}?: #{type_str}"
+        end)
+        |> Enum.join(", ")
+    end
+  end
+
+  defp compact_type(schema) when is_map(schema) do
+    type = Map.get(schema, :type) || Map.get(schema, "type")
+    items = Map.get(schema, :items) || Map.get(schema, "items")
+
+    cond do
+      type == "array" and is_map(items) ->
+        item_type = Map.get(items, :type) || Map.get(items, "type")
+
+        if item_type in ~w(string number integer boolean null),
+          do: "#{item_type}[]",
+          else: "array"
+
+      type in ~w(string number integer boolean null object) ->
+        type
+
+      true ->
+        "object"
+    end
+  end
+
+  defp compact_type(_), do: "object"
+
+  defp short_desc(desc) when is_binary(desc) do
+    cleaned = desc |> String.replace(~r/\s+/, " ") |> String.trim()
+
+    case cleaned do
+      "" ->
+        ""
+
+      s ->
+        sentence =
+          case String.split(s, ". ", parts: 2) do
+            [first, _rest] -> first <> "."
+            [only] -> only
+          end
+
+        if String.length(sentence) > 80, do: String.slice(sentence, 0, 80), else: sentence
+    end
+  end
+
+  defp short_desc(_), do: ""
 end

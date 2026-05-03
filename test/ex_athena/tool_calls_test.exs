@@ -209,4 +209,109 @@ defmodule ExAthena.ToolCallsTest do
       assert ToolCalls.augment_system_prompt(nil, []) =~ "~~~tool_call"
     end
   end
+
+  describe "augment_system_prompt/3 compact: true" do
+    @tool_with_params %{
+      name: "read_file",
+      description: "Read a file from the filesystem. Returns its content.",
+      schema: %{
+        type: "object",
+        properties: %{
+          path: %{type: "string"},
+          content: %{type: "string"}
+        },
+        required: ["path"]
+      }
+    }
+
+    @tool_no_params %{
+      name: "ping",
+      description: "Check if the service is alive.",
+      schema: %{}
+    }
+
+    @tool_array_params %{
+      name: "list_files",
+      description: "List files in directories.",
+      schema: %{
+        type: "object",
+        properties: %{
+          paths: %{type: "array", items: %{type: "string"}}
+        },
+        required: ["paths"]
+      }
+    }
+
+    test "renders one-line-per-tool signature" do
+      result = ToolCalls.augment_system_prompt(nil, [@tool_with_params], compact: true)
+      assert result =~ "read_file("
+      assert result =~ "path: string"
+      assert result =~ "content?: string"
+    end
+
+    test "marks non-required params with ?" do
+      result = ToolCalls.augment_system_prompt(nil, [@tool_with_params], compact: true)
+      assert result =~ "content?: string"
+      refute result =~ "path?:"
+    end
+
+    test "handles tools with no params" do
+      result = ToolCalls.augment_system_prompt(nil, [@tool_no_params], compact: true)
+      assert result =~ "ping()"
+    end
+
+    test "handles array params with scalar items" do
+      result = ToolCalls.augment_system_prompt(nil, [@tool_array_params], compact: true)
+      assert result =~ "paths: string[]"
+    end
+
+    test "truncates multi-sentence descriptions to first sentence" do
+      result = ToolCalls.augment_system_prompt(nil, [@tool_with_params], compact: true)
+      refute result =~ "Returns its content."
+      assert result =~ "Read a file from the filesystem."
+    end
+
+    test "compact output is <= 80% bytes of non-compact for a 10-tool fixture" do
+      tools = build_10_tool_fixture()
+      compact = ToolCalls.augment_system_prompt(nil, tools, compact: true)
+      full = ToolCalls.augment_system_prompt(nil, tools)
+      assert byte_size(compact) <= byte_size(full) * 0.80
+    end
+
+    test "default (compact omitted) is byte-identical to pre-change behavior" do
+      tools = [@tool_with_params]
+
+      assert ToolCalls.augment_system_prompt(nil, tools) ==
+               ToolCalls.augment_system_prompt(nil, tools, [])
+
+      assert ToolCalls.augment_system_prompt(nil, tools) ==
+               ToolCalls.augment_system_prompt(nil, tools, compact: false)
+    end
+
+    test "output contains ~~~tool_call fence instructions" do
+      result = ToolCalls.augment_system_prompt(nil, [@tool_with_params], compact: true)
+      assert result =~ "~~~tool_call"
+    end
+
+    defp build_10_tool_fixture do
+      Enum.map(1..10, fn i ->
+        %{
+          name: "tool_#{i}",
+          description:
+            "Does thing number #{i} in the system. Extra details about tool #{i} that are not needed.",
+          schema: %{
+            type: "object",
+            properties: %{
+              param_a: %{type: "string"},
+              param_b: %{type: "integer"},
+              param_c: %{type: "boolean"},
+              param_d: %{type: "object", properties: %{nested: %{type: "string"}}},
+              param_e: %{type: "array", items: %{type: "string"}}
+            },
+            required: ["param_a", "param_b"]
+          }
+        }
+      end)
+    end
+  end
 end
