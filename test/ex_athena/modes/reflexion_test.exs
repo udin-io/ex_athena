@@ -21,9 +21,10 @@ defmodule ExAthena.Modes.ReflexionTest do
       n = :counters.get(counter, 1)
 
       # Assert: reflection requests have no tools.
-      is_reflection = Enum.any?(request.messages, fn m ->
-        is_binary(m.content) and String.contains?(m.content || "", "Reflect on your last step")
-      end)
+      is_reflection =
+        Enum.any?(request.messages, fn m ->
+          is_binary(m.content) and String.contains?(m.content || "", "Reflect on your last step")
+        end)
 
       cond do
         # Turn 1: tool call. Turn 2: reflection. Turn 3: tool call. Turn 4: reflection.

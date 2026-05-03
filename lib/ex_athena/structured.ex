@@ -45,7 +45,9 @@ defmodule ExAthena.Structured do
     {provider_mod, opts} = Config.pop_provider!(opts)
     caps = provider_mod.capabilities()
 
-    {augmented_prompt, request_opts} = build_request_opts(prompt, schema, instructions, caps, opts)
+    {augmented_prompt, request_opts} =
+      build_request_opts(prompt, schema, instructions, caps, opts)
+
     request = Request.new(augmented_prompt, request_opts)
 
     provider_opts = Config.provider_opts(provider_mod, opts)
@@ -272,8 +274,13 @@ defmodule ExAthena.Structured do
       value = Map.get(json, key) || Map.get(json, to_string(key))
 
       case value do
-        nil -> {:cont, :ok}
-        v -> if validate_basic(v, prop_schema) == :ok, do: {:cont, :ok}, else: {:halt, {:error, {:property_invalid, key}}}
+        nil ->
+          {:cont, :ok}
+
+        v ->
+          if validate_basic(v, prop_schema) == :ok,
+            do: {:cont, :ok},
+            else: {:halt, {:error, {:property_invalid, key}}}
       end
     end)
   end

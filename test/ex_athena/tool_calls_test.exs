@@ -19,7 +19,8 @@ defmodule ExAthena.ToolCallsTest do
                  }
                ])
 
-      assert %ToolCall{id: "call_123", name: "read_file", arguments: %{"path" => "/tmp/foo"}} = call
+      assert %ToolCall{id: "call_123", name: "read_file", arguments: %{"path" => "/tmp/foo"}} =
+               call
     end
 
     test "parses Claude-style tool_use blocks" do
@@ -33,7 +34,8 @@ defmodule ExAthena.ToolCallsTest do
                  }
                ])
 
-      assert %ToolCall{id: "toolu_abc", name: "read_file", arguments: %{"path" => "/tmp/bar"}} = call
+      assert %ToolCall{id: "toolu_abc", name: "read_file", arguments: %{"path" => "/tmp/bar"}} =
+               call
     end
 
     test "handles empty/missing arguments" do
@@ -118,7 +120,13 @@ defmodule ExAthena.ToolCallsTest do
   describe "extract/2 dispatch + auto-fallback" do
     test "picks Native when tool_calls are present" do
       response = %{
-        tool_calls: [%{"type" => "function", "id" => "1", "function" => %{"name" => "t", "arguments" => "{}"}}],
+        tool_calls: [
+          %{
+            "type" => "function",
+            "id" => "1",
+            "function" => %{"name" => "t", "arguments" => "{}"}
+          }
+        ],
         text: ""
       }
 
@@ -131,7 +139,8 @@ defmodule ExAthena.ToolCallsTest do
         text: "~~~tool_call\n{\"name\": \"t\", \"arguments\": {}}\n~~~"
       }
 
-      assert {:ok, [%ToolCall{name: "t"}]} = ToolCalls.extract(response, %{native_tool_calls: true})
+      assert {:ok, [%ToolCall{name: "t"}]} =
+               ToolCalls.extract(response, %{native_tool_calls: true})
     end
 
     test "uses TextTagged when provider declares no native tool calls" do
@@ -140,11 +149,46 @@ defmodule ExAthena.ToolCallsTest do
         text: "~~~tool_call\n{\"name\": \"t\", \"arguments\": {}}\n~~~"
       }
 
-      assert {:ok, [%ToolCall{name: "t"}]} = ToolCalls.extract(response, %{native_tool_calls: false})
+      assert {:ok, [%ToolCall{name: "t"}]} =
+               ToolCalls.extract(response, %{native_tool_calls: false})
     end
 
     test "returns empty list when no tool calls anywhere" do
       assert {:ok, []} = ToolCalls.extract(%{tool_calls: nil, text: "just text"})
+    end
+
+    test "falls back to RawJson when native was claimed and text has bare JSON" do
+      response = %{
+        tool_calls: nil,
+        text: ~s({"name":"t","arguments":{"x":1}})
+      }
+
+      assert {:ok, [%ToolCall{name: "t", arguments: %{"x" => 1}}]} =
+               ToolCalls.extract(response, %{native_tool_calls: true})
+    end
+
+    test "TextTagged tier still wins over RawJson when fence is present" do
+      response = %{
+        tool_calls: nil,
+        text: "~~~tool_call\n{\"name\": \"t\", \"arguments\": {}}\n~~~"
+      }
+
+      assert {:ok, [%ToolCall{name: "t"}]} =
+               ToolCalls.extract(response, %{native_tool_calls: true})
+    end
+
+    test "RawJson fallback also active when native_tool_calls is false" do
+      response = %{
+        tool_calls: nil,
+        text: ~s({"name":"t","arguments":{}})
+      }
+
+      assert {:ok, [%ToolCall{name: "t"}]} =
+               ToolCalls.extract(response, %{native_tool_calls: false})
+    end
+
+    test "empty text and empty tool_calls returns empty list" do
+      assert {:ok, []} = ToolCalls.extract(%{tool_calls: nil, text: ""})
     end
   end
 

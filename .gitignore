@@ -21,3 +21,7 @@ ex_athena-*.tar
 
 # Temporary files, for example, from tests.
 /tmp/
+# UdinCode planning artifacts
+.artifacts/*
+!.artifacts/adr-*.md
+.claude/

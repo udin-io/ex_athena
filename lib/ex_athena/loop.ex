@@ -375,7 +375,9 @@ defmodule ExAthena.Loop do
     tool_modules = opts |> Tools.resolve() |> normalize_tool_list()
 
     with :ok <- validate_tools(tool_modules) do
-      capabilities = provider_mod.capabilities()
+      capabilities =
+        provider_mod.capabilities()
+        |> Map.merge(Keyword.get(opts, :capabilities, %{}))
 
       memory_messages = resolve_memory(cwd, opts)
       skills = resolve_skills(cwd, opts)
