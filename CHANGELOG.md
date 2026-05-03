@@ -5,6 +5,91 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.6 — Weak-model reliability: raw-JSON tool calls, compact schemas, strict structured output
+
+### Added — `ExAthena.ToolCalls.RawJson` (ADR 0001)
+
+- Third tool-call extraction tier behind `Native` and `TextTagged`.
+  Recognises bare and ` ```json ` -fenced JSON objects with a
+  `name` / `arguments` shape using a balanced-brace scanner that tracks
+  in-string state and backslash escapes. Wired into
+  `ToolCalls.extract/2` as the final fallback so weak open-weight
+  models (e.g. `qwen2.5-coder:14b` on Ollama) that emit tool calls as
+  bare JSON in assistant prose are no longer silently dropped.
+- A cheap pre-check requires both `"name"` and `"arguments"`
+  substrings before the scanner runs, so non-tool prose is rejected in
+  O(n) without engaging the brace walker.
+
+### Added — per-request capability override (ADR 0001)
+
+- `ExAthena.Loop.run/2` now accepts a `:capabilities` opt that is
+  merged on top of `provider_mod.capabilities()` for the duration of
+  the run. Lets callers flip `native_tool_calls: false` for a single
+  request to force `Modes.ReAct` into fence-augmented prompting, with
+  no provider-module fork required. The merge is shallow and
+  forward-compatible: future capability flags slot in the same way.
+
+### Added — compact tool-schema mode (ADR 0002)
+
+- `ExAthena.ToolCalls.augment_system_prompt/3` (was `/2`) takes a new
+  `compact: true` opt that emits one type-signature line per tool
+  instead of dumping the full JSON schema, e.g.
+  `- read_file(path: string, content?: string) — read a file`.
+  Required vs optional marked with `?`; types compacted to
+  `string|number|integer|boolean|array|object|null`; scalar arrays
+  rendered as `T[]`; nested object structure collapsed past depth 2;
+  description truncated to first sentence and capped near 80 chars.
+- Default behaviour is byte-identical — `compact: true` is opt-in and
+  the existing 2-arity call sites still work unchanged.
+- New static capability `compact_tool_schemas: true` on
+  `ExAthena.Providers.ReqLLM.capabilities/0` so downstream callers can
+  gate per-model heuristics on it (e.g. AthenaRunner deciding to flip
+  on `compact: true` only for known-weak Ollama model ids).
+
+### Why (ADRs 0001 + 0002)
+
+Weak Ollama models such as `qwen2.5-coder:14b` show measurable quality
+degradation past ~4 KB of system prompt and don't reliably honour the
+`~~~tool_call` fence when given a 5–10 KB schema dump from
+`augment_system_prompt/2`. Together the two changes mean: (a) tool
+calls those models *do* emit (often as bare JSON) are now caught by
+`RawJson`, and (b) the prompt budget those models see drops by ~80%
+on a 10-tool fixture, raising fence compliance. Strong hosted models
+(Claude, GPT-4) are unaffected — they still receive tools structurally
+via native `tool_calls`. Unblocks `udin-io/udin_code#1268`.
+
+### Added — strict structured-output pass-through (ADR 0003)
+
+- `ExAthena.Providers.ReqLLM.build_opts/2` now forwards
+  `response_format` to req_llm, preferring `opts[:response_format]`
+  over `request.response_format`. Accepts `:json`, `"json"`, and
+  JSON-schema maps verbatim — req_llm normalises before hitting the
+  Ollama / OpenAI / etc. backend.
+- New `:structured_output` capability key on
+  `ExAthena.Capabilities` typespec; `Providers.ReqLLM.capabilities/0`
+  declares `structured_output: true`.
+- New module `ExAthena.StructuredOutput` with `request/3`. Strict
+  one-shot variant: requires the resolved provider (after merging the
+  per-request `:capabilities` override from ADR 0001) to declare
+  `:structured_output`. Returns `{:ok, decoded_map}` on success,
+  `{:error, :no_structured_output}` when the capability is absent,
+  `{:error, :invalid_json}` on decode failure, and passes provider
+  errors through.
+- The existing `ExAthena.Structured.extract/2` retry/repair flavour is
+  unchanged. The two helpers coexist by design — `Structured.extract/2`
+  for best-effort retry-with-validation, `StructuredOutput.request/3`
+  for the strict provider-enforced contract.
+
+### Why (ADR 0003)
+
+Downstream `udin_code` flows that need schema-conforming JSON (scope
+decisions, ExitPlanMode-style phase-end signals) currently rely on
+brittle text extraction because weaker open-weight models don't emit
+structured `tool_calls`. Now those flows can request provider-enforced
+JSON when the resolved provider supports it, and get a loud
+`:no_structured_output` error otherwise — never a silent text-parse
+fallback.
+
 ## v0.4.5 — Stream heartbeat + time-to-first-token (TTFT)
 
 ### Added
