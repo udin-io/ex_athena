@@ -11,6 +11,10 @@ defmodule ExAthena.Providers.ReqLLMTest do
       assert caps.native_tool_calls
       assert caps.json_mode
     end
+
+    test "declares structured_output: true" do
+      assert Adapter.capabilities().structured_output == true
+    end
   end
 
   describe "Config resolves builtin provider atoms to the ReqLLM adapter" do
@@ -186,6 +190,36 @@ defmodule ExAthena.Providers.ReqLLMTest do
 
       [%ReqLLM.Tool{callback: cb}] = Adapter.to_req_llm_tools([tool_map])
       assert cb.(%{}) == {:error, :tool_execution_handled_by_ex_athena}
+    end
+  end
+
+  describe "build_opts/2 forwards response_format" do
+    alias ExAthena.Request
+
+    test "passes :json atom from request.response_format" do
+      request = %Request{messages: [], response_format: :json}
+      {:ok, opts} = Adapter.build_opts(request, [])
+      assert Keyword.get(opts, :response_format) == :json
+    end
+
+    test "passes a schema map from request.response_format" do
+      schema = %{type: "json_schema", json_schema: %{name: "r", schema: %{}, strict: true}}
+      request = %Request{messages: [], response_format: schema}
+      {:ok, opts} = Adapter.build_opts(request, [])
+      assert Keyword.get(opts, :response_format) == schema
+    end
+
+    test "opts[:response_format] overrides request.response_format" do
+      request = %Request{messages: [], response_format: :json}
+      schema = %{type: "json_schema", json_schema: %{name: "r", schema: %{}, strict: true}}
+      {:ok, opts} = Adapter.build_opts(request, response_format: schema)
+      assert Keyword.get(opts, :response_format) == schema
+    end
+
+    test "omits response_format key when neither opts nor request sets it" do
+      request = %Request{messages: []}
+      {:ok, opts} = Adapter.build_opts(request, [])
+      refute Keyword.has_key?(opts, :response_format)
     end
   end
 end

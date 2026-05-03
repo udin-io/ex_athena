@@ -53,6 +53,7 @@ defmodule ExAthena.Providers.ReqLLM do
       native_tool_calls: true,
       streaming: true,
       json_mode: true,
+      structured_output: true,
       max_tokens: 200_000,
       supports_resume: false,
       supports_system_prompt: true,
@@ -208,7 +209,8 @@ defmodule ExAthena.Providers.ReqLLM do
 
   # ── Options ────────────────────────────────────────────────────────
 
-  defp build_opts(%Request{} = request, opts) do
+  @doc false
+  def build_opts(%Request{} = request, opts) do
     backend = Keyword.get(opts, :openai_compatible_backend)
     base_url = normalize_base_url(Keyword.get(opts, :base_url), backend)
     api_key = resolve_api_key(Keyword.get(opts, :api_key), backend)
@@ -224,6 +226,7 @@ defmodule ExAthena.Providers.ReqLLM do
         stop: request.stop,
         tools: to_req_llm_tools(request.tools),
         tool_choice: request.tool_choice,
+        response_format: Keyword.get(opts, :response_format, request.response_format),
         receive_timeout: request.timeout_ms
       ]
       |> Keyword.reject(fn {_k, v} -> is_nil(v) or v == [] end)
