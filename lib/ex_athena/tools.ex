@@ -73,7 +73,7 @@ defmodule ExAthena.Tools do
   end
 
   @doc """
-  Build the prompt-friendly list used by `ExAthena.ToolCalls.augment_system_prompt/2`
+  Build the prompt-friendly list used by `ExAthena.ToolCalls.augment_system_prompt/3`
   when we fall back to the TextTagged protocol.
   """
   @spec describe_for_prompt([module()]) :: [map()]

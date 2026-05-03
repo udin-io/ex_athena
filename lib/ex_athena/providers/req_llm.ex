@@ -56,7 +56,8 @@ defmodule ExAthena.Providers.ReqLLM do
       max_tokens: 200_000,
       supports_resume: false,
       supports_system_prompt: true,
-      supports_temperature: true
+      supports_temperature: true,
+      compact_tool_schemas: true
     }
   end
 
