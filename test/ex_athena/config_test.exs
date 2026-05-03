@@ -3,12 +3,25 @@ defmodule ExAthena.ConfigTest do
 
   alias ExAthena.Config
 
+  @all_provider_atoms [
+    :ollama,
+    :openai,
+    :openai_compatible,
+    :llamacpp,
+    :claude,
+    :anthropic,
+    :req_llm
+  ]
+
   setup do
+    # Clear any env leaked by Igniter-based tests (install task) that temporarily
+    # mutate Application env while writing config files.
+    for atom <- [:default_provider, :model | @all_provider_atoms],
+        do: Application.delete_env(:ex_athena, atom)
+
     on_exit(fn ->
-      Application.delete_env(:ex_athena, :default_provider)
-      Application.delete_env(:ex_athena, :ollama)
-      Application.delete_env(:ex_athena, :openai)
-      Application.delete_env(:ex_athena, :openai_compatible)
+      for atom <- [:default_provider, :model | @all_provider_atoms],
+          do: Application.delete_env(:ex_athena, atom)
     end)
 
     :ok
@@ -51,10 +64,7 @@ defmodule ExAthena.ConfigTest do
 
       # per-call wins
       assert "call-model" =
-               Config.get(ExAthena.Providers.ReqLLM, :model,
-                 [model: "call-model"],
-                 "default"
-               )
+               Config.get(ExAthena.Providers.ReqLLM, :model, [model: "call-model"], "default")
 
       # provider env wins over top-level
       assert "env-model" = Config.get(ExAthena.Providers.ReqLLM, :model, [], "default")

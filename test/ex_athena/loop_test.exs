@@ -28,7 +28,9 @@ defmodule ExAthena.LoopTest do
   end
 
   test "plain text response: loop terminates in one iteration", %{dir: dir} do
-    responses = [%Response{text: "no tools needed", tool_calls: [], finish_reason: :stop, provider: :mock}]
+    responses = [
+      %Response{text: "no tools needed", tool_calls: [], finish_reason: :stop, provider: :mock}
+    ]
 
     assert {:ok, result} =
              Loop.run("hi",
@@ -80,7 +82,13 @@ defmodule ExAthena.LoopTest do
     # Responder that always calls a tool — infinite loop if not capped
     loop_response = %Response{
       text: "",
-      tool_calls: [%ToolCall{id: "c#{System.unique_integer([:positive])}", name: "glob", arguments: %{"pattern" => "**"}}],
+      tool_calls: [
+        %ToolCall{
+          id: "c#{System.unique_integer([:positive])}",
+          name: "glob",
+          arguments: %{"pattern" => "**"}
+        }
+      ],
       finish_reason: :tool_calls,
       provider: :mock
     }
@@ -155,6 +163,76 @@ defmodule ExAthena.LoopTest do
     assert content =~ "nonexistent_tool"
   end
 
+  test "capabilities: %{native_tool_calls: false} injects ~~~tool_call preamble into system prompt",
+       %{dir: dir} do
+    test_pid = self()
+
+    responder = fn request ->
+      send(test_pid, {:system_prompt, request.system_prompt})
+      %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    end
+
+    assert {:ok, _} =
+             Loop.run("hi",
+               provider: :mock,
+               mock: [responder: responder],
+               cwd: dir,
+               tools: [],
+               capabilities: %{native_tool_calls: false}
+             )
+
+    assert_receive {:system_prompt, sp}
+    assert sp =~ "~~~tool_call"
+  end
+
+  test "without capabilities override, native Mock provider does NOT get the preamble",
+       %{dir: dir} do
+    test_pid = self()
+
+    responder = fn request ->
+      send(test_pid, {:system_prompt, request.system_prompt})
+      %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+    end
+
+    assert {:ok, _} =
+             Loop.run("hi",
+               provider: :mock,
+               mock: [responder: responder],
+               cwd: dir,
+               tools: []
+             )
+
+    assert_receive {:system_prompt, sp}
+    refute (sp || "") =~ "~~~tool_call"
+  end
+
+  test "capabilities override: fenced tool call in text is parsed and dispatched", %{dir: dir} do
+    File.write!(Path.join(dir, "hello.txt"), "hello world")
+
+    responses = [
+      %Response{
+        text: "~~~tool_call\n{\"name\": \"read\", \"arguments\": {\"path\": \"hello.txt\"}}\n~~~",
+        tool_calls: [],
+        finish_reason: :stop,
+        provider: :mock
+      },
+      %Response{text: "file read ok", tool_calls: [], finish_reason: :stop, provider: :mock}
+    ]
+
+    assert {:ok, result} =
+             Loop.run("read hello.txt",
+               provider: :mock,
+               mock: [responder: script(responses)],
+               cwd: dir,
+               tools: [ExAthena.Tools.Read],
+               capabilities: %{native_tool_calls: false}
+             )
+
+    assert result.text == "file read ok"
+    assert result.iterations == 1
+    assert Enum.any?(result.messages, &match?(%{role: :tool}, &1))
+  end
+
   test "plan_mode tool changes the ctx phase mid-loop", %{dir: dir} do
     responses = [
       %Response{
@@ -165,7 +243,9 @@ defmodule ExAthena.LoopTest do
       },
       %Response{
         text: "now I can write",
-        tool_calls: [%ToolCall{id: "c2", name: "write", arguments: %{"path" => "new.txt", "content" => "hi"}}],
+        tool_calls: [
+          %ToolCall{id: "c2", name: "write", arguments: %{"path" => "new.txt", "content" => "hi"}}
+        ],
         finish_reason: :tool_calls,
         provider: :mock
       },

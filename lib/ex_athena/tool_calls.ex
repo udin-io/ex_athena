@@ -21,7 +21,7 @@ defmodule ExAthena.ToolCalls do
   """
 
   alias ExAthena.Messages.ToolCall
-  alias ExAthena.ToolCalls.{Native, TextTagged}
+  alias ExAthena.ToolCalls.{Native, RawJson, TextTagged}
 
   @type provider_response :: %{
           optional(:text) => String.t() | nil,
@@ -43,20 +43,28 @@ defmodule ExAthena.ToolCalls do
   end
 
   def extract(%{text: text}, %{native_tool_calls: false}) when is_binary(text) do
-    TextTagged.parse(text)
+    with {:ok, []} <- TextTagged.parse(text) do
+      if looks_like_raw_json?(text), do: RawJson.parse(text), else: {:ok, []}
+    end
   end
 
   def extract(%{text: text}, _caps) when is_binary(text) do
-    # Native was claimed (or unknown) but came back empty — look for text-tagged
-    # blocks as an auto-fallback.
-    if String.contains?(text || "", "~~~tool_call") do
-      TextTagged.parse(text)
-    else
-      {:ok, []}
+    # Native was claimed (or unknown) but came back empty — cascade through
+    # text-tagged fences then bare-JSON as fallback tiers.
+    cond do
+      String.contains?(text, "~~~tool_call") -> TextTagged.parse(text)
+      looks_like_raw_json?(text) -> RawJson.parse(text)
+      true -> {:ok, []}
     end
   end
 
   def extract(_response, _caps), do: {:ok, []}
+
+  # Cheap pre-check before running the balanced-brace scanner. Both keys must
+  # appear in the text to be worth attempting full parse.
+  defp looks_like_raw_json?(text) do
+    String.contains?(text, ~s("name")) and String.contains?(text, ~s("arguments"))
+  end
 
   @doc """
   Append text-tagged tool-call instructions to a system prompt so
