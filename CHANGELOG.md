@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.8 — Canonical `%ReqLLM.ToolCall{}` on assistant replay (llama.cpp HTTP 500 fix)
+
+### Fixed
+
+- `ExAthena.Providers.ReqLLM.format_tool_calls/1` now constructs
+  `%ReqLLM.ToolCall{}` via `ReqLLM.ToolCall.new/3` instead of a flat
+  `%{id, name, arguments}` map. The canonical struct nests the function
+  payload under `type: "function"` / `function: %{name, arguments}`,
+  which is what llama.cpp's strict parser requires on assistant
+  tool_call replay (iteration 2+ of a tool-calling loop). Without this,
+  llama.cpp returned HTTP 500 `Failed to parse messages: Missing tool
+  call type` on every multi-turn tool run; OpenAI/Anthropic/Ollama
+  silently tolerated the looser shape and so the bug only surfaced
+  against llama-server.
+- Arguments are JSON-encoded once at the provider boundary: `nil →
+  "{}"`, pre-encoded binaries pass through, maps go through
+  `Jason.encode!/1`. Internal ExAthena code continues to work with
+  Elixir maps; the canonical wire shape is materialised only at the
+  edge.
+
+### Why
+
+req_llm 1.10/1.11's `%ReqLLM.ToolCall{}` mirrors the OpenAI Chat
+Completions wire format and is what every supported backend expects.
+Aligning to it fixes llama.cpp today and pre-empts breakage when
+req_llm tightens validation in future releases. See ADR-0004.
+
 ## v0.4.7 — `:llamacpp` placeholder api_key (parity with `:ollama`)
 
 ### Fixed
