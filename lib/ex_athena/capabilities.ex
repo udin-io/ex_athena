@@ -13,6 +13,7 @@ defmodule ExAthena.Capabilities do
           optional(:native_tool_calls) => boolean(),
           optional(:streaming) => boolean(),
           optional(:json_mode) => boolean(),
+          optional(:structured_output) => boolean(),
           optional(:max_tokens) => pos_integer(),
           optional(:supports_resume) => boolean(),
           optional(:supports_system_prompt) => boolean(),

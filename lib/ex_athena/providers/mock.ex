@@ -43,6 +43,7 @@ defmodule ExAthena.Providers.Mock do
       native_tool_calls: true,
       streaming: true,
       json_mode: true,
+      structured_output: true,
       max_tokens: 128_000,
       supports_resume: false,
       supports_system_prompt: true,
