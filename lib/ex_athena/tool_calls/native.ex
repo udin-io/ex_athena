@@ -2,7 +2,7 @@ defmodule ExAthena.ToolCalls.Native do
   @moduledoc """
   Parses native tool-call structures from provider responses.
 
-  Handles the three common shapes:
+  Handles the four common shapes:
 
     1. OpenAI / Ollama — `%{id:, type: "function", function: %{name:, arguments: "json"}}`.
        `arguments` is almost always a JSON-encoded string.
@@ -10,6 +10,9 @@ defmodule ExAthena.ToolCalls.Native do
     2. Claude — `%{type: "tool_use", id:, name:, input: map()}`.
 
     3. Pre-parsed — already-parsed `%{id:, name:, arguments: map()}`. No-op.
+
+    4. ReqLLM streaming — `%ReqLLM.StreamChunk{type: :tool_call, name:, arguments:, metadata:}`.
+       An optional id is read from `metadata["id"]` or `metadata[:id]`; if absent, one is generated.
 
   Tolerant of both atom and string keys, and tolerant of either a JSON string
   or a decoded map for `arguments`.
@@ -55,6 +58,11 @@ defmodule ExAthena.ToolCalls.Native do
 
   defp parse_one(%{id: id, name: name} = map) do
     build(id, name, Map.get(map, :arguments) || Map.get(map, :input) || %{})
+  end
+
+  defp parse_one(%ReqLLM.StreamChunk{type: :tool_call, name: name, arguments: args} = chunk) do
+    id = chunk.metadata && (chunk.metadata["id"] || chunk.metadata[:id])
+    build(id, name, args)
   end
 
   defp parse_one(other), do: {:error, {:unrecognised_tool_call, other}}
