@@ -37,7 +37,9 @@ defmodule ExAthena.ToolCalls.NativeTest do
         metadata: %{}
       }
 
-      assert {:ok, [%ToolCall{name: "glob", id: id}]} = Native.parse([chunk])
+      assert {:ok, [%ToolCall{name: "glob", id: id, arguments: %{"pattern" => "**/*.ex"}}]} =
+               Native.parse([chunk])
+
       assert is_binary(id) and byte_size(id) > 0
     end
 
