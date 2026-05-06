@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.9 — `ToolCalls.Native` recognises `%ReqLLM.StreamChunk{}` tool-call shape
+
+### Fixed
+
+- `ExAthena.ToolCalls.Native.parse_one/1` now has a clause for
+  `%ReqLLM.StreamChunk{type: :tool_call, name:, arguments:, metadata:}`.
+  Without it, streamed tool calls accumulated by the req_llm provider
+  reached the catch-all and failed with
+  `{:unrecognised_tool_call, chunk}`, halting planning sessions on the
+  Ollama/req_llm path. The new clause extracts an optional id from
+  `metadata["id"]` or `metadata[:id]` (generates one if absent) and
+  delegates to the existing `build/3` helper, so the parser remains the
+  single source of truth for tool-call shapes — provider boundaries stay
+  unaware of struct normalisation.
+
+### Why
+
+req_llm streams tool calls as raw `%ReqLLM.StreamChunk{}` structs rather
+than the OpenAI/Claude/pre-parsed map shapes the parser already handled.
+Adding the fourth clause closes the gap without changing the public API
+or any provider code. See ADR-0005.
+
 ## v0.4.8 — Canonical `%ReqLLM.ToolCall{}` on assistant replay (llama.cpp HTTP 500 fix)
 
 ### Fixed
