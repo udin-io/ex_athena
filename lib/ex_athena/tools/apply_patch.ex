@@ -16,6 +16,8 @@ defmodule ExAthena.Tools.ApplyPatch do
 
   @behaviour ExAthena.Tool
 
+  require Logger
+
   alias ExAthena.ToolContext
 
   @impl true
@@ -244,7 +246,9 @@ defmodule ExAthena.Tools.ApplyPatch do
     _ = ExAthena.Checkpoint.snapshot(cwd, sid, path)
     :ok
   rescue
-    _ -> :ok
+    e ->
+      Logger.error("[ApplyPatch] checkpoint snapshot failed for #{path}: #{Exception.message(e)}")
+      :ok
   end
 
   defp maybe_snapshot(_, _), do: :ok
@@ -261,12 +265,19 @@ defmodule ExAthena.Tools.ApplyPatch do
     end
   end
 
+  @git_timeout 30_000
+
   defp git_repo?(cwd) do
-    case System.cmd("git", ["rev-parse", "--is-inside-work-tree"],
-           cd: cwd,
-           stderr_to_stdout: true
-         ) do
-      {"true\n", 0} -> true
+    task =
+      Task.async(fn ->
+        System.cmd("git", ["rev-parse", "--is-inside-work-tree"],
+          cd: cwd,
+          stderr_to_stdout: true
+        )
+      end)
+
+    case Task.yield(task, @git_timeout) || Task.shutdown(task, :brutal_kill) do
+      {:ok, {"true\n", 0}} -> true
       _ -> false
     end
   rescue
@@ -294,8 +305,10 @@ defmodule ExAthena.Tools.ApplyPatch do
           ["apply", "--whitespace=nowarn", tmp]
         end
 
-      case System.cmd("git", args, cd: cwd, stderr_to_stdout: true) do
-        {_, 0} ->
+      task = Task.async(fn -> System.cmd("git", args, cd: cwd, stderr_to_stdout: true) end)
+
+      case Task.yield(task, @git_timeout) || Task.shutdown(task, :brutal_kill) do
+        {:ok, {_, 0}} ->
           results =
             Enum.map(file_sections, fn s ->
               %{path: s.path, hunks_applied: s.hunk_count, hunks_skipped: 0}
@@ -303,8 +316,11 @@ defmodule ExAthena.Tools.ApplyPatch do
 
           {:ok, results}
 
-        {stderr, _} ->
+        {:ok, {stderr, _}} ->
           {:error, {:git_apply_failed, String.trim(stderr)}}
+
+        nil ->
+          {:error, :git_timeout}
       end
     after
       File.rm(tmp)
