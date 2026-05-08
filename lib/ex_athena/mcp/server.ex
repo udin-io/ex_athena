@@ -40,6 +40,13 @@ defmodule ExAthena.Mcp.Server do
     GenServer.call(server, :info)
   end
 
+  @doc "Forward a tool call to the underlying client. Returns `{:ok, result_map}` or `{:error, reason}`."
+  @spec call_tool(GenServer.server(), String.t(), map(), non_neg_integer()) ::
+          {:ok, map()} | {:error, term()}
+  def call_tool(server, tool_name, args, timeout \\ 30_000) do
+    GenServer.call(server, {:call_tool, tool_name, args, timeout}, timeout + 1_000)
+  end
+
   # ── GenServer callbacks ───────────────────────────────────────────
 
   @impl GenServer
@@ -89,6 +96,19 @@ defmodule ExAthena.Mcp.Server do
   end
 
   def handle_call(:list_tools, _from, state) do
+    error =
+      state.error ||
+        ExAthena.Error.new(:server_error, "Server '#{state.name}' is #{state.status}")
+
+    {:reply, {:error, error}, state}
+  end
+
+  def handle_call({:call_tool, tool_name, args, timeout}, _from, %{status: :ready} = state) do
+    result = Client.call_tool(state.client, tool_name, args, timeout)
+    {:reply, result, state}
+  end
+
+  def handle_call({:call_tool, _tool_name, _args, _timeout}, _from, state) do
     error =
       state.error ||
         ExAthena.Error.new(:server_error, "Server '#{state.name}' is #{state.status}")

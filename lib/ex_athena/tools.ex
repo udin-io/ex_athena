@@ -1,6 +1,6 @@
 defmodule ExAthena.Tools do
   @moduledoc """
-  Resolves tool modules into the shape the provider + loop expect.
+  Resolves tools into `ExAthena.Tool.Spec` structs for the provider and loop.
 
   Consumers supply tools in one of two ways:
 
@@ -13,9 +13,14 @@ defmodule ExAthena.Tools do
            ExAthena.Loop.run(messages, tools: [MyApp.ToolA, ExAthena.Tools.Read])
 
   Per-call wins; the configured list is the default when no tools are passed.
+
+  `resolve/1` returns `[ExAthena.Tool.Spec.t()]`. Built-in modules are wrapped
+  into `:module` specs; MCP-discovered tools are appended as `:mcp` specs
+  (unless suppressed via `mcp: false`).
   """
 
   alias ExAthena.Tool
+  alias ExAthena.Tool.Spec
 
   @builtins [
     ExAthena.Tools.Read,
@@ -36,18 +41,64 @@ defmodule ExAthena.Tools do
   def builtins, do: @builtins
 
   @doc """
-  Resolve the tools to use for a call. Accepts:
+  Resolve the tools to use for a call. Returns `[Tool.Spec.t()]`.
 
-    * a list of modules
-    * `:all` — every builtin
+  Accepts:
+
+    * a list of modules (each wrapped into a `:module` spec)
+    * `:all` — every builtin as specs
     * `nil` — falls back to `config :ex_athena, tools: ...` or `:all`
+
+  Options:
+
+    * `mcp: true | false | [server_name]` — controls MCP tool inclusion.
+      Defaults to `true` when the MCP supervisor is running, `false`
+      otherwise. Pass `false` to suppress MCP tools entirely; pass a list
+      of server names to include only tools from those servers.
   """
-  @spec resolve(keyword()) :: [module()]
+  @spec resolve(keyword()) :: [Spec.t()]
   def resolve(opts) do
-    case Keyword.get(opts, :tools) do
-      nil -> Application.get_env(:ex_athena, :tools, :all) |> expand()
-      :all -> @builtins
-      modules when is_list(modules) -> modules
+    base_specs =
+      case Keyword.get(opts, :tools) do
+        nil -> Application.get_env(:ex_athena, :tools, :all) |> expand()
+        :all -> @builtins
+        list when is_list(list) -> list
+      end
+      |> Enum.map(&module_to_spec/1)
+
+    mcp_filter = Keyword.get(opts, :mcp, mcp_default())
+
+    mcp_specs =
+      if mcp_filter == false do
+        []
+      else
+        filter =
+          case mcp_filter do
+            true -> :all
+            list when is_list(list) -> list
+            _ -> :all
+          end
+
+        mcp_tool_specs(filter)
+      end
+
+    base_specs ++ mcp_specs
+  end
+
+  defp mcp_default do
+    case Process.whereis(ExAthena.Mcp.Supervisor) do
+      nil -> false
+      _ -> true
+    end
+  end
+
+  defp mcp_tool_specs(filter) do
+    case Process.whereis(ExAthena.Mcp.Supervisor) do
+      nil ->
+        []
+
+      _ ->
+        ExAthena.Mcp.tool_specs(filter)
     end
   end
 
@@ -55,19 +106,32 @@ defmodule ExAthena.Tools do
   defp expand(modules) when is_list(modules), do: modules
   defp expand(_), do: @builtins
 
+  defp module_to_spec(%Spec{} = spec), do: spec
+
+  defp module_to_spec(mod) when is_atom(mod), do: Spec.from_module(mod)
+
+  defp module_to_spec(name) when is_binary(name) do
+    builtin_specs = Enum.map(@builtins, &Spec.from_module/1)
+
+    case Enum.find(builtin_specs, fn s -> s.name == name end) do
+      nil -> raise ArgumentError, "no built-in tool named #{inspect(name)}"
+      spec -> spec
+    end
+  end
+
   @doc """
   Build the provider-facing tool schema list — the same shape Ollama /
   OpenAI-compatible providers send on the wire.
   """
-  @spec describe_for_provider([module()]) :: [map()]
-  def describe_for_provider(modules) do
-    Enum.map(modules, fn mod ->
+  @spec describe_for_provider([Spec.t()]) :: [map()]
+  def describe_for_provider(specs) do
+    Enum.map(specs, fn spec ->
       %{
         type: "function",
         function: %{
-          name: mod.name(),
-          description: mod.description(),
-          parameters: mod.schema()
+          name: spec.name,
+          description: spec.description,
+          parameters: spec.schema
         }
       }
     end)
@@ -77,26 +141,30 @@ defmodule ExAthena.Tools do
   Build the prompt-friendly list used by `ExAthena.ToolCalls.augment_system_prompt/3`
   when we fall back to the TextTagged protocol.
   """
-  @spec describe_for_prompt([module()]) :: [map()]
-  def describe_for_prompt(modules) do
-    Enum.map(modules, fn mod ->
-      %{name: mod.name(), description: mod.description(), schema: mod.schema()}
+  @spec describe_for_prompt([Spec.t()]) :: [map()]
+  def describe_for_prompt(specs) do
+    Enum.map(specs, fn spec ->
+      %{name: spec.name, description: spec.description, schema: spec.schema}
     end)
   end
 
-  @doc "Find the tool module that handles a call by name."
-  @spec find([module()], String.t()) :: module() | nil
-  def find(modules, name) when is_binary(name) do
-    Enum.find(modules, fn mod -> mod.name() == name end)
+  @doc "Find the spec that handles a call by name."
+  @spec find([Spec.t()], String.t()) :: Spec.t() | nil
+  def find(specs, name) when is_binary(name) do
+    Enum.find(specs, fn spec -> spec.name == name end)
   end
 
-  @doc "Validate that every module in `modules` implements the Tool behaviour."
-  @spec validate!([module()]) :: :ok
-  def validate!(modules) do
-    Enum.each(modules, fn mod ->
-      unless Code.ensure_loaded?(mod) and implements_behaviour?(mod, Tool) do
-        raise ArgumentError, "#{inspect(mod)} does not implement ExAthena.Tool"
-      end
+  @doc "Validate a list of specs. Raises if any module spec's module doesn't implement the Tool behaviour."
+  @spec validate!([Spec.t()]) :: :ok
+  def validate!(specs) do
+    Enum.each(specs, fn
+      %Spec{kind: :module, module: mod} ->
+        unless Code.ensure_loaded?(mod) and implements_behaviour?(mod, Tool) do
+          raise ArgumentError, "#{inspect(mod)} does not implement ExAthena.Tool"
+        end
+
+      %Spec{kind: :mcp} ->
+        :ok
     end)
 
     :ok
