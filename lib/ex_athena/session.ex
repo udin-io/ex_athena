@@ -35,7 +35,7 @@ defmodule ExAthena.Session do
 
   alias ExAthena.Loop
   alias ExAthena.Sessions.Store
-  alias ExAthena.Sessions.Stores.{InMemory, Jsonl}
+  alias ExAthena.Sessions.Stores.{ETS, InMemory, Jsonl}
 
   # ── Client API ─────────────────────────────────────────────────────
 
@@ -210,6 +210,7 @@ defmodule ExAthena.Session do
 
   defp resolve_store(:in_memory), do: InMemory
   defp resolve_store(:jsonl), do: Jsonl
+  defp resolve_store(:ets), do: ETS
   defp resolve_store(mod) when is_atom(mod), do: mod
 
   defp serialize_message(msg) do
