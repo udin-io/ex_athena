@@ -45,6 +45,19 @@ defmodule ExAthena.Session do
   When the configured store implements `ExAthena.Sessions.SchemaStore`
   (currently only `ETS`), the session also dual-writes every message to the
   row tables so `resume/2` can read from them directly.
+
+  ## Session rewind
+
+  Drop messages after a saved snapshot, leaving the session alive at that
+  point so the next `send_message` continues from the rewound state:
+
+      {:ok, snap} = ExAthena.Session.checkpoint(session_id, store: :ets)
+      # ... more turns ...
+      {:ok, info} = ExAthena.Session.rewind(session_id, {:snapshot, snap.id}, store: :ets)
+      info.messages_deleted  # number of messages dropped
+
+  Snapshots beyond the rewind anchor are deliberately kept as potential
+  redo targets; no separate redo API exists in v1.
   """
 
   use GenServer
@@ -195,6 +208,43 @@ defmodule ExAthena.Session do
       {:error, :unsupported_store}
     else
       do_fork(store, session_id, opts)
+    end
+  end
+
+  @doc """
+  Drop all messages after a snapshot or message anchor, leaving the session
+  alive at that point.
+
+  ## Options
+
+    * `:store` — must implement `SchemaStore` (`:ets` or a custom module).
+      Returns `{:error, :unsupported_store}` for `:in_memory` / `:jsonl`.
+
+  `target` is one of:
+
+    * `{:snapshot, snapshot_id}` — resolve the snapshot's anchor message, then
+      delete everything after it.
+    * `{:message, message_id}` — use the message directly as the anchor.
+
+  Returns `{:ok, %{session_id:, anchor_message_id:, messages_deleted:, message_count:}}`
+  or `{:error, :unsupported_store | :not_found}`.
+
+  Snapshots beyond the anchor are preserved as potential redo targets.
+
+  Emits `[:ex_athena, :session, :rewind]` with measurements
+  `%{messages_deleted: n, message_count: m}` and metadata
+  `%{session_id:, anchor_message_id:, target:, store:}` where `target` is
+  the atom `:snapshot` or `:message`.
+  """
+  @type rewind_target :: {:snapshot, String.t()} | {:message, String.t()}
+  @spec rewind(String.t(), rewind_target(), keyword()) :: {:ok, map()} | {:error, term()}
+  def rewind(session_id, target, opts \\ []) when is_binary(session_id) do
+    store = resolve_store(Keyword.get(opts, :store, :in_memory))
+
+    if not SchemaStore.implements?(store) do
+      {:error, :unsupported_store}
+    else
+      do_rewind(store, session_id, target, opts)
     end
   end
 
@@ -519,10 +569,11 @@ defmodule ExAthena.Session do
         end
 
       true ->
-        anchor_id = case List.last(Enum.sort_by(messages, & &1.seq)) do
-          nil -> nil
-          msg -> msg.id
-        end
+        anchor_id =
+          case List.last(Enum.sort_by(messages, & &1.seq)) do
+            nil -> nil
+            msg -> msg.id
+          end
 
         {:ok, {messages, anchor_id}}
     end
@@ -566,6 +617,63 @@ defmodule ExAthena.Session do
           })
       end
     end)
+  end
+
+  # ── rewind/3 internals ─────────────────────────────────────────────
+
+  defp do_rewind(store, session_id, target, _opts) do
+    with {:ok, messages_before} <- store.list_messages(session_id),
+         {:ok, anchor_msg_id} <- resolve_rewind_anchor(store, messages_before, target) do
+      count_before = length(messages_before)
+
+      :ok = store.delete_messages_after(session_id, anchor_msg_id)
+
+      {:ok, messages_after} = store.list_messages(session_id)
+      count_after = length(messages_after)
+      messages_deleted = count_before - count_after
+
+      ts = DateTime.utc_now() |> DateTime.to_iso8601()
+
+      case store.get_session(session_id) do
+        {:ok, existing} -> store.put_session(Map.put(existing, :updated_at, ts))
+        {:error, :not_found} -> :ok
+      end
+
+      target_kind = elem(target, 0)
+
+      :telemetry.execute(
+        [:ex_athena, :session, :rewind],
+        %{messages_deleted: messages_deleted, message_count: count_after},
+        %{
+          session_id: session_id,
+          anchor_message_id: anchor_msg_id,
+          target: target_kind,
+          store: store
+        }
+      )
+
+      {:ok,
+       %{
+         session_id: session_id,
+         anchor_message_id: anchor_msg_id,
+         messages_deleted: messages_deleted,
+         message_count: count_after
+       }}
+    end
+  end
+
+  defp resolve_rewind_anchor(store, _messages, {:snapshot, snapshot_id}) do
+    case store.get_snapshot(snapshot_id) do
+      {:ok, snap} -> {:ok, snap.message_id}
+      {:error, _} -> {:error, :not_found}
+    end
+  end
+
+  defp resolve_rewind_anchor(_store, messages, {:message, message_id}) do
+    case Enum.find(messages, &(&1.id == message_id)) do
+      nil -> {:error, :not_found}
+      _msg -> {:ok, message_id}
+    end
   end
 
   defp generate_session_id do
