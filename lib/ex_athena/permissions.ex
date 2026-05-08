@@ -58,7 +58,7 @@ defmodule ExAthena.Permissions do
   alias ExAthena.Messages.ToolCall
   alias ExAthena.ToolContext
 
-  @readonly_tools ~w(read glob grep web_fetch plan_mode spawn_agent)
+  @readonly_tools ~w(read glob grep web_fetch plan_mode spawn_agent lsp)
   @mutating_tools ~w(write edit bash todo_write)
   # `:accept_edits` auto-allows file edits + every read-only tool,
   # but still falls through to the callback for everything else
