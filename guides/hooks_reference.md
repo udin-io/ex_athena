@@ -1,4 +1,4 @@
-# Hooks reference (v0.4)
+# Hooks reference (v0.5)
 
 Hooks are functions ex_athena calls at lifecycle events so hosts can
 observe, deny, halt, or augment the run without subclassing the loop
@@ -34,6 +34,7 @@ returns one of:
 | `{:deny, reason}` | Only valid from `PreToolUse` / `PermissionRequest`. Denies the tool call; routed back to the model as an error tool-result. |
 | `{:inject, msg_or_msgs}` | Append a `Message.t()` (or list) to the conversation. |
 | `{:transform, prompt}` | Only valid from `UserPromptSubmit`. Rewrites the user's prompt before it enters the loop. |
+| `{:augment, text}` | Only valid from `PostToolUse`. Appends `text` to the tool-result content the model sees on the next turn. Multiple augments are joined with `"\n"`. Halt takes priority. |
 
 ## Catalog
 
@@ -64,7 +65,7 @@ context just before a provider call.
 | Event | Fires at | Payload |
 |---|---|---|
 | `:PreToolUse` | Before tool execution. Honours `{:deny, reason}`. | `%{tool_name, tool_use_id, ...args}` |
-| `:PostToolUse` | After successful execution. Halt-only (deny is too late). | `%{tool_name, tool_use_id, result}` |
+| `:PostToolUse` | After successful execution. Supports `{:augment, text}` (deny is too late). | `%{tool_name, result, arguments, cwd}` |
 | `:PostToolUseFailure` | After tool returns `{:error, reason}` | `%{tool_name, tool_use_id, reason}` |
 | `:PermissionRequest` | Before `can_use_tool` callback (when `:default` mode prompts) | `%{tool_name, tool_use_id, arguments}` |
 | `:PermissionDenied` | Whenever the gate decides `{:deny, _}` | `%{tool_name, tool_use_id, arguments, reason}` |
@@ -183,6 +184,66 @@ outputs for callers that need them:
 `run_lifecycle/3` returns `:ok | {:halt, reason}` for backward-compat;
 use the `_with_outputs` variant when you need to read injects /
 transform.
+
+
+## Implicit LSP diagnostics (PostToolUse)
+
+When the model edits or writes a file, ex_athena automatically runs an LSP
+diagnostic check and appends any errors or warnings to the tool-result the
+model sees on the next turn. This is powered by
+`ExAthena.Lsp.ImplicitDiagnostics`, which registers a built-in PostToolUse
+hook matching `Edit|Write`.
+
+No configuration is needed when `elixir-ls` (or another LSP server) is on
+`$PATH` — the hook fires automatically on every Edit/Write call.
+
+### Seeing diagnostics in practice
+
+The augmented tool-result looks like:
+
+```
+edited foo.ex (1 replacement)
+
+[lsp diagnostics]
+error: undefined function bar/0 at foo.ex:3:1
+```
+
+The model reads both the edit confirmation and the compiler feedback in a
+single turn, without needing to call the `lsp` tool explicitly.
+
+### Configuration
+
+| Key | Default | Description |
+|---|---|---|
+| `:lsp_implicit_diagnostics_enabled` | `true` | Set to `false` to disable the hook globally (e.g. in test.exs). |
+| `:lsp_implicit_diagnostics_timeout_ms` | `1500` | How long to poll for push-diagnostics before giving up. |
+| `:lsp_implicit_diagnostics_severities` | `[:error, :warning]` | Severity levels to include. Options: `:error`, `:warning`, `:information`, `:hint`. |
+
+Example — disable in tests:
+
+```elixir
+# config/test.exs
+config :ex_athena, lsp_implicit_diagnostics_enabled: false
+```
+
+Example — extend to information-level messages:
+
+```elixir
+config :ex_athena, lsp_implicit_diagnostics_severities: [:error, :warning, :information]
+```
+
+### Telemetry
+
+The hook emits `[:ex_athena, :lsp, :implicit_diagnostics, :start | :stop]`
+events. The `:stop` measurements include:
+
+| Field | Type | Description |
+|---|---|---|
+| `duration_ms` | integer | Wall-clock time in ms |
+| `count` | integer | Number of diagnostics in the augmented text |
+| `had_errors` | boolean | `true` when at least one error-severity diagnostic was found |
+
+The `:stop` metadata includes `tool_name` (the triggering tool).
 
 ## See also
 
