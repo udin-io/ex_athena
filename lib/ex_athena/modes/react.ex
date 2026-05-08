@@ -250,10 +250,28 @@ defmodule ExAthena.Modes.ReAct do
   end
 
   # Run PostToolUse hooks then emit events.
+  # The payload includes `arguments` and `cwd` so hooks like
+  # ImplicitDiagnostics can resolve the affected file.
   defp after_post_hook(state, call, result) do
-    case ExAthena.Hooks.run_post_tool_use(state.hooks, call.name, %{result: result}, call.id) do
-      {:halt, reason} -> {{:halt, reason}, state}
-      _ -> emit_and_return(state, call, result)
+    payload = %{
+      result: result,
+      arguments: call.arguments,
+      cwd: state.ctx.cwd,
+      tool_name: call.name
+    }
+
+    case ExAthena.Hooks.run_post_tool_use(state.hooks, call.name, payload, call.id) do
+      {:halt, reason} ->
+        {{:halt, reason}, state}
+
+      {:augment, extra} ->
+        [tr | rest] = result.tool_results
+        augmented_tr = %{tr | content: tr.content <> "\n\n" <> extra}
+        augmented = %{result | tool_results: [augmented_tr | rest]}
+        emit_and_return(state, call, augmented)
+
+      _ ->
+        emit_and_return(state, call, result)
     end
   end
 
