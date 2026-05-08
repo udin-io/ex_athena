@@ -170,7 +170,6 @@ defmodule ExAthena.Loop.V03Test do
         n = :counters.get(counter, 1)
 
         case n do
-          # Turn 1: nonexistent tool — bumps counter to 1
           1 ->
             %Response{
               text: "",
@@ -179,7 +178,6 @@ defmodule ExAthena.Loop.V03Test do
               provider: :mock
             }
 
-          # Turn 2: parallel-safe glob — should reset counter to 0
           2 ->
             %Response{
               text: "",
@@ -190,7 +188,6 @@ defmodule ExAthena.Loop.V03Test do
               provider: :mock
             }
 
-          # Turn 3: nonexistent tool again — bumps to 1 (with fix) or 2 (without fix)
           3 ->
             %Response{
               text: "",
@@ -199,7 +196,6 @@ defmodule ExAthena.Loop.V03Test do
               provider: :mock
             }
 
-          # Turn 4: final response — only reached if counter < max after turn 3
           _ ->
             %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
         end

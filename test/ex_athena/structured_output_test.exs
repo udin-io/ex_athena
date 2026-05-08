@@ -1,7 +1,10 @@
 defmodule ExAthena.StructuredOutputTest.NoStructuredOutput do
   @behaviour ExAthena.Provider
   def capabilities, do: %{structured_output: false}
-  def query(_req, _opts), do: {:ok, %ExAthena.Response{text: "{}", tool_calls: [], provider: :test}}
+
+  def query(_req, _opts),
+    do: {:ok, %ExAthena.Response{text: "{}", tool_calls: [], provider: :test}}
+
   def stream(_req, _cb, _opts), do: {:ok, %ExAthena.Response{text: ""}}
 end
 
