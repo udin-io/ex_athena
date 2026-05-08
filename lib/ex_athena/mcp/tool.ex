@@ -8,12 +8,21 @@ defmodule ExAthena.Mcp.Tool do
   shape.
   """
 
+  alias ExAthena.Mcp.Client
   alias ExAthena.Mcp.Registry, as: McpRegistry
   alias ExAthena.Mcp.Server, as: McpServer
   alias ExAthena.Tool.Spec
+  alias ExAthena.ToolContext
+
+  @default_timeout_ms 30_000
 
   @doc """
   Execute an MCP-backed tool.
+
+  Honors the loop's `tool_timeout_ms` when carried in `ctx.assigns[:tool_timeout_ms]`,
+  falling back to 30s otherwise. Calls the underlying `Client` directly (via a
+  pid resolved through the `Server`) so the per-server `Server` GenServer is not
+  blocked for the duration of the tool call.
 
   Returns:
     * `{:ok, content}` — `content` is the raw `[%{"type" => ..., "text" => ...}]`
@@ -25,24 +34,46 @@ defmodule ExAthena.Mcp.Tool do
   """
   @spec execute(Spec.t(), map(), term()) ::
           {:ok, term()} | {:error, term()}
-  def execute(%Spec{kind: :mcp, mcp_server: server, mcp_tool_name: tool_name}, args, _ctx) do
+  def execute(%Spec{kind: :mcp, mcp_server: server, mcp_tool_name: tool_name}, args, ctx) do
+    timeout = resolve_timeout(ctx)
+
     case McpRegistry.whereis(server) do
       nil ->
         {:error, {:mcp_server_not_running, server}}
 
-      pid ->
+      server_pid ->
         try do
-          with {:ok, %{"content" => content, "isError" => false}} <-
-                 McpServer.call_tool(pid, tool_name, args, 30_000) do
-            {:ok, content}
-          else
-            {:ok, %{"content" => content, "isError" => true}} -> {:error, content}
-            {:ok, result} -> {:ok, result}
-            {:error, _} = err -> err
+          case McpServer.get_client(server_pid) do
+            {:ok, client_pid} ->
+              call_client(client_pid, tool_name, args, timeout)
+
+            {:error, _} = err ->
+              err
           end
         catch
           :exit, _ -> {:error, {:mcp_server_not_running, server}}
         end
     end
   end
+
+  defp call_client(client_pid, tool_name, args, timeout) do
+    try do
+      with {:ok, %{"content" => content, "isError" => false}} <-
+             Client.call_tool(client_pid, tool_name, args, timeout) do
+        {:ok, content}
+      else
+        {:ok, %{"content" => content, "isError" => true}} -> {:error, content}
+        {:ok, result} -> {:ok, result}
+        {:error, _} = err -> err
+      end
+    catch
+      :exit, reason -> {:error, {:mcp_client_unavailable, reason}}
+    end
+  end
+
+  defp resolve_timeout(%ToolContext{assigns: %{tool_timeout_ms: ms}})
+       when is_integer(ms) and ms > 0,
+       do: ms
+
+  defp resolve_timeout(_), do: @default_timeout_ms
 end

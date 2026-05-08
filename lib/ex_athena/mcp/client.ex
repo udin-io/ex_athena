@@ -119,7 +119,11 @@ defmodule ExAthena.Mcp.Client do
   end
 
   def handle_info({:transport_down, reason}, state) do
-    error = Error.new(:transport, "Transport connection lost: #{inspect(reason)}")
+    error =
+      case reason do
+        %Error{} = e -> e
+        other -> Error.new(:transport, "Transport connection lost: #{inspect(other)}")
+      end
 
     Enum.each(state.pending, fn {_id, {from, timer, _type}} ->
       Process.cancel_timer(timer)

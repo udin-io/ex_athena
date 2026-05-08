@@ -111,11 +111,21 @@ defmodule ExAthena.Tools do
   defp module_to_spec(mod) when is_atom(mod), do: Spec.from_module(mod)
 
   defp module_to_spec(name) when is_binary(name) do
-    builtin_specs = Enum.map(@builtins, &Spec.from_module/1)
-
-    case Enum.find(builtin_specs, fn s -> s.name == name end) do
+    case Enum.find(builtin_specs(), fn s -> s.name == name end) do
       nil -> raise ArgumentError, "no built-in tool named #{inspect(name)}"
       spec -> spec
+    end
+  end
+
+  defp builtin_specs do
+    case :persistent_term.get({__MODULE__, :builtin_specs}, :__none__) do
+      :__none__ ->
+        specs = Enum.map(@builtins, &Spec.from_module/1)
+        :persistent_term.put({__MODULE__, :builtin_specs}, specs)
+        specs
+
+      specs ->
+        specs
     end
   end
 

@@ -102,29 +102,56 @@ defmodule ExAthena.Mcp.Config do
   # ── Private ────────────────────────────────────────────────────────
 
   defp validate_entry(name, entry) when is_map(entry) do
-    normalized = normalize_entry(entry)
+    case normalize_entry(entry) do
+      {:ok, normalized} ->
+        case NimbleOptions.validate(normalized, @schema) do
+          {:ok, valid} ->
+            case type_specific_check(valid) do
+              :ok -> {:ok, build_server(name, valid)}
+              {:error, msg} -> {:error, Error.new(:bad_request, "MCP server '#{name}': #{msg}")}
+            end
 
-    case NimbleOptions.validate(normalized, @schema) do
-      {:ok, valid} ->
-        case type_specific_check(valid) do
-          :ok -> {:ok, build_server(name, valid)}
-          {:error, msg} -> {:error, Error.new(:bad_request, "MCP server '#{name}': #{msg}")}
+          {:error, e} ->
+            {:error, Error.new(:bad_request, "MCP server '#{name}': #{Exception.message(e)}")}
         end
 
-      {:error, e} ->
-        {:error, Error.new(:bad_request, "MCP server '#{name}': #{Exception.message(e)}")}
+      {:error, msg} ->
+        {:error, Error.new(:bad_request, "MCP server '#{name}': #{msg}")}
     end
   end
 
   defp normalize_entry(entry) do
     entry
-    |> Enum.map(fn {k, v} -> {normalize_key(k), normalize_value(k, v)} end)
-    |> Map.new()
-    |> Map.to_list()
+    |> Enum.reduce_while({:ok, []}, fn {k, v}, {:ok, acc} ->
+      case normalize_key(k) do
+        {:ok, key} ->
+          {:cont, {:ok, [{key, normalize_value(k, v)} | acc]}}
+
+        {:error, _} = err ->
+          {:halt, err}
+      end
+    end)
+    |> case do
+      {:ok, kvs} -> {:ok, kvs |> Map.new() |> Map.to_list()}
+      {:error, _} = err -> err
+    end
   end
 
-  defp normalize_key(k) when is_binary(k), do: Map.get(@string_key_map, k, String.to_atom(k))
-  defp normalize_key(k) when is_atom(k), do: k
+  defp normalize_key(k) when is_binary(k) do
+    case Map.fetch(@string_key_map, k) do
+      {:ok, atom} ->
+        {:ok, atom}
+
+      :error ->
+        try do
+          {:ok, String.to_existing_atom(k)}
+        rescue
+          ArgumentError -> {:error, "unknown config key #{inspect(k)}"}
+        end
+    end
+  end
+
+  defp normalize_key(k) when is_atom(k), do: {:ok, k}
 
   # Normalize string type values to atoms so NimbleOptions `{:in, ...}` check passes
   defp normalize_value(:type, "local"), do: :local

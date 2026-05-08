@@ -44,7 +44,19 @@ defmodule ExAthena.Mcp.Server do
   @spec call_tool(GenServer.server(), String.t(), map(), non_neg_integer()) ::
           {:ok, map()} | {:error, term()}
   def call_tool(server, tool_name, args, timeout \\ 30_000) do
-    GenServer.call(server, {:call_tool, tool_name, args, timeout}, timeout + 1_000)
+    case GenServer.call(server, :get_client) do
+      {:ok, client_pid} ->
+        Client.call_tool(client_pid, tool_name, args, timeout)
+
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  @doc "Return `{:ok, client_pid}` when ready, `{:error, reason}` otherwise."
+  @spec get_client(GenServer.server()) :: {:ok, pid()} | {:error, term()}
+  def get_client(server) do
+    GenServer.call(server, :get_client)
   end
 
   # ── GenServer callbacks ───────────────────────────────────────────
@@ -71,8 +83,6 @@ defmodule ExAthena.Mcp.Server do
 
     case Client.start_link(client_opts) do
       {:ok, client_pid} ->
-        Process.link(client_pid)
-
         case Client.list_tools(client_pid) do
           {:ok, tools} ->
             {:noreply, %{state | client: client_pid, status: :ready, tools: tools}}
@@ -103,12 +113,12 @@ defmodule ExAthena.Mcp.Server do
     {:reply, {:error, error}, state}
   end
 
-  def handle_call({:call_tool, tool_name, args, timeout}, _from, %{status: :ready} = state) do
-    result = Client.call_tool(state.client, tool_name, args, timeout)
-    {:reply, result, state}
+  def handle_call(:get_client, _from, %{status: :ready, client: client} = state)
+      when is_pid(client) do
+    {:reply, {:ok, client}, state}
   end
 
-  def handle_call({:call_tool, _tool_name, _args, _timeout}, _from, state) do
+  def handle_call(:get_client, _from, state) do
     error =
       state.error ||
         ExAthena.Error.new(:server_error, "Server '#{state.name}' is #{state.status}")
@@ -127,14 +137,5 @@ defmodule ExAthena.Mcp.Server do
     }
 
     {:reply, {:ok, info}, state}
-  end
-
-  @impl GenServer
-  def terminate(_reason, state) do
-    if state.client && Process.alive?(state.client) do
-      GenServer.stop(state.client, :normal)
-    end
-
-    :ok
   end
 end

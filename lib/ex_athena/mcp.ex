@@ -4,7 +4,8 @@ defmodule ExAthena.Mcp do
 
   ## Read APIs (high-level — requires Supervisor running)
 
-    * `list_servers/0` — metadata for every running MCP server.
+    * `list_servers/0` — metadata for every registered MCP server. Disabled
+      servers are not started and therefore do not appear in this list.
     * `list_tools/1` — cached tools for a server by name.
 
   ## Low-level APIs (client-pid based)
@@ -21,7 +22,8 @@ defmodule ExAthena.Mcp do
   # ── High-level registry-based APIs ───────────────────────────────
 
   @doc """
-  Return metadata for every registered MCP server.
+  Return metadata for every running MCP server (i.e. every server registered
+  in the registry). Disabled servers are not started, so they are not included.
 
   Each entry is a map with keys `:name`, `:status`, `:type`, `:enabled`,
   `:tool_count`, `:error`.

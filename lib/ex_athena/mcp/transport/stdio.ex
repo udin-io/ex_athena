@@ -58,11 +58,12 @@ defmodule ExAthena.Mcp.Transport.Stdio do
   def handle_cast({:send, json}, %{port: port} = state) do
     try do
       Port.command(port, json <> "\n")
+      {:noreply, state}
     rescue
-      _ -> :ok
+      e ->
+        send(state.owner, {:transport_down, {:port_command_failed, Exception.message(e)}})
+        {:stop, :normal, state}
     end
-
-    {:noreply, state}
   end
 
   def handle_cast(:close, %{port: port} = state) do

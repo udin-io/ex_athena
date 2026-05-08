@@ -49,31 +49,61 @@ defmodule ExAthena.Mcp.Transport.Http do
         base_headers
       end
 
-    case Req.post(state.url,
-           body: json,
-           headers: headers,
-           receive_timeout: state.request_timeout_ms,
-           decode_body: false
-         ) do
-      {:ok, %{status: 200, body: body, headers: resp_headers}} ->
-        session_id = extract_session_id(resp_headers, state.session_id)
+    parent = self()
+
+    spawn(fn ->
+      result =
+        try do
+          Req.post(state.url,
+            body: json,
+            headers: headers,
+            receive_timeout: state.request_timeout_ms,
+            decode_body: false
+          )
+        rescue
+          e -> {:error, e}
+        end
+
+      send(parent, {:http_response, result})
+    end)
+
+    {:noreply, state}
+  end
+
+  def handle_cast(:close, state), do: {:stop, :normal, state}
+
+  @impl GenServer
+  def handle_info(
+        {:http_response, {:ok, %{status: status, body: body, headers: resp_headers}}},
+        state
+      )
+      when status >= 200 and status < 300 do
+    session_id = extract_session_id(resp_headers, state.session_id)
+
+    case body do
+      empty when empty in [nil, "", []] ->
+        {:noreply, %{state | session_id: session_id}}
+
+      _ ->
         content_type = get_header(resp_headers, "content-type", "application/json")
         messages = parse_body(body, content_type)
         Enum.each(messages, &send(state.owner, {:mcp_message, &1}))
         {:noreply, %{state | session_id: session_id}}
-
-      {:ok, %{status: status}} ->
-        err = ExAthena.Error.new(:server_error, "HTTP #{status}")
-        send(state.owner, {:transport_down, err})
-        {:stop, :normal, state}
-
-      {:error, reason} ->
-        send(state.owner, {:transport_down, reason})
-        {:stop, :normal, state}
     end
   end
 
-  def handle_cast(:close, state), do: {:stop, :normal, state}
+  def handle_info({:http_response, {:ok, %{status: status}}}, state) do
+    err = ExAthena.Error.new(:server_error, "HTTP #{status}")
+    send(state.owner, {:transport_down, err})
+    {:stop, :normal, state}
+  end
+
+  def handle_info({:http_response, {:error, reason}}, state) do
+    send(state.owner, {:transport_down, reason})
+    {:stop, :normal, state}
+  end
+
+  def handle_info(_, state), do: {:noreply, state}
 
   defp extract_session_id(headers, default) do
     case List.keyfind(headers, "mcp-session-id", 0) do

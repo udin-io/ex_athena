@@ -13,6 +13,8 @@ defmodule ExAthena.Mcp.Supervisor do
 
   use Supervisor
 
+  require Logger
+
   alias ExAthena.Mcp.Config
   alias ExAthena.Mcp.Registry, as: McpRegistry
   alias ExAthena.Mcp.Server, as: McpServer
@@ -27,7 +29,8 @@ defmodule ExAthena.Mcp.Supervisor do
         Supervisor.start_link(__MODULE__, servers, Keyword.put_new(opts, :name, __MODULE__))
 
       {:error, error} ->
-        {:stop, error}
+        Logger.error("MCP supervisor: invalid config — #{inspect(error)}; skipping startup")
+        :ignore
     end
   end
 

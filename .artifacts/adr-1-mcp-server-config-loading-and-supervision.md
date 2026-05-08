@@ -20,7 +20,7 @@ A later sub-ticket will surface MCP-discovered tools through `ExAthena.Tools` in
    - `Supervisor` — `:one_for_one`, supervises the Registry plus one `Server` per `enabled: true` entry. Each `Server` is `restart: :transient` with `max_restarts: 3, max_seconds: 60`. Empty config → `:ignore`.
 
 3. **Read APIs** are added to the existing `ExAthena.Mcp` facade:
-   - `list_servers/0` — metadata for every configured server, including disabled ones.
+   - `list_servers/0` — metadata for every running server (i.e. every server registered in the registry). Disabled servers are not started and are therefore not included.
    - `list_tools/1` (by **server name**) — returns cached tools, distinct arity from the existing client-pid `list_tools/2`, so no signature collision.
 
 4. **Application wiring** appends `ExAthena.Mcp.Supervisor` to `ExAthena.Application` children, gated by `Application.get_env(:ex_athena, :enable_mcp, true)`. `config/test.exs` sets the gate to `false` to keep existing tests hermetic; per-test setups opt in.

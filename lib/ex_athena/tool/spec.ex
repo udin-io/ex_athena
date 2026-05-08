@@ -50,6 +50,14 @@ defmodule ExAthena.Tool.Spec do
   @doc "Build a spec from a module implementing `ExAthena.Tool`."
   @spec from_module(module()) :: t()
   def from_module(mod) when is_atom(mod) do
+    unless Code.ensure_loaded?(mod) do
+      raise ArgumentError, "#{inspect(mod)} cannot be loaded"
+    end
+
+    unless tool_module?(mod) do
+      raise ArgumentError, "#{inspect(mod)} does not implement ExAthena.Tool"
+    end
+
     parallel_safe =
       function_exported?(mod, :parallel_safe?, 0) and mod.parallel_safe?()
 
@@ -63,6 +71,13 @@ defmodule ExAthena.Tool.Spec do
       mcp_server: nil,
       mcp_tool_name: nil
     }
+  end
+
+  defp tool_module?(mod) do
+    function_exported?(mod, :name, 0) and
+      function_exported?(mod, :description, 0) and
+      function_exported?(mod, :schema, 0) and
+      function_exported?(mod, :execute, 2)
   end
 
   @doc """

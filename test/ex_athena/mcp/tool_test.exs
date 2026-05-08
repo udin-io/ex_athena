@@ -13,7 +13,7 @@ defmodule ExAthena.Mcp.ToolTest do
     :ok
   end
 
-  defp fake_cfg(name \\ "test") do
+  defp fake_cfg(name) do
     elixir = System.find_executable("elixir") || raise "elixir not on PATH"
 
     %Server{
@@ -61,18 +61,6 @@ defmodule ExAthena.Mcp.ToolTest do
       assert is_list(content)
       assert hd(content)["type"] == "text"
       assert hd(content)["text"] == "hello"
-    end
-  end
-
-  describe "execute/3 is_error: true" do
-    test "returns {:error, content} when server returns is_error: true" do
-      # The fake server's echo tool always succeeds. We test this via a spec
-      # that calls a non-existent tool — the fake server replies with a JSON-RPC
-      # error, which the client maps to {:error, _}. We test the is_error path
-      # by stubbing a direct client call; the Client.call_tool path is exercised
-      # in the happy-path test above. The is_error=true path is covered by
-      # the integration test in loop_integration_test.exs.
-      :ok
     end
   end
 

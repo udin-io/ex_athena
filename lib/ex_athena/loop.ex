@@ -399,7 +399,13 @@ defmodule ExAthena.Loop do
       # Tools that fire hooks (e.g. SpawnAgent for SubagentStart/Stop) read
       # them from ctx.assigns[:hooks]. Carrying them through the context
       # avoids tools needing direct access to Loop.State.
-      assigns = Map.put_new(assigns, :hooks, hooks_table)
+      assigns =
+        assigns
+        |> Map.put_new(:hooks, hooks_table)
+        |> Map.put_new(
+          :tool_timeout_ms,
+          Keyword.get(opts, :tool_timeout_ms, @default_tool_timeout_ms)
+        )
 
       ctx =
         ExAthena.ToolContext.new(
