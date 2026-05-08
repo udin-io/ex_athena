@@ -28,7 +28,8 @@ defmodule ExAthena.Tools do
     ExAthena.Tools.WebFetch,
     ExAthena.Tools.TodoWrite,
     ExAthena.Tools.PlanMode,
-    ExAthena.Tools.SpawnAgent
+    ExAthena.Tools.SpawnAgent,
+    ExAthena.Tools.Lsp
   ]
 
   @doc "List the builtin tool modules."
