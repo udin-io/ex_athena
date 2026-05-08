@@ -33,6 +33,8 @@ defmodule ExAthena.Sessions.Stores.ETS do
 
   use GenServer
 
+  require Logger
+
   @sessions_table :ex_athena_session_rows
   @messages_table :ex_athena_message_rows
   @snapshots_table :ex_athena_snapshot_rows
@@ -162,6 +164,8 @@ defmodule ExAthena.Sessions.Stores.ETS do
   def put_snapshot(snapshot) when is_map(snapshot) do
     ensure_tables()
 
+    # Insert the row before the index so a concurrent get_snapshot/1 that sees
+    # the index entry is guaranteed to find the row (fail-closed).
     :ets.insert(
       @snapshots_table,
       {{snapshot.session_id, snapshot.message_id, snapshot.id}, snapshot}
@@ -202,8 +206,10 @@ defmodule ExAthena.Sessions.Stores.ETS do
   @impl ExAthena.Sessions.SchemaStore
   def delete_snapshots_for_session(session_id) when is_binary(session_id) do
     ensure_tables()
-    :ets.match_delete(@snapshots_table, {{session_id, :_, :_}, :_})
+    # Drop the index first so a concurrent get_snapshot/1 fails fast rather than
+    # finding an index entry pointing at a deleted row (fail-closed).
     :ets.match_delete(@snapshot_index_table, {:_, {session_id, :_}})
+    :ets.match_delete(@snapshots_table, {{session_id, :_, :_}, :_})
     :ok
   end
 
@@ -341,34 +347,20 @@ defmodule ExAthena.Sessions.Stores.ETS do
   end
 
   defp read_jsonl_file(path) do
-    case GenServer.whereis(ExAthena.Sessions.Stores.Jsonl) do
-      nil ->
-        read_jsonl_direct(path)
-
-      _pid ->
-        sid = path |> Path.basename(".jsonl")
-
-        case ExAthena.Sessions.Stores.Jsonl.read(sid) do
-          {:ok, events} -> events
-          _ -> read_jsonl_direct(path)
-        end
-    end
-  end
-
-  defp read_jsonl_direct(path) do
     case File.read(path) do
       {:ok, body} ->
         body
         |> String.split("\n", trim: true)
-        |> Enum.map(&decode_jsonl_line/1)
+        |> Enum.map(&decode_jsonl_line(&1, path))
         |> Enum.reject(&is_nil/1)
 
-      _ ->
+      {:error, reason} ->
+        Logger.warning("[ETS.migrate_jsonl] could not read #{path}: #{inspect(reason)}")
         []
     end
   end
 
-  defp decode_jsonl_line(line) do
+  defp decode_jsonl_line(line, path) do
     case Jason.decode(line, keys: :atoms!) do
       {:ok, %{event: event_name} = map} when is_binary(event_name) ->
         Map.put(map, :event, String.to_atom(event_name))
@@ -376,11 +368,20 @@ defmodule ExAthena.Sessions.Stores.ETS do
       {:ok, map} ->
         map
 
-      _ ->
+      {:error, reason} ->
+        Logger.warning(
+          "[ETS.migrate_jsonl] dropping malformed line in #{path}: #{inspect(reason)} — #{String.slice(line, 0, 120)}"
+        )
+
         nil
     end
   rescue
-    _ -> nil
+    e ->
+      Logger.warning(
+        "[ETS.migrate_jsonl] dropping line in #{path}: #{Exception.message(e)} — #{String.slice(line, 0, 120)}"
+      )
+
+      nil
   end
 
   defp fold_events(session_id, events) do

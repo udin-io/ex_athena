@@ -263,14 +263,32 @@ defmodule ExAthena.Session do
 
     ts = DateTime.utc_now() |> DateTime.to_iso8601()
 
+    existing_row =
+      if SchemaStore.implements?(store) do
+        case store.get_session(session_id) do
+          {:ok, row} -> row
+          {:error, :not_found} -> nil
+        end
+      end
+
+    resumed? = seed_messages != [] or not is_nil(existing_row)
+
+    event_kind = if resumed?, do: :session_resume, else: :session_start
+
     _ =
       store.append(
         session_id,
-        Store.new_event(:session_start, %{ts: ts, resumed: seed_messages != []})
+        Store.new_event(event_kind, %{ts: ts, resumed: resumed?})
       )
 
     if SchemaStore.implements?(store) do
-      store.put_session(%{id: session_id, created_at: ts, updated_at: ts})
+      case existing_row do
+        nil ->
+          store.put_session(%{id: session_id, created_at: ts, updated_at: ts})
+
+        row ->
+          store.put_session(Map.put(row, :updated_at, ts))
+      end
     end
 
     {:ok,
@@ -373,6 +391,8 @@ defmodule ExAthena.Session do
         |> Enum.flat_map(fn
           %{event: :user_message, data: %{message: m}} -> [m]
           %{event: :assistant_message, data: %{message: m}} -> [m]
+          %{event: :tool_result, data: %{message: m}} -> [m]
+          %{event: :system_message, data: %{message: m}} -> [m]
           _ -> []
         end)
         |> Enum.map(&Messages.from_map/1)
@@ -454,7 +474,9 @@ defmodule ExAthena.Session do
             {snap, false}
 
           snap ->
-            {snap, true}
+            refreshed = %{snap | state: Map.put(snap.state, :message_count, length(messages))}
+            :ok = store.put_snapshot(refreshed)
+            {refreshed, true}
         end
 
       :telemetry.execute(

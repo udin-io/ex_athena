@@ -120,6 +120,37 @@ defmodule ExAthena.SessionForkTest do
     assert new_session.parent_id == sid
   end
 
+  test "restarting a forked session preserves parent_id, title, and created_at" do
+    {pid, sid} = start_session()
+    {:ok, _} = Session.send_message(pid, "hello")
+    Session.stop(pid)
+
+    {:ok, %{session_id: new_id}} = Session.fork(sid, store: :ets, title: "branch a")
+
+    {:ok, before_row} = ETS.get_session(new_id)
+    created_before = before_row.created_at
+
+    {:ok, msgs} = Session.resume(new_id, store: :ets)
+
+    {:ok, pid2} =
+      Session.start_link(
+        provider: :mock,
+        mock: [responder: single_text("ack")],
+        tools: [],
+        memory: false,
+        store: :ets,
+        session_id: new_id,
+        messages: msgs
+      )
+
+    Session.stop(pid2)
+
+    {:ok, after_row} = ETS.get_session(new_id)
+    assert after_row.parent_id == sid
+    assert after_row.title == "branch a"
+    assert after_row.created_at == created_before
+  end
+
   test "forked messages have independent monotonic seqs" do
     {pid, sid} = start_session()
     {:ok, _} = Session.send_message(pid, "first")
