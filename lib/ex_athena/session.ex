@@ -29,13 +29,31 @@ defmodule ExAthena.Session do
   Each `send_message` appends to the session's message list, runs the agent
   loop to completion, and returns the final result. Subsequent messages
   include the full prior history, so the model has context.
+
+  ## Session resume
+
+  Pass `:messages` to `start_link/1` to seed the conversation with a prior
+  history, typically obtained from `resume/2`:
+
+      {:ok, msgs} = ExAthena.Session.resume(session_id, store: :ets)
+      {:ok, pid}  = ExAthena.Session.start_link(
+        provider: :ollama,
+        messages: msgs,
+        session_id: session_id
+      )
+
+  When the configured store implements `ExAthena.Sessions.SchemaStore`
+  (currently only `ETS`), the session also dual-writes every message to the
+  row tables so `resume/2` can read from them directly.
   """
 
   use GenServer
 
   alias ExAthena.Loop
-  alias ExAthena.Sessions.Store
+  alias ExAthena.Messages
+  alias ExAthena.Sessions.{SchemaStore, Store}
   alias ExAthena.Sessions.Stores.{ETS, InMemory, Jsonl}
+  alias ExAthena.Telemetry
 
   # ── Client API ─────────────────────────────────────────────────────
 
@@ -44,9 +62,13 @@ defmodule ExAthena.Session do
 
     * `:name` — GenServer name.
     * `:system_prompt` — pinned system prompt used on every turn.
-    * `:store` — `:in_memory` (default), `:jsonl`, or a custom module
-      implementing `ExAthena.Sessions.Store`. Per-turn events are
-      persisted via the chosen store; `resume/2` reads them back.
+    * `:store` — `:in_memory` (default), `:ets`, `:jsonl`, or a custom module
+      implementing `ExAthena.Sessions.Store`. Per-turn events are persisted
+      via the chosen store; `resume/2` reads them back.
+    * `:messages` — seed the conversation with a prior message history (e.g.
+      from `resume/2`). Each entry is passed through `Messages.from_map/1`.
+    * `:session_id` — reuse a stable id from a prior session; generated if
+      absent.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -55,29 +77,42 @@ defmodule ExAthena.Session do
   end
 
   @doc """
-  Resume a session by reading prior events back from a store.
+  Resume a session by reading prior messages back from a store.
 
-  Returns the reconstructed message list. Permissions deliberately do
-  NOT survive resume — Claude Code's design pattern: each session
-  re-establishes trust with the host. The caller is expected to feed
-  the returned messages into a fresh `start_link/1` call via
-  `:messages`.
+  ## Options
+
+    * `:store` — `:in_memory` (default), `:ets`, `:jsonl`, or a module.
+      When the store implements `SchemaStore`, the row tables are queried
+      directly; otherwise the event-log is replayed.
+    * `:as` — shape of the returned payload:
+      - `:messages` (default) — `{:ok, [Message.t()]}`, backwards compatible.
+      - `:state` — `{:ok, %Loop.State{messages: ..., session_id: ...}}`.
+      - `:map` — `{:ok, %{session_id:, messages:, last_user:, last_assistant:}}`.
+    * `:replay_last_user_turn` — when `true`, drops the trailing assistant
+      message (and any trailing non-user messages) so callers can re-feed
+      the last user prompt. Defaults to `false`.
+
+  Emits `[:ex_athena, :session, :resume]` telemetry with measurements
+  `%{message_count: n}` and metadata `%{session_id:, source:, store:}`.
   """
-  @spec resume(String.t(), keyword()) :: {:ok, [map()]} | {:error, term()}
+  @spec resume(String.t(), keyword()) :: {:ok, term()} | {:error, term()}
   def resume(session_id, opts \\ []) when is_binary(session_id) do
     store = resolve_store(Keyword.get(opts, :store, :in_memory))
+    as = Keyword.get(opts, :as, :messages)
+    replay = Keyword.get(opts, :replay_last_user_turn, false)
 
-    with {:ok, events} <- store.read(session_id) do
-      messages =
-        events
-        |> Enum.flat_map(fn
-          %{event: :user_message, data: %{message: m}} -> [m]
-          %{event: :assistant_message, data: %{message: m}} -> [m]
-          _ -> []
-        end)
-        |> Enum.map(&ExAthena.Messages.from_map/1)
+    source = if SchemaStore.implements?(store), do: :schema_store, else: :event_log
 
-      {:ok, messages}
+    with {:ok, messages} <- load_messages(store, session_id, source) do
+      messages = if replay, do: trim_to_last_user(messages), else: messages
+
+      Telemetry.event(
+        [:ex_athena, :session, :resume],
+        %{message_count: length(messages)},
+        %{session_id: session_id, source: source, store: store}
+      )
+
+      {:ok, shape_payload(as, session_id, messages)}
     end
   end
 
@@ -104,35 +139,39 @@ defmodule ExAthena.Session do
 
   @impl GenServer
   def init(opts) do
-    # A Session has a stable id reused on every turn so hooks, telemetry, and
-    # storage can correlate messages. Generated once if the caller didn't
-    # provide one.
     session_id = Keyword.get(opts, :session_id) || generate_session_id()
     opts = Keyword.put(opts, :session_id, session_id)
     store = resolve_store(Keyword.get(opts, :store, :in_memory))
 
+    seed_messages =
+      opts
+      |> Keyword.get(:messages, [])
+      |> Enum.map(&Messages.from_map/1)
+
+    ts = DateTime.utc_now() |> DateTime.to_iso8601()
+
     _ =
       store.append(
         session_id,
-        Store.new_event(:session_start, %{ts: DateTime.utc_now() |> DateTime.to_iso8601()})
+        Store.new_event(:session_start, %{ts: ts, resumed: seed_messages != []})
       )
+
+    if SchemaStore.implements?(store) do
+      store.put_session(%{id: session_id, created_at: ts, updated_at: ts})
+    end
 
     {:ok,
      %{
        opts: opts,
        session_id: session_id,
        store: store,
-       messages: [],
+       messages: seed_messages,
        usage: nil
      }}
   end
 
   @impl GenServer
   def handle_call({:send_message, message, extra_opts}, _from, state) do
-    # Merge per-call opts on top of the session's base opts, then append the
-    # running message history so the loop sees the full context. The session
-    # id is forced — extra_opts must not override it, otherwise downstream
-    # storage / sidechain paths would diverge mid-conversation.
     loop_opts =
       state.opts
       |> Keyword.merge(extra_opts)
@@ -145,28 +184,16 @@ defmodule ExAthena.Session do
         Store.new_event(:user_message, %{message: %{role: :user, content: message}})
       )
 
+    maybe_schema_put_message(state.store, state.session_id, :user, %{
+      role: :user,
+      content: message
+    })
+
     case Loop.run(message, loop_opts) do
       {:ok, result} ->
-        # Persist any messages added by the loop (assistant text + tool
-        # calls + tool results). We only record assistant turns at PR5;
-        # tool calls / results live in the loop's own event stream and
-        # can be reconstructed from the message history on resume.
         new_messages = Enum.drop(result.messages, length(state.messages) + 1)
 
-        Enum.each(new_messages, fn msg ->
-          event_kind =
-            case msg.role do
-              :assistant -> :assistant_message
-              :tool -> :tool_result
-              :user -> :user_message
-              :system -> :system_message
-            end
-
-          state.store.append(
-            state.session_id,
-            Store.new_event(event_kind, %{message: serialize_message(msg)})
-          )
-        end)
+        Enum.each(new_messages, &persist_message(&1, state))
 
         state = %{
           state
@@ -186,6 +213,85 @@ defmodule ExAthena.Session do
   def handle_call(:session_id, _from, state), do: {:reply, state.session_id, state}
 
   # ── Internal ────────────────────────────────────────────────────────
+
+  defp persist_message(msg, state) do
+    event_kind = role_to_event_kind(msg.role)
+    serialized = serialize_message(msg)
+    state.store.append(state.session_id, Store.new_event(event_kind, %{message: serialized}))
+    maybe_schema_put_message(state.store, state.session_id, msg.role, serialized)
+  end
+
+  defp role_to_event_kind(:assistant), do: :assistant_message
+  defp role_to_event_kind(:tool), do: :tool_result
+  defp role_to_event_kind(:user), do: :user_message
+  defp role_to_event_kind(:system), do: :system_message
+
+  defp maybe_schema_put_message(store, session_id, role, content) do
+    if SchemaStore.implements?(store) do
+      store.put_message(%{
+        id: SchemaStore.new_message_id(),
+        session_id: session_id,
+        role: role,
+        content: content,
+        ts: DateTime.utc_now() |> DateTime.to_iso8601()
+      })
+    end
+  end
+
+  defp load_messages(store, session_id, :schema_store) do
+    case store.list_messages(session_id) do
+      {:ok, rows} ->
+        messages =
+          rows
+          |> Enum.sort_by(& &1.seq)
+          |> Enum.map(fn row -> Messages.from_map(row.content) end)
+
+        {:ok, messages}
+
+      err ->
+        err
+    end
+  end
+
+  defp load_messages(store, session_id, :event_log) do
+    with {:ok, events} <- store.read(session_id) do
+      messages =
+        events
+        |> Enum.flat_map(fn
+          %{event: :user_message, data: %{message: m}} -> [m]
+          %{event: :assistant_message, data: %{message: m}} -> [m]
+          _ -> []
+        end)
+        |> Enum.map(&Messages.from_map/1)
+
+      {:ok, messages}
+    end
+  end
+
+  defp trim_to_last_user(messages) do
+    messages
+    |> Enum.reverse()
+    |> Enum.drop_while(&(&1.role != :user))
+    |> Enum.reverse()
+  end
+
+  defp shape_payload(:messages, _session_id, messages), do: messages
+
+  defp shape_payload(:state, session_id, messages) do
+    %Loop.State{messages: messages, session_id: session_id}
+  end
+
+  defp shape_payload(:map, session_id, messages) do
+    last_user = messages |> Enum.filter(&(&1.role == :user)) |> List.last()
+    last_assistant = messages |> Enum.filter(&(&1.role == :assistant)) |> List.last()
+
+    %{
+      session_id: session_id,
+      messages: messages,
+      last_user: last_user,
+      last_assistant: last_assistant
+    }
+  end
 
   defp merge_usage(nil, new), do: new
   defp merge_usage(old, nil), do: old
