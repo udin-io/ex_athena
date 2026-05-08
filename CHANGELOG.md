@@ -5,6 +5,48 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.5.0 — `apply_patch` tool + parallel mistake-counter reset propagation
+
+### Added
+
+- `ExAthena.Tools.ApplyPatch` — a new builtin tool that applies a unified
+  diff atomically across one or more files in a single tool call. Replaces
+  N sequential `Edit` calls on multi-region/multi-file refactors. Backend
+  is selected at execution time:
+  - When `cwd` is inside a git work tree, the tool shells out to
+    `git apply --whitespace=nowarn` (and `--check` for `dry_run`).
+    Atomicity comes from `git apply` itself.
+  - Otherwise, a pure-Elixir parser/applier handles standard unified-diff
+    hunks with two-pass semantics: every file's new contents are computed
+    in memory; nothing is written until every hunk validates.
+  Path safety, snapshotting, and permission/hook integration reuse the
+  existing `ToolContext.resolve_path/2`, `ExAthena.Checkpoint.snapshot/3`,
+  and loop dispatch — no new wiring or attack surface. v1 deliberately
+  omits binary diffs, `/dev/null` create/delete, rename detection beyond
+  what unified-diff carries, and fuzzy context matching; unsupported
+  inputs return a structured error so the model can retry. See ADR-0008.
+
+### Fixed
+
+- `ExAthena.Loop.Parallel.fold_deltas/2` now propagates downward movement
+  of the `consecutive_mistakes` counter from parallel tasks back into the
+  main state. Previously only `budget` was merged, which discarded
+  `reset_mistakes/1` calls from successful parallel-safe tool calls
+  (`Glob`, `Read`). Over multiple iterations the counter could exceed
+  `max_consecutive_mistakes` and trigger `error_consecutive_mistakes` on
+  loops where no actually-consecutive mistakes had occurred — the
+  counter simply never got reset by intervening successes. The fix uses
+  the minimal predicate `n < state.consecutive_mistakes` so resets
+  propagate while race-prone bumps from concurrent tasks continue to be
+  discarded. See ADR-0007.
+
+### Internal
+
+- Reformat `lib/ex_athena/providers/req_llm.ex` and
+  `test/ex_athena/structured_output_test.exs` to satisfy
+  `mix format --check-formatted` (#33). No behavioural change. See
+  ADR-0009.
+
 ## v0.4.9 — `ToolCalls.Native` recognises `%ReqLLM.StreamChunk{}` tool-call shape
 
 ### Fixed
