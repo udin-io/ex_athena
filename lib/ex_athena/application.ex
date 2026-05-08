@@ -35,8 +35,12 @@ defmodule ExAthena.Application do
         children
       end
 
-    # Always supervise the in-memory store — it's used by tests and the
-    # default Session config. Cheap to keep around (a single ETS table).
-    children ++ [ExAthena.Sessions.Stores.InMemory]
+    # Always supervise the in-memory and ETS stores — both used by tests
+    # and Session configs. Cheap to keep around (ETS tables).
+    children ++
+      [
+        ExAthena.Sessions.Stores.InMemory,
+        ExAthena.Sessions.Stores.ETS
+      ]
   end
 end
