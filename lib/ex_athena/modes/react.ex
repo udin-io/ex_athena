@@ -100,6 +100,12 @@ defmodule ExAthena.Modes.ReAct do
                     tool_calls_made: state.tool_calls_made + length(tool_calls)
                 }
 
+                # Turn-boundary reset on any success — see ADR adr-1-reset-consecutive-mistakes-at-turn-boundary.md.
+                state =
+                  if any_tool_success?(tool_messages),
+                    do: reset_mistakes(state),
+                    else: state
+
                 state = maybe_attach_skills(state, response.text)
 
                 {:continue, state}
@@ -204,7 +210,7 @@ defmodule ExAthena.Modes.ReAct do
           {:ok, %{phase_transition: new_phase} = payload} ->
             # Phase transition sentinel — special-case only in the single-tool runner.
             msg = Map.get(payload, :message, "phase -> #{new_phase}")
-            state = %{state | ctx: %{state.ctx | phase: new_phase}} |> reset_mistakes()
+            state = %{state | ctx: %{state.ctx | phase: new_phase}}
             result = Messages.tool_result(call.id, to_string(msg))
             after_post_hook(state, call, result)
 
@@ -215,12 +221,10 @@ defmodule ExAthena.Modes.ReAct do
             # for the next :tool_ui event.
             ui = %{kind: kind, payload: payload}
             result = Messages.tool_result(call.id, stringify(text), nil, ui)
-            state = reset_mistakes(state)
             after_post_hook(state, call, result)
 
           {:ok, payload} ->
             result = Messages.tool_result(call.id, stringify(payload))
-            state = reset_mistakes(state)
             after_post_hook(state, call, result)
 
           {:error, reason} ->
@@ -286,6 +290,15 @@ defmodule ExAthena.Modes.ReAct do
     do: %{state | consecutive_mistakes: n + 1}
 
   defp reset_mistakes(state), do: %{state | consecutive_mistakes: 0}
+
+  # True when at least one tool message in the batch carries a non-error result.
+  # `is_error` is nil on success and true on failure; nil != true covers both.
+  defp any_tool_success?(messages) do
+    Enum.any?(messages, fn
+      %{tool_results: [%{is_error: err} | _]} -> err != true
+      _ -> false
+    end)
+  end
 
   defp set_finish_reason(state, reason) do
     put_in(state.meta[:finish_reason], reason)

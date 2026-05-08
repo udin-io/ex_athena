@@ -135,6 +135,9 @@ defmodule ExAthena.Loop.Parallel do
   defp maybe_update_budget(state, %{budget: b}) when not is_nil(b), do: %{state | budget: b}
   defp maybe_update_budget(state, _), do: state
 
+  # Retained as defense-in-depth: dormant while ReAct resets at the turn
+  # boundary (no per-task state ever decreases the counter), but kept in case
+  # per-call resets are reintroduced.
   defp maybe_propagate_reset(state, %{consecutive_mistakes: n})
        when n < state.consecutive_mistakes,
        do: %{state | consecutive_mistakes: n}
