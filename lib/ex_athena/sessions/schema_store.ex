@@ -81,4 +81,27 @@ defmodule ExAthena.Sessions.SchemaStore do
   def new_snapshot_id do
     16 |> :crypto.strong_rand_bytes() |> Base.url_encode64(padding: false)
   end
+
+  @doc """
+  Returns `true` when `mod` exports every required SchemaStore callback.
+
+  Used by `ExAthena.Session` to opportunistically dual-write to row tables
+  and to select the SchemaStore read path on `resume/2`. Stores that only
+  implement the event-log `Store` behaviour return `false`.
+  """
+  @spec implements?(module()) :: boolean()
+  def implements?(mod) when is_atom(mod) do
+    required = [
+      {:put_session, 1},
+      {:get_session, 1},
+      {:list_sessions, 0},
+      {:delete_session, 1},
+      {:put_message, 1},
+      {:list_messages, 1},
+      {:delete_messages_after, 2}
+    ]
+
+    Code.ensure_loaded?(mod) and
+      Enum.all?(required, fn {f, a} -> function_exported?(mod, f, a) end)
+  end
 end
