@@ -190,16 +190,16 @@ defmodule ExAthena.Modes.ReAct do
         conversation_id: Map.get(state.meta, :conversation_id)
       )
 
-    case Tools.find(state.tool_modules, call.name) do
+    case Tools.find(state.tool_specs, call.name) do
       nil ->
         result = Messages.tool_result(call.id, "unknown tool: #{call.name}", true)
         state = bump_mistake(state)
         Parallel.emit_events(state, call, result)
         {result, state}
 
-      mod ->
+      spec ->
         case Telemetry.span([:ex_athena, :tool], tool_meta, fn ->
-               mod.execute(call.arguments, ctx)
+               ExAthena.Tool.Spec.execute(spec, call.arguments, ctx)
              end) do
           {:ok, %{phase_transition: new_phase} = payload} ->
             # Phase transition sentinel — special-case only in the single-tool runner.
@@ -294,7 +294,7 @@ defmodule ExAthena.Modes.ReAct do
     %{
       state.request_template
       | messages: state.messages,
-        tools: tool_schemas(state.tool_modules, state.capabilities),
+        tools: tool_schemas(state.tool_specs, state.capabilities),
         system_prompt: effective_system_prompt(state)
     }
   end
@@ -308,7 +308,7 @@ defmodule ExAthena.Modes.ReAct do
   defp effective_system_prompt(state) do
     ExAthena.ToolCalls.augment_system_prompt(
       state.request_template.system_prompt,
-      Tools.describe_for_prompt(state.tool_modules)
+      Tools.describe_for_prompt(state.tool_specs)
     )
   end
 

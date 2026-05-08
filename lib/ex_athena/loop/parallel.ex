@@ -38,7 +38,7 @@ defmodule ExAthena.Loop.Parallel do
   @spec run([ToolCall.t()], map(), (ToolCall.t(), map() -> {term(), map()})) ::
           {:ok, [term()], map()} | {:halt, term(), map()}
   def run(calls, state, runner_fn) do
-    {parallel_safe, must_serial} = classify(calls, state.tool_modules)
+    {parallel_safe, must_serial} = classify(calls, state.tool_specs)
 
     # Mutations first, in order, so the filesystem state parallel tools see
     # (if any) is the post-mutation state. This matches what a human would
@@ -61,17 +61,13 @@ defmodule ExAthena.Loop.Parallel do
 
   # ── Classification ────────────────────────────────────────────────
 
-  defp classify(calls, tool_modules) do
+  defp classify(calls, tool_specs) do
     Enum.split_with(calls, fn call ->
-      case Tools.find(tool_modules, call.name) do
+      case Tools.find(tool_specs, call.name) do
         nil -> false
-        mod -> parallel_safe?(mod)
+        spec -> ExAthena.Tool.Spec.parallel_safe?(spec)
       end
     end)
-  end
-
-  defp parallel_safe?(mod) do
-    function_exported?(mod, :parallel_safe?, 0) and mod.parallel_safe?()
   end
 
   # ── Serial execution ──────────────────────────────────────────────

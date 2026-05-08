@@ -9,7 +9,7 @@ defmodule ExAthena.Loop.State do
   ## Fields
 
   - `messages` — running conversation history.
-  - `tool_modules` — resolved tool modules for this run.
+  - `tool_specs` — resolved `Tool.Spec` list for this run.
   - `capabilities` — provider capabilities map.
   - `provider_mod`, `provider_opts` — inference entry point.
   - `request_template` — base request overlaid each iteration with fresh
@@ -36,9 +36,10 @@ defmodule ExAthena.Loop.State do
 
   alias ExAthena.{Budget, ToolContext}
   alias ExAthena.Messages.Message
+  alias ExAthena.Tool.Spec
 
   defstruct messages: [],
-            tool_modules: [],
+            tool_specs: [],
             capabilities: %{},
             provider_mod: nil,
             provider_opts: [],
@@ -65,7 +66,7 @@ defmodule ExAthena.Loop.State do
 
   @type t :: %__MODULE__{
           messages: [Message.t()],
-          tool_modules: [module()],
+          tool_specs: [Spec.t()],
           capabilities: map(),
           provider_mod: module() | nil,
           provider_opts: keyword(),

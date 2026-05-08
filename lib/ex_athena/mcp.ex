@@ -16,6 +16,7 @@ defmodule ExAthena.Mcp do
   alias ExAthena.Mcp.Client
   alias ExAthena.Mcp.Registry, as: McpRegistry
   alias ExAthena.Mcp.Server, as: McpServer
+  alias ExAthena.Tool.Spec
 
   # ── High-level registry-based APIs ───────────────────────────────
 
@@ -49,6 +50,32 @@ defmodule ExAthena.Mcp do
       pid -> McpServer.list_tools(pid)
     end
   end
+
+  @doc """
+  Return `[Tool.Spec.t()]` for all ready, enabled MCP servers.
+
+  `filter` controls which servers contribute specs:
+    * `:all` — all ready+enabled servers
+    * `[server_name]` — only the named servers
+
+  When the MCP supervisor is not running, returns `[]` without raising.
+  """
+  @spec tool_specs(:all | [String.t()]) :: [Spec.t()]
+  def tool_specs(filter \\ :all) do
+    list_servers()
+    |> Enum.filter(fn info ->
+      info.status == :ready and info.enabled and server_allowed?(info.name, filter)
+    end)
+    |> Enum.flat_map(fn info ->
+      case list_tools(info.name) do
+        {:ok, tools} -> Enum.map(tools, &Spec.from_mcp(&1, info.name))
+        _ -> []
+      end
+    end)
+  end
+
+  defp server_allowed?(_name, :all), do: true
+  defp server_allowed?(name, list) when is_list(list), do: name in list
 
   # ── Low-level client-pid APIs ─────────────────────────────────────
 
