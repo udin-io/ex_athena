@@ -35,9 +35,14 @@ defmodule ExAthena.Application do
         children
       end
 
-    # Always supervise the in-memory store — it's used by tests and the
-    # default Session config. Cheap to keep around (a single ETS table).
-    children = children ++ [ExAthena.Sessions.Stores.InMemory]
+    # Always supervise the in-memory and ETS stores — both used by tests
+    # and Session configs. Cheap to keep around (ETS tables).
+    children =
+      children ++
+        [
+          ExAthena.Sessions.Stores.InMemory,
+          ExAthena.Sessions.Stores.ETS
+        ]
 
     if Application.get_env(:ex_athena, :enable_mcp, true) do
       children ++ [ExAthena.Mcp.Supervisor]

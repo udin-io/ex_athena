@@ -66,8 +66,15 @@ defmodule ExAthena.Sessions.StoreTest do
 
       on_exit(fn ->
         case GenServer.whereis(Jsonl) do
-          nil -> :ok
-          pid -> :ok = GenServer.stop(pid, :normal, 1_000)
+          nil ->
+            :ok
+
+          pid ->
+            try do
+              GenServer.stop(pid, :normal, 1_000)
+            catch
+              :exit, _ -> :ok
+            end
         end
 
         File.rm_rf!(root)
