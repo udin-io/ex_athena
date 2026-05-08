@@ -16,6 +16,11 @@ defmodule ExAthena.Sessions.SchemaStore do
       message_id, snapshot_id)` so every snapshot associated with a
       fork-point can be enumerated with a prefix scan.
 
+  `Stores.ETS` additionally maintains an internal `:ex_athena_snapshot_index`
+  table (`snapshot_id → {session_id, message_id}`) that makes `get_snapshot/1`
+  an O(1) lookup. This index is an implementation detail of `Stores.ETS` and is
+  not part of this behaviour contract.
+
   ## Row shapes
 
   See the `t:session/0`, `t:message/0`, and `t:snapshot/0` typespecs below.

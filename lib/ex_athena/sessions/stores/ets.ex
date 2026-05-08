@@ -11,7 +11,12 @@ defmodule ExAthena.Sessions.Stores.ETS do
   | `:ex_athena_session_rows`      | `:set`         | `session_id`                               |
   | `:ex_athena_message_rows`      | `:ordered_set` | `{session_id, seq, message_id}`            |
   | `:ex_athena_snapshot_rows`     | `:ordered_set` | `{session_id, message_id, snapshot_id}`    |
+  | `:ex_athena_snapshot_index`    | `:set`         | `snapshot_id`                              |
   | `:ex_athena_session_events`    | `:ordered_set` | `{session_id, monotonic_time}`             |
+
+  `:ex_athena_snapshot_index` is an internal inverse index maintained by
+  `put_snapshot/1` and cleared by `delete_snapshots_for_session/1`. It enables
+  O(1) lookup in `get_snapshot/1` without scanning `:ex_athena_snapshot_rows`.
 
   The GenServer owns table creation. All public CRUD operations work
   without the GenServer's pid — reads are lock-free.
@@ -31,9 +36,16 @@ defmodule ExAthena.Sessions.Stores.ETS do
   @sessions_table :ex_athena_session_rows
   @messages_table :ex_athena_message_rows
   @snapshots_table :ex_athena_snapshot_rows
+  @snapshot_index_table :ex_athena_snapshot_index
   @events_table :ex_athena_session_events
 
-  @all_tables [@sessions_table, @messages_table, @snapshots_table, @events_table]
+  @all_tables [
+    @sessions_table,
+    @messages_table,
+    @snapshots_table,
+    @snapshot_index_table,
+    @events_table
+  ]
 
   # ── GenServer lifecycle ──────────────────────────────────────────────
 
@@ -155,6 +167,8 @@ defmodule ExAthena.Sessions.Stores.ETS do
       {{snapshot.session_id, snapshot.message_id, snapshot.id}, snapshot}
     )
 
+    :ets.insert(@snapshot_index_table, {snapshot.id, {snapshot.session_id, snapshot.message_id}})
+
     :ok
   end
 
@@ -162,9 +176,15 @@ defmodule ExAthena.Sessions.Stores.ETS do
   def get_snapshot(snapshot_id) when is_binary(snapshot_id) do
     ensure_tables()
 
-    case :ets.match_object(@snapshots_table, {{:_, :_, snapshot_id}, :_}) do
-      [{_, snapshot}] -> {:ok, snapshot}
-      [] -> {:error, :not_found}
+    case :ets.lookup(@snapshot_index_table, snapshot_id) do
+      [{^snapshot_id, {sid, mid}}] ->
+        case :ets.lookup(@snapshots_table, {sid, mid, snapshot_id}) do
+          [{_, snapshot}] -> {:ok, snapshot}
+          [] -> {:error, :not_found}
+        end
+
+      [] ->
+        {:error, :not_found}
     end
   end
 
@@ -183,6 +203,7 @@ defmodule ExAthena.Sessions.Stores.ETS do
   def delete_snapshots_for_session(session_id) when is_binary(session_id) do
     ensure_tables()
     :ets.match_delete(@snapshots_table, {{session_id, :_, :_}, :_})
+    :ets.match_delete(@snapshot_index_table, {:_, {session_id, :_}})
     :ok
   end
 
@@ -294,6 +315,7 @@ defmodule ExAthena.Sessions.Stores.ETS do
         {@sessions_table, :set},
         {@messages_table, :ordered_set},
         {@snapshots_table, :ordered_set},
+        {@snapshot_index_table, :set},
         {@events_table, :ordered_set}
       ],
       fn {name, type} ->
