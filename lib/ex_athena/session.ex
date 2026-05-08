@@ -135,6 +135,69 @@ defmodule ExAthena.Session do
   @spec stop(GenServer.server()) :: :ok
   def stop(server), do: GenServer.stop(server, :normal)
 
+  @doc """
+  Write (or return) a named savepoint anchored at a specific message.
+
+  ## Options
+
+    * `:store` — must implement `SchemaStore` (`:ets` or a custom row-shaped
+      store). Returns `{:error, :unsupported_store}` for `:in_memory` / `:jsonl`.
+    * `:message_id` — anchor message; defaults to the most-recent message.
+    * `:label` — optional human-readable name for the snapshot.
+    * `:metadata` — optional map stored inside the snapshot state.
+
+  Two calls with the same `session_id`, anchor `message_id`, `label`, and
+  `metadata` return the same snapshot row (idempotent).
+
+  Emits `[:ex_athena, :session, :checkpoint]` with measurements
+  `%{message_count: n}` and metadata `%{session_id:, message_id:,
+  snapshot_id:, store:, idempotent:}`.
+  """
+  @spec checkpoint(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def checkpoint(session_id, opts \\ []) when is_binary(session_id) do
+    store = resolve_store(Keyword.get(opts, :store, :in_memory))
+
+    if not SchemaStore.implements?(store) do
+      {:error, :unsupported_store}
+    else
+      do_checkpoint(store, session_id, opts)
+    end
+  end
+
+  @doc """
+  Clone a session row and a prefix of its messages under a new `session_id`.
+
+  ## Options
+
+    * `:store` — must implement `SchemaStore`. Returns `{:error, :unsupported_store}`
+      otherwise.
+    * `:checkpoint_id` — look up the snapshot row and use its `message_id` as
+      the fork point.
+    * `:message_id` — explicit message anchor (takes effect when no
+      `checkpoint_id` is given).
+    * `:title` — title for the new session; defaults to `"<source_title> (fork)"`.
+    * `:copy_snapshots` — when `true`, snapshot rows whose anchor message was
+      included are copied with their `message_id` rewritten to the new session's
+      corresponding message id. Defaults to `false`.
+
+  Returns `{:ok, %{session_id: new_id, parent_id: source_id, message_count: n}}`
+  or `{:error, reason}`.
+
+  Emits `[:ex_athena, :session, :fork]` with measurements `%{message_count: n}`
+  and metadata `%{session_id: new_id, parent_id: source_id, store:,
+  anchor_message_id:}`.
+  """
+  @spec fork(String.t(), keyword()) :: {:ok, map()} | {:error, term()}
+  def fork(session_id, opts \\ []) when is_binary(session_id) do
+    store = resolve_store(Keyword.get(opts, :store, :in_memory))
+
+    if not SchemaStore.implements?(store) do
+      {:error, :unsupported_store}
+    else
+      do_fork(store, session_id, opts)
+    end
+  end
+
   # ── Server ──────────────────────────────────────────────────────────
 
   @impl GenServer
@@ -307,6 +370,203 @@ defmodule ExAthena.Session do
   defp sum(nil, b), do: b
   defp sum(a, nil), do: a
   defp sum(a, b), do: a + b
+
+  # ── checkpoint/2 internals ──────────────────────────────────────────
+
+  defp do_checkpoint(store, session_id, opts) do
+    label = Keyword.get(opts, :label)
+    metadata = Keyword.get(opts, :metadata, %{})
+
+    with {:ok, messages} <- store.list_messages(session_id),
+         {:ok, anchor} <- pick_anchor_message(messages, Keyword.get(opts, :message_id)) do
+      state = %{
+        label: label,
+        message_count: length(messages),
+        anchor_seq: anchor.seq,
+        metadata: metadata
+      }
+
+      {:ok, snapshots} = store.list_snapshots(session_id)
+      existing = find_matching_snapshot(snapshots, anchor.id, label, metadata)
+
+      {snapshot, idempotent} =
+        case existing do
+          nil ->
+            snap = %{
+              id: SchemaStore.new_snapshot_id(),
+              session_id: session_id,
+              message_id: anchor.id,
+              state: state,
+              created_at: DateTime.utc_now() |> DateTime.to_iso8601()
+            }
+
+            :ok = store.put_snapshot(snap)
+            {snap, false}
+
+          snap ->
+            {snap, true}
+        end
+
+      :telemetry.execute(
+        [:ex_athena, :session, :checkpoint],
+        %{message_count: length(messages)},
+        %{
+          session_id: session_id,
+          message_id: anchor.id,
+          snapshot_id: snapshot.id,
+          store: store,
+          idempotent: idempotent
+        }
+      )
+
+      {:ok, snapshot}
+    end
+  end
+
+  defp pick_anchor_message(messages, nil) do
+    sorted = Enum.sort_by(messages, & &1.seq)
+
+    case List.last(sorted) do
+      nil -> {:error, :no_messages}
+      msg -> {:ok, msg}
+    end
+  end
+
+  defp pick_anchor_message(messages, message_id) do
+    case Enum.find(messages, &(&1.id == message_id)) do
+      nil -> {:error, :not_found}
+      msg -> {:ok, msg}
+    end
+  end
+
+  defp find_matching_snapshot(snapshots, message_id, label, metadata) do
+    Enum.find(snapshots, fn snap ->
+      snap.message_id == message_id and
+        Map.get(snap.state, :label) == label and
+        Map.get(snap.state, :metadata) == metadata
+    end)
+  end
+
+  # ── fork/2 internals ───────────────────────────────────────────────
+
+  defp do_fork(store, session_id, opts) do
+    with {:ok, source_session} <- store.get_session(session_id),
+         {:ok, all_messages} <- store.list_messages(session_id),
+         {:ok, {fork_messages, anchor_message_id}} <-
+           resolve_fork_slice(store, all_messages, opts) do
+      new_id = generate_session_id()
+      ts = DateTime.utc_now() |> DateTime.to_iso8601()
+
+      source_title = source_session[:title] || source_session.id
+      title = Keyword.get(opts, :title, "#{source_title} (fork)")
+
+      :ok =
+        store.put_session(%{
+          id: new_id,
+          parent_id: session_id,
+          title: title,
+          created_at: ts,
+          updated_at: ts
+        })
+
+      {message_count, id_map} = copy_messages_to_fork(store, new_id, fork_messages)
+
+      if Keyword.get(opts, :copy_snapshots, false) do
+        copy_snapshots_to_fork(store, session_id, new_id, fork_messages, id_map)
+      end
+
+      :telemetry.execute(
+        [:ex_athena, :session, :fork],
+        %{message_count: message_count},
+        %{
+          session_id: new_id,
+          parent_id: session_id,
+          store: store,
+          anchor_message_id: anchor_message_id
+        }
+      )
+
+      {:ok, %{session_id: new_id, parent_id: session_id, message_count: message_count}}
+    end
+  end
+
+  defp resolve_fork_slice(store, messages, opts) do
+    cond do
+      checkpoint_id = Keyword.get(opts, :checkpoint_id) ->
+        case store.get_snapshot(checkpoint_id) do
+          {:ok, snap} ->
+            case Enum.find(messages, &(&1.id == snap.message_id)) do
+              nil ->
+                {:error, :not_found}
+
+              anchor ->
+                slice = Enum.filter(messages, &(&1.seq <= anchor.seq))
+                {:ok, {slice, snap.message_id}}
+            end
+
+          err ->
+            err
+        end
+
+      message_id = Keyword.get(opts, :message_id) ->
+        case Enum.find(messages, &(&1.id == message_id)) do
+          nil ->
+            {:error, :not_found}
+
+          anchor ->
+            slice = Enum.filter(messages, &(&1.seq <= anchor.seq))
+            {:ok, {slice, message_id}}
+        end
+
+      true ->
+        anchor_id = case List.last(Enum.sort_by(messages, & &1.seq)) do
+          nil -> nil
+          msg -> msg.id
+        end
+
+        {:ok, {messages, anchor_id}}
+    end
+  end
+
+  defp copy_messages_to_fork(store, new_session_id, messages) do
+    sorted = Enum.sort_by(messages, & &1.seq)
+
+    Enum.reduce(sorted, {0, %{}}, fn msg, {count, id_map} ->
+      new_msg_id = SchemaStore.new_message_id()
+
+      :ok =
+        store.put_message(%{
+          id: new_msg_id,
+          session_id: new_session_id,
+          role: msg.role,
+          content: msg.content,
+          ts: msg.ts
+        })
+
+      {count + 1, Map.put(id_map, msg.id, new_msg_id)}
+    end)
+  end
+
+  defp copy_snapshots_to_fork(store, source_session_id, new_session_id, fork_messages, id_map) do
+    fork_msg_ids = MapSet.new(fork_messages, & &1.id)
+
+    {:ok, snapshots} = store.list_snapshots(source_session_id)
+
+    Enum.each(snapshots, fn snap ->
+      if MapSet.member?(fork_msg_ids, snap.message_id) do
+        new_msg_id = Map.get(id_map, snap.message_id)
+
+        :ok =
+          store.put_snapshot(%{
+            id: SchemaStore.new_snapshot_id(),
+            session_id: new_session_id,
+            message_id: new_msg_id,
+            state: snap.state,
+            created_at: DateTime.utc_now() |> DateTime.to_iso8601()
+          })
+      end
+    end)
+  end
 
   defp generate_session_id do
     16
