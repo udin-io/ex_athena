@@ -125,15 +125,25 @@ defmodule ExAthena.Loop.Parallel do
 
   defp fold_halt(state, _call_id, _reason), do: state
 
-  # Each task returns its own fresh `state`; we only keep deltas that matter
-  # across concurrent tasks: the budget accumulator. Mistake counter and ctx
-  # phase belong to the sequential path.
+  # Each task returns its own fresh `state`; we keep deltas that matter
+  # across concurrent tasks: the budget accumulator and mistake-counter resets.
+  # Bumps (counter increases) from concurrent tasks are intentionally discarded
+  # to avoid double-counting; resets must propagate so a successful parallel
+  # call doesn't leave a stale elevated counter.
   defp fold_deltas(state, new_state) do
-    case new_state do
-      %{budget: b} when not is_nil(b) -> %{state | budget: b}
-      _ -> state
-    end
+    state
+    |> maybe_update_budget(new_state)
+    |> maybe_propagate_reset(new_state)
   end
+
+  defp maybe_update_budget(state, %{budget: b}) when not is_nil(b), do: %{state | budget: b}
+  defp maybe_update_budget(state, _), do: state
+
+  defp maybe_propagate_reset(state, %{consecutive_mistakes: n})
+       when n < state.consecutive_mistakes,
+       do: %{state | consecutive_mistakes: n}
+
+  defp maybe_propagate_reset(state, _), do: state
 
   # ── Ordering ──────────────────────────────────────────────────────
 

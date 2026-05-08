@@ -159,6 +159,61 @@ defmodule ExAthena.Loop.V03Test do
                  max_iterations: 10
                )
     end
+
+    test "successful parallel tool call resets the mistake counter", %{dir: dir} do
+      # Glob is parallel_safe? true — its reset_mistakes must propagate back
+      # through fold_deltas to the outer state.
+      counter = :counters.new(1, [:atomics])
+
+      responder = fn _req ->
+        :counters.add(counter, 1, 1)
+        n = :counters.get(counter, 1)
+
+        case n do
+          1 ->
+            %Response{
+              text: "",
+              tool_calls: [%ToolCall{id: "c1", name: "nonexistent", arguments: %{}}],
+              finish_reason: :tool_calls,
+              provider: :mock
+            }
+
+          2 ->
+            %Response{
+              text: "",
+              tool_calls: [
+                %ToolCall{id: "c2", name: "glob", arguments: %{"pattern" => "*.txt"}}
+              ],
+              finish_reason: :tool_calls,
+              provider: :mock
+            }
+
+          3 ->
+            %Response{
+              text: "",
+              tool_calls: [%ToolCall{id: "c3", name: "nonexistent", arguments: %{}}],
+              finish_reason: :tool_calls,
+              provider: :mock
+            }
+
+          _ ->
+            %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+        end
+      end
+
+      # With max_consecutive_mistakes: 2:
+      #   Without fix: turn1→1, turn2→stays 1, turn3→2 = max → :error_consecutive_mistakes
+      #   With fix:    turn1→1, turn2→reset 0, turn3→1 < max → continues → :stop
+      assert {:ok, %Result{finish_reason: :stop, text: "done"}} =
+               Loop.run("go",
+                 provider: :mock,
+                 mock: [responder: responder],
+                 cwd: dir,
+                 tools: [ExAthena.Tools.Glob],
+                 max_consecutive_mistakes: 2,
+                 max_iterations: 10
+               )
+    end
   end
 
   describe "parallel tool execution" do
