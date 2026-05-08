@@ -219,14 +219,11 @@ defmodule ExAthena.Tools.LspTest do
     test "surfaces {:error, {:lsp_error, map}} when server returns error object", %{dir: dir} do
       path = write_elixir_file(dir)
 
-      # Arm the fake server to fail the next request with a MethodNotFound error
+      # Arm the fake server to fail the next request with a MethodNotFound error.
+      # Use the synchronous request form so we don't race a notification against
+      # the definition request that follows.
       {:ok, pid} = Manager.client_for_file(dir, path)
-      Client.notify(pid, "notif/fail_next", %{})
-
-      # Give the notification time to reach the fake server before the tool sends
-      # the definition request — both go through the GenServer mailbox in order,
-      # but we add a brief sleep to let the port pipe drain.
-      Process.sleep(50)
+      assert {:ok, %{"armed" => true}} = Client.request(pid, "notif/fail_next", %{}, 5_000)
 
       assert {:error, {:lsp_error, err}} =
                Lsp.execute(

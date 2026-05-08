@@ -165,6 +165,40 @@ defmodule ExAthena.Lsp.ClientTest do
     end
   end
 
+  describe "initialize error response" do
+    test "queued requests get {:lsp_init_failed, err} and GenServer stops" do
+      System.put_env("FAKE_LSP_FAIL_INITIALIZE", "1")
+      on_exit(fn -> System.delete_env("FAKE_LSP_FAIL_INITIALIZE") end)
+
+      pid =
+        start_supervised!(
+          {Client,
+           [
+             binary: @elixir_bin,
+             args: ["--erl", "-noinput", @fake_server_script],
+             root_uri: "file://#{@root}",
+             root: @root,
+             language: :test
+           ]},
+          restart: :temporary
+        )
+
+      ref = Process.monitor(pid)
+      caller = self()
+
+      spawn(fn ->
+        result = Client.request(pid, "textDocument/echo", %{}, 5_000)
+        send(caller, {:result, result})
+      end)
+
+      assert_receive {:result, {:error, {:lsp_init_failed, err}}}, 5_000
+      assert is_map(err)
+      assert err["message"] == "InvalidParams"
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, {:lsp_init_failed, _}}, 5_000
+    end
+  end
+
   describe "stop/2" do
     test "stop/2 shuts down cleanly" do
       pid = start_client()

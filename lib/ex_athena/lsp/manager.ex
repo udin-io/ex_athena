@@ -106,18 +106,19 @@ defmodule ExAthena.Lsp.Manager do
   end
 
   @impl true
-  def handle_info({:DOWN, ref, :process, _pid, reason}, state) do
+  def handle_info({:DOWN, ref, :process, pid, reason}, state) do
     case Map.pop(state.monitors, ref) do
       {nil, _} ->
         {:noreply, state}
 
       {{root, language}, monitors} ->
-        phase = if reason == :normal, do: :stopped, else: :crashed
-
+        # Use a distinct event name from the Client's own `:spawn` telemetry —
+        # the Client already emits `[:ex_athena, :lsp, :spawn]` from terminate/2,
+        # so consumers would otherwise count crashes twice.
         Telemetry.event(
-          [:ex_athena, :lsp, :spawn],
+          [:ex_athena, :lsp, :client_supervised, :down],
           %{system_time: System.system_time()},
-          %{language: language, root: root, binary: "", pid: self(), phase: phase}
+          %{language: language, root: root, pid: pid, reason: reason}
         )
 
         Logger.info(

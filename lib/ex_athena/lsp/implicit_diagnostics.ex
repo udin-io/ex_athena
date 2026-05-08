@@ -25,6 +25,8 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
       :information | :hint`, default `[:error, :warning]`
   """
 
+  require Logger
+
   alias ExAthena.Lsp.{Client, Manager, ServerRegistry}
   alias ExAthena.Tools.Lsp, as: LspTool
 
@@ -97,18 +99,68 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
   # --- private ---
 
   defp run(payload) do
-    with true <- enabled?(),
-         {:ok, abs_path} <- file_from_payload(payload),
-         :ok <- has_language?(abs_path),
-         {:ok, pid} <- client_for_file(payload, abs_path),
-         :ok <- LspTool.ensure_did_open(pid, abs_path),
-         diags when diags != [] <- await_diagnostics(pid, abs_path),
-         filtered when filtered != [] <- filter_severities(diags) do
+    with true <- enabled?() || log_skip(:disabled),
+         {:ok, abs_path} <- file_from_payload(payload) |> log_step(:no_path),
+         :ok <- has_language?(abs_path) |> log_step(:unsupported_language, abs_path),
+         {:ok, pid} <- client_for_file(payload, abs_path) |> log_step(:no_client, abs_path),
+         :ok <- LspTool.ensure_did_open(pid, abs_path) |> log_step(:did_open_failed, abs_path),
+         diags when diags != [] <-
+           await_diagnostics(pid, abs_path) |> log_no_diags(abs_path),
+         filtered when filtered != [] <-
+           filter_severities(diags) |> log_filtered_out(abs_path) do
       {:augment, format(filtered, abs_path, Map.get(payload, :cwd, ""))}
     else
       _ -> :ok
     end
   end
+
+  # --- failure-mode logging helpers ---
+  # Each helper passes through its argument unchanged so the `with` chain is
+  # unaffected; a Logger.debug fires on the failure paths so operators can
+  # diagnose why diagnostics never appeared.
+
+  defp log_skip(:disabled) do
+    Logger.debug("[ExAthena.Lsp.ImplicitDiagnostics] skipped: lsp disabled")
+    false
+  end
+
+  defp log_step({:ok, _} = ok, _reason), do: ok
+
+  defp log_step(other, reason) do
+    Logger.debug("[ExAthena.Lsp.ImplicitDiagnostics] skipped: #{reason} (#{inspect(other)})")
+    other
+  end
+
+  defp log_step({:ok, _} = ok, _reason, _ctx), do: ok
+  defp log_step(:ok, _reason, _ctx), do: :ok
+
+  defp log_step(other, reason, ctx) do
+    Logger.debug(
+      "[ExAthena.Lsp.ImplicitDiagnostics] skipped: #{reason} for #{ctx} (#{inspect(other)})"
+    )
+
+    other
+  end
+
+  defp log_no_diags([], abs_path) do
+    Logger.debug(
+      "[ExAthena.Lsp.ImplicitDiagnostics] no diagnostics within timeout for #{abs_path}"
+    )
+
+    []
+  end
+
+  defp log_no_diags(diags, _abs_path), do: diags
+
+  defp log_filtered_out([], abs_path) do
+    Logger.debug(
+      "[ExAthena.Lsp.ImplicitDiagnostics] all diagnostics filtered by severity for #{abs_path}"
+    )
+
+    []
+  end
+
+  defp log_filtered_out(diags, _abs_path), do: diags
 
   defp enabled? do
     Application.get_env(:ex_athena, :lsp_implicit_diagnostics_enabled, true) == true
@@ -214,6 +266,6 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
 
   defp count_from(:ok), do: 0
 
-  defp had_errors?({:augment, text}), do: text =~ "error:"
+  defp had_errors?({:augment, text}), do: text =~ ~r/^error:/m
   defp had_errors?(:ok), do: false
 end

@@ -58,7 +58,13 @@ defmodule FakeLspServer do
 
   def run do
     port = Port.open({:fd, 0, 1}, [:binary, :eof])
-    loop(port, "", %{suppress_next_diag: false, fail_next_request: false})
+    fail_init = System.get_env("FAKE_LSP_FAIL_INITIALIZE") == "1"
+
+    loop(port, "", %{
+      suppress_next_diag: false,
+      fail_next_request: false,
+      fail_initialize: fail_init
+    })
   end
 
   defp loop(port, buffer, state) do
@@ -151,7 +157,12 @@ defmodule FakeLspServer do
   # --- message handlers (each returns new state) ---
 
   defp handle(%{"method" => "initialize", "id" => id}, port, state) do
-    reply(port, id, %{"capabilities" => %{}})
+    if state.fail_initialize do
+      error_reply(port, id, -32602, "InvalidParams")
+    else
+      reply(port, id, %{"capabilities" => %{}})
+    end
+
     state
   end
 
@@ -191,6 +202,13 @@ defmodule FakeLspServer do
   # Suppress the next textDocument/didOpen publishDiagnostics side effect.
   defp handle(%{"method" => "notif/suppress_next_diag"}, _port, state) do
     %{state | suppress_next_diag: true}
+  end
+
+  # Synchronous request form: arms the fail_next flag and replies. Tests use
+  # this to avoid racing a notification against the next request.
+  defp handle(%{"method" => "notif/fail_next", "id" => id}, port, state) do
+    reply(port, id, %{"armed" => true})
+    %{state | fail_next_request: true}
   end
 
   # Make the next request (with an id) fail with a MethodNotFound error.

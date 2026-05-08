@@ -24,7 +24,10 @@ defmodule ExAthena.Lsp do
 
   ## Telemetry
 
-  * `[:ex_athena, :lsp, :spawn]` — emitted on client start/stop/crash.
+  * `[:ex_athena, :lsp, :spawn]` — emitted on client start/stop/crash
+    (exactly once per phase, from the Client itself).
+  * `[:ex_athena, :lsp, :client_supervised, :down]` — emitted by the Manager
+    when a supervised client process exits, with `%{language, root, pid, reason}`.
   * `[:ex_athena, :lsp, :request, :start | :stop]` — emitted around each
     JSON-RPC request/response cycle.
   """

@@ -21,6 +21,8 @@ defmodule ExAthena.Lsp.Client do
   * `[:ex_athena, :lsp, :spawn]` — discrete event with
     `%{system_time: ...}` measurements and
     `%{language: atom, root: binary, binary: binary, pid: pid, phase: :started | :stopped | :crashed}` metadata.
+    Emitted exactly once per phase transition. `:crashed` is emitted only from
+    `terminate/2`; the port `:exit_status` handler does not double-emit.
   * `[:ex_athena, :lsp, :request, :start | :stop]` — span around each
     JSON-RPC request/response cycle, metadata
     `%{method: binary, language: atom, root: binary}`.
@@ -119,7 +121,7 @@ defmodule ExAthena.Lsp.Client do
     state = %{
       port: port,
       buffer: "",
-      # %{id => {from, method}}
+      # %{id => {from, method, timer_ref}}
       pending: %{},
       next_id: 1,
       diagnostics: %{},
@@ -208,19 +210,10 @@ defmodule ExAthena.Lsp.Client do
   end
 
   def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
-    Telemetry.event(
-      [:ex_athena, :lsp, :spawn],
-      %{system_time: System.system_time()},
-      %{
-        language: state.language,
-        root: state.root,
-        binary: state.binary,
-        pid: self(),
-        phase: :crashed
-      }
-    )
-
-    for {_id, {from, _method}} <- state.pending do
+    # `:crashed` telemetry is emitted from terminate/2 (which fires for every
+    # death, including this stop). Don't double-emit here.
+    for {_id, {from, _method, timer_ref}} <- state.pending do
+      cancel_deadline_timer(timer_ref)
       GenServer.reply(from, {:error, {:lsp_port_exit, status}})
     end
 
@@ -229,6 +222,21 @@ defmodule ExAthena.Lsp.Client do
     end
 
     {:stop, {:lsp_port_exit, status}, state}
+  end
+
+  def handle_info({:request_deadline, id}, state) do
+    case pop_in(state, [:pending, id]) do
+      {nil, state} ->
+        {:noreply, state}
+
+      {{from, _method, _timer_ref}, state} ->
+        GenServer.reply(from, {:error, :timeout})
+        {:noreply, state}
+    end
+  end
+
+  def handle_info({:lsp_init_failed, err}, state) do
+    {:stop, {:lsp_init_failed, err}, state}
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
@@ -280,9 +288,25 @@ defmodule ExAthena.Lsp.Client do
     flush_queued_requests(state)
   end
 
+  # Initialize error response — fail every queued caller and stop the GenServer.
+  # Without this clause, an `initialize` error would fall through to the catch-all
+  # and queued requests would hang until their caller-side timeout.
+  defp handle_message(%{"id" => id, "error" => err}, %{init_request_id: id} = state)
+       when not is_nil(id) do
+    Logger.error("[ExAthena.Lsp.Client] LSP initialize failed: #{inspect(err)}")
+
+    for {from, _method, _params, _timeout} <- state.queued_requests do
+      GenServer.reply(from, {:error, {:lsp_init_failed, err}})
+    end
+
+    send(self(), {:lsp_init_failed, err})
+    %{state | queued_requests: [], init_request_id: nil}
+  end
+
   # Response to one of our requests.
   defp handle_message(%{"id" => id} = msg, state) when is_map_key(state.pending, id) do
-    {{from, method}, state} = pop_in(state, [:pending, id])
+    {{from, method, timer_ref}, state} = pop_in(state, [:pending, id])
+    cancel_deadline_timer(timer_ref)
 
     Telemetry.event(
       [:ex_athena, :lsp, :request, :stop],
@@ -336,7 +360,7 @@ defmodule ExAthena.Lsp.Client do
 
   # --- request helpers ---
 
-  defp dispatch_request(state, method, params, _timeout, from) do
+  defp dispatch_request(state, method, params, timeout, from) do
     {id, state} = next_id(state)
 
     Telemetry.event(
@@ -345,10 +369,18 @@ defmodule ExAthena.Lsp.Client do
       %{method: method, language: state.language, root: state.root}
     )
 
-    state = put_in(state, [:pending, id], {from, method})
+    timer_ref = Process.send_after(self(), {:request_deadline, id}, timeout)
+    state = put_in(state, [:pending, id], {from, method, timer_ref})
     send_request(state.port, id, method, params)
     state
   end
+
+  defp cancel_deadline_timer(timer_ref) when is_reference(timer_ref) do
+    Process.cancel_timer(timer_ref)
+    :ok
+  end
+
+  defp cancel_deadline_timer(_), do: :ok
 
   defp flush_queued_requests(state) do
     queued = Enum.reverse(state.queued_requests)

@@ -160,6 +160,13 @@ defmodule ExAthena.Lsp.ManagerTest do
   # --- helpers ---
 
   defp unique_root do
-    "/tmp/lsp_manager_test_#{System.unique_integer([:positive])}"
+    # Each test calls this AFTER `start_supervised!` runs in setup, so an
+    # `on_exit` cleanup here would fire BEFORE the supervisor stops the spawned
+    # LSP VM (LIFO order) — the VM would then see a missing cwd and emit
+    # "Runtime terminating during boot" noise. Leave the empty dir in /tmp;
+    # the OS reaps it. The point of this fix is just to make `cd:` succeed.
+    root = Path.join(System.tmp_dir!(), "lsp_manager_test_#{System.unique_integer([:positive])}")
+    File.mkdir_p!(root)
+    root
   end
 end
