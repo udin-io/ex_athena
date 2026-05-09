@@ -76,6 +76,7 @@ defmodule ExAthena.Loop do
 
   alias ExAthena.{Budget, Config, Error, Memory, Request, Result, Skills, Telemetry, Tools}
   alias ExAthena.Loop.{Events, Mode, State}
+  alias ExAthena.Lsp.ImplicitDiagnostics
 
   @default_max_iterations 25
   @default_max_mistakes 3
@@ -442,7 +443,7 @@ defmodule ExAthena.Loop do
         provider_opts: Config.provider_opts(provider_mod, opts),
         request_template: request_template,
         permissions_opts: permissions_opts,
-        hooks: Keyword.get(opts, :hooks, %{}),
+        hooks: Keyword.get(opts, :hooks, %{}) |> ImplicitDiagnostics.maybe_merge(),
         ctx: ctx,
         on_event: Keyword.get(opts, :on_event),
         budget: Budget.new(),

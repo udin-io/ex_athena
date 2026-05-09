@@ -44,6 +44,13 @@ defmodule ExAthena.Application do
           ExAthena.Sessions.Stores.ETS
         ]
 
+    children =
+      if Application.get_env(:ex_athena, :enable_lsp, true) do
+        children ++ [ExAthena.Lsp.Supervisor]
+      else
+        children
+      end
+
     if Application.get_env(:ex_athena, :enable_mcp, true) do
       children ++ [ExAthena.Mcp.Supervisor]
     else

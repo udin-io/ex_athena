@@ -50,4 +50,63 @@ defmodule ExAthena.HooksTest do
     assert {:halt, {:hook_crashed, _msg}} =
              Hooks.run_pre_tool_use(%{PreToolUse: [%{hooks: [crasher]}]}, "read", %{}, "c1")
   end
+
+  test "PostToolUse single augment is returned" do
+    fn_aug = fn _input, _id -> {:augment, "diag: error on line 1"} end
+
+    assert {:augment, "diag: error on line 1"} =
+             Hooks.run_post_tool_use(
+               %{PostToolUse: [%{hooks: [fn_aug]}]},
+               "Edit",
+               %{},
+               "c1"
+             )
+  end
+
+  test "PostToolUse multiple augments are concatenated with newline" do
+    fn_a = fn _input, _id -> {:augment, "first"} end
+    fn_b = fn _input, _id -> {:augment, "second"} end
+
+    assert {:augment, "first\nsecond"} =
+             Hooks.run_post_tool_use(
+               %{PostToolUse: [%{hooks: [fn_a, fn_b]}]},
+               "Edit",
+               %{},
+               "c1"
+             )
+  end
+
+  test "PostToolUse empty augment string collapses to :ok" do
+    fn_empty = fn _input, _id -> {:augment, ""} end
+
+    assert :ok =
+             Hooks.run_post_tool_use(
+               %{PostToolUse: [%{hooks: [fn_empty]}]},
+               "Edit",
+               %{},
+               "c1"
+             )
+  end
+
+  test "PostToolUse halt wins over augment" do
+    fn_aug = fn _input, _id -> {:augment, "should not appear"} end
+    fn_halt = fn _input, _id -> {:halt, :aborted} end
+
+    assert {:halt, :aborted} =
+             Hooks.run_post_tool_use(
+               %{PostToolUse: [%{hooks: [fn_aug, fn_halt]}]},
+               "Edit",
+               %{},
+               "c1"
+             )
+  end
+
+  test "PostToolUse augment respects matcher — non-matching tool name returns :ok" do
+    fn_aug = fn _input, _id -> {:augment, "lsp diagnostics"} end
+
+    hooks = %{PostToolUse: [%{matcher: "^(Edit|Write)$", hooks: [fn_aug]}]}
+
+    assert :ok = Hooks.run_post_tool_use(hooks, "Read", %{}, "c1")
+    assert {:augment, "lsp diagnostics"} = Hooks.run_post_tool_use(hooks, "Edit", %{}, "c2")
+  end
 end

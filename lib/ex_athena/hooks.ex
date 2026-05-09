@@ -21,6 +21,9 @@ defmodule ExAthena.Hooks do
       `experimental.chat.system.transform`-style context injection.
     * `{:transform, new_prompt}` — only valid from `UserPromptSubmit`;
       rewrites the incoming user prompt before it enters the loop.
+    * `{:augment, text}` — only valid from `PostToolUse`; appends `text`
+      to the tool result content visible to the model on the next turn.
+      Multiple augments from different hooks are joined with `"\\n"`.
 
   Hooks are matched by `:matcher` (regex run against `tool_name`); a `nil`
   matcher or a missing `:matcher` key fires for every tool. Lifecycle-only
@@ -87,13 +90,25 @@ defmodule ExAthena.Hooks do
     run_tool_phase(hooks[:PreToolUse] || [], tool_name, input, tool_use_id)
   end
 
-  @doc "Fire `PostToolUse` hooks matching `tool_name`."
-  @spec run_post_tool_use(t(), String.t(), map(), String.t() | nil) :: :ok | {:halt, term()}
+  @doc """
+  Fire `PostToolUse` hooks matching `tool_name`.
+
+  Returns:
+    * `:ok` — all hooks returned `:ok` (or ignored returns).
+    * `{:halt, term()}` — a hook requested a hard stop; no further hooks run.
+    * `{:augment, String.t()}` — one or more hooks returned `{:augment, text}`;
+      multiple augments are joined with `"\\n"`. `:halt` takes priority over any
+      accumulated augment text.
+  """
+  @spec run_post_tool_use(t(), String.t(), map(), String.t() | nil) ::
+          :ok | {:halt, term()} | {:augment, String.t()}
   def run_post_tool_use(hooks, tool_name, result, tool_use_id) do
     groups = hooks[:PostToolUse] || []
-    # PostToolUse denies are ignored (too late) — only :halt is honoured.
-    case run_tool_phase(groups, tool_name, result, tool_use_id) do
+
+    case run_tool_phase_post(groups, tool_name, result, tool_use_id) do
       {:halt, _} = halt -> halt
+      {:augment, ""} -> :ok
+      {:augment, text} when is_binary(text) -> {:augment, text}
       _ -> :ok
     end
   end
@@ -151,6 +166,7 @@ defmodule ExAthena.Hooks do
     end)
   end
 
+  # Pre-tool phase: supports :deny and :halt; ignores :augment.
   defp run_tool_phase(groups, tool_name, input, tool_use_id) do
     groups
     |> Enum.flat_map(fn
@@ -166,6 +182,33 @@ defmodule ExAthena.Hooks do
         {:deny, _} = deny -> {:halt, deny}
         {:halt, _} = halt -> {:halt, halt}
         _ -> {:cont, :ok}
+      end
+    end)
+  end
+
+  # Post-tool phase: ignores :deny; accumulates :augment texts; :halt wins.
+  defp run_tool_phase_post(groups, tool_name, input, tool_use_id) do
+    fns =
+      Enum.flat_map(groups, fn
+        %{hooks: fns} = group when is_list(fns) ->
+          matcher = Map.get(group, :matcher)
+          if matches?(matcher, tool_name), do: fns, else: []
+
+        fun when is_function(fun, 2) ->
+          [fun]
+      end)
+
+    Enum.reduce_while(fns, {:augment, ""}, fn fun, {:augment, acc_text} ->
+      case safe_call(fun, Map.put_new(input, :tool_name, tool_name), tool_use_id) do
+        {:halt, _} = halt ->
+          {:halt, halt}
+
+        {:augment, text} when is_binary(text) ->
+          joined = if acc_text == "", do: text, else: acc_text <> "\n" <> text
+          {:cont, {:augment, joined}}
+
+        _ ->
+          {:cont, {:augment, acc_text}}
       end
     end)
   end
