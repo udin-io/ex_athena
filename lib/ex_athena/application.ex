@@ -37,10 +37,17 @@ defmodule ExAthena.Application do
 
     # Always supervise the in-memory and ETS stores — both used by tests
     # and Session configs. Cheap to keep around (ETS tables).
-    children ++
-      [
-        ExAthena.Sessions.Stores.InMemory,
-        ExAthena.Sessions.Stores.ETS
-      ]
+    children =
+      children ++
+        [
+          ExAthena.Sessions.Stores.InMemory,
+          ExAthena.Sessions.Stores.ETS
+        ]
+
+    if Application.get_env(:ex_athena, :enable_mcp, true) do
+      children ++ [ExAthena.Mcp.Supervisor]
+    else
+      children
+    end
   end
 end

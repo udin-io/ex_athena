@@ -372,9 +372,9 @@ defmodule ExAthena.Loop do
     session_id = Keyword.get(opts, :session_id) || generate_session_id()
     parent_session_id = Keyword.get(opts, :parent_session_id)
 
-    tool_modules = opts |> Tools.resolve() |> normalize_tool_list()
+    tool_specs = opts |> Tools.resolve() |> normalize_tool_list()
 
-    with :ok <- validate_tools(tool_modules) do
+    with :ok <- validate_tools(tool_specs) do
       capabilities =
         provider_mod.capabilities()
         |> Map.merge(Keyword.get(opts, :capabilities, %{}))
@@ -399,7 +399,13 @@ defmodule ExAthena.Loop do
       # Tools that fire hooks (e.g. SpawnAgent for SubagentStart/Stop) read
       # them from ctx.assigns[:hooks]. Carrying them through the context
       # avoids tools needing direct access to Loop.State.
-      assigns = Map.put_new(assigns, :hooks, hooks_table)
+      assigns =
+        assigns
+        |> Map.put_new(:hooks, hooks_table)
+        |> Map.put_new(
+          :tool_timeout_ms,
+          Keyword.get(opts, :tool_timeout_ms, @default_tool_timeout_ms)
+        )
 
       ctx =
         ExAthena.ToolContext.new(
@@ -430,7 +436,7 @@ defmodule ExAthena.Loop do
 
       state = %State{
         messages: initial_messages,
-        tool_modules: tool_modules,
+        tool_specs: tool_specs,
         capabilities: capabilities,
         provider_mod: provider_mod,
         provider_opts: Config.provider_opts(provider_mod, opts),
@@ -548,18 +554,7 @@ defmodule ExAthena.Loop do
     %{request | system_prompt: new_sp}
   end
 
-  defp normalize_tool_list(list) do
-    Enum.map(list, fn
-      mod when is_atom(mod) ->
-        mod
-
-      name when is_binary(name) ->
-        case Tools.find(Tools.builtins(), name) do
-          nil -> raise ArgumentError, "no built-in tool named #{inspect(name)}"
-          mod -> mod
-        end
-    end)
-  end
+  defp normalize_tool_list(specs) when is_list(specs), do: specs
 
   defp validate_tools(tool_modules) do
     try do
