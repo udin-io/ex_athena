@@ -214,6 +214,130 @@ defmodule ExAthena.Loop.V03Test do
                  max_iterations: 10
                )
     end
+
+    test "finish_reason :stop with valid tool call after prior bumps does not terminate the loop",
+         %{dir: dir} do
+      # Regression: production logs showed finish_reason=:stop + tool_calls=N immediately
+      # followed by :error_consecutive_mistakes. After 2 bumps (cm=2), the next turn that
+      # runs a valid tool must reset the counter so the loop can reach :stop.
+      File.write!(Path.join(dir, "data.txt"), "hello")
+
+      counter = :counters.new(1, [:atomics])
+
+      responder = fn _req ->
+        :counters.add(counter, 1, 1)
+        n = :counters.get(counter, 1)
+
+        case n do
+          1 ->
+            %Response{
+              text: "",
+              tool_calls: [%ToolCall{id: "e1", name: "nonexistent", arguments: %{}}],
+              finish_reason: :tool_calls,
+              provider: :mock
+            }
+
+          2 ->
+            %Response{
+              text: "",
+              tool_calls: [%ToolCall{id: "e2", name: "nonexistent", arguments: %{}}],
+              finish_reason: :tool_calls,
+              provider: :mock
+            }
+
+          3 ->
+            # finish_reason :stop but model still emits a valid tool call — must reset counter
+            %Response{
+              text: "",
+              tool_calls: [
+                %ToolCall{id: "r1", name: "read", arguments: %{"path" => "data.txt"}}
+              ],
+              finish_reason: :stop,
+              provider: :mock
+            }
+
+          _ ->
+            %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+        end
+      end
+
+      assert {:ok, %Result{finish_reason: :stop, text: "done"}} =
+               Loop.run("go",
+                 provider: :mock,
+                 mock: [responder: responder],
+                 cwd: dir,
+                 tools: [ExAthena.Tools.Read],
+                 max_consecutive_mistakes: 3,
+                 max_iterations: 10
+               )
+    end
+
+    test "mixed-batch turn (serial success + serial failure) after prior bump does not terminate the loop",
+         %{dir: dir} do
+      # Regression: when a batch has one serial-success tool and one serial-fail tool,
+      # the serial reducer threads state so the success resets then the failure bumps back.
+      # Without the turn-boundary reset the net cm after the mixed turn is still prev+1,
+      # meaning one more bad turn trips the threshold.
+      counter = :counters.new(1, [:atomics])
+
+      responder = fn _req ->
+        :counters.add(counter, 1, 1)
+        n = :counters.get(counter, 1)
+
+        case n do
+          # Turn 1: bump cm to 1
+          1 ->
+            %Response{
+              text: "",
+              tool_calls: [%ToolCall{id: "e1", name: "nonexistent", arguments: %{}}],
+              finish_reason: :tool_calls,
+              provider: :mock
+            }
+
+          # Turn 2: write (serial success) + nonexistent (serial fail).
+          # Without fix: write resets cm to 0, nonexistent bumps cm to 1 — net cm=1.
+          # With fix:    any success in batch → reset at turn boundary → cm=0.
+          2 ->
+            %Response{
+              text: "",
+              tool_calls: [
+                %ToolCall{
+                  id: "w1",
+                  name: "write",
+                  arguments: %{"path" => "out.txt", "content" => "x"}
+                },
+                %ToolCall{id: "e2", name: "nonexistent", arguments: %{}}
+              ],
+              finish_reason: :stop,
+              provider: :mock
+            }
+
+          # Turn 3: one more bump.
+          # Without fix: cm was 1, bumps to 2 = max → next check terminates.
+          # With fix:    cm was 0, bumps to 1 < max → continues.
+          3 ->
+            %Response{
+              text: "",
+              tool_calls: [%ToolCall{id: "e3", name: "nonexistent", arguments: %{}}],
+              finish_reason: :tool_calls,
+              provider: :mock
+            }
+
+          _ ->
+            %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+        end
+      end
+
+      assert {:ok, %Result{finish_reason: :stop, text: "done"}} =
+               Loop.run("go",
+                 provider: :mock,
+                 mock: [responder: responder],
+                 cwd: dir,
+                 tools: [ExAthena.Tools.Write, ExAthena.Tools.Read],
+                 max_consecutive_mistakes: 2,
+                 max_iterations: 10
+               )
+    end
   end
 
   describe "parallel tool execution" do
