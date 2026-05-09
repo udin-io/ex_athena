@@ -223,7 +223,7 @@ defmodule ExAthena.Lsp.ImplicitDiagnosticsTest do
 
   test "maybe_merge/1 prepends implicit hook when diagnostics enabled" do
     Application.put_env(:ex_athena, :lsp_implicit_diagnostics_enabled, true)
-    on_exit(fn -> Application.delete_env(:ex_athena, :lsp_implicit_diagnostics_enabled) end)
+    on_exit(fn -> Application.put_env(:ex_athena, :lsp_implicit_diagnostics_enabled, false) end)
 
     user_hook = fn _, _ -> :ok end
     hooks = %{PostToolUse: [%{hooks: [user_hook]}]}
@@ -236,7 +236,7 @@ defmodule ExAthena.Lsp.ImplicitDiagnosticsTest do
 
   test "maybe_merge/1 initialises PostToolUse key when absent" do
     Application.put_env(:ex_athena, :lsp_implicit_diagnostics_enabled, true)
-    on_exit(fn -> Application.delete_env(:ex_athena, :lsp_implicit_diagnostics_enabled) end)
+    on_exit(fn -> Application.put_env(:ex_athena, :lsp_implicit_diagnostics_enabled, false) end)
 
     merged = ImplicitDiagnostics.maybe_merge(%{})
     assert [entry] = merged[:PostToolUse]

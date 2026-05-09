@@ -5,6 +5,88 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.0 — Session persistence, native MCP, and first-class LSP integration
+
+### Added
+
+- **Session persistence (#35)** — full lifecycle for conversational state:
+  resume, checkpoint, fork, and undo/redo. Built on a GenServer-backed ETS
+  store with JSONL migration and snapshot indexing. New public API:
+  `ExAthena.Session.resume/2`, `checkpoint/2`, `fork/2`, `rewind/3`. See
+  ADR-0010 through ADR-0013.
+
+- **Native MCP (Model Context Protocol) support (#36)** — `ExAthena.Mcp`
+  facade plus a complete client/transport/lifecycle stack:
+  - `ExAthena.Mcp.Client` — JSON-RPC 2.0 GenServer with auto-initialize
+    handshake, per-call timeouts, and transport-crash propagation.
+  - `ExAthena.Mcp.Transport.Stdio` and `ExAthena.Mcp.Transport.Http` —
+    pluggable transports behind the `ExAthena.Mcp.Transport` behaviour
+    (line-framed Port for stdio; `Req` with JSON/SSE handling for HTTP).
+  - `ExAthena.Mcp.Config` — OpenCode-shaped JSONC config loader with
+    string/atom and `"local"`/`:local` normalisation.
+  - `ExAthena.Mcp.Server` + `ExAthena.Mcp.Supervisor` + `ExAthena.Mcp.Registry` —
+    per-server GenServers with cached `tools/list`, registered by name and
+    supervised under `:one_for_one` (`max_restarts: 3/60s`).
+  - MCP tools registered into the loop catalog with namespacing,
+    permission scoping, and hook support.
+  - Application gated behind `:enable_mcp` (off in test). See ADR-0014,
+    ADR-0015, ADR-0016.
+
+- **First-class Language Server Protocol integration (#37)** — definitions,
+  references, hover, and diagnostics, plus an automatic post-edit hook:
+  - `ExAthena.Lsp.Client` — JSON-RPC over stdio Port with Content-Length
+    framing, request/response correlation, and `publishDiagnostics`
+    caching via the `initialize/shutdown` handshake.
+  - `ExAthena.Lsp.Manager` + `ExAthena.Lsp.ServerRegistry` — per-project
+    `(root, language)` lazy spawning for `elixir-ls`, `pyright`,
+    `rust-analyzer`, `gopls`, and `typescript-language-server`; override
+    the spawn map at `{:ex_athena, :lsp_servers}`.
+  - `ExAthena.Tools.Lsp` — exposes `definition`, `references`,
+    `diagnostics`, and `hover` to the loop.
+  - `ExAthena.Lsp.ImplicitDiagnostics` — built-in `PostToolUse` hook that
+    fetches LSP diagnostics after every `Edit`/`Write` call and injects
+    errors/warnings into the next-turn tool result via the new
+    `{:augment, String.t()}` hook return type.
+  - Telemetry: `[:ex_athena, :lsp, :spawn]`,
+    `[:ex_athena, :lsp, :request, :start | :stop]`, and
+    `[:ex_athena, :lsp, :implicit_diagnostics, :start | :stop]`.
+  - Application gated behind `:enable_lsp` (off in test). See ADR-0017,
+    ADR-0018, ADR-0019.
+
+- **`PostToolUse` hooks may return `{:augment, String.t()}`** — appends
+  text to the tool-result content the model sees on the next turn. Used
+  by `ImplicitDiagnostics` and now part of the public hook contract; see
+  `guides/hooks_reference.md`.
+
+### Fixed
+
+- **`ExAthena.Loop.do_iterate/2` resets `consecutive_mistakes` at the turn
+  boundary on any tool success (#38)** — after the parallel-fold fix in
+  v0.5.0, per-call reset/bump interleaving in serial batches and
+  single-failure turns left the counter stale, occasionally tripping
+  `error_consecutive_mistakes` on loops with no actually-consecutive
+  mistakes. The reset decision is now made once after `Parallel.run/3`:
+  reset if any result in the batch is non-error; per-call bumps remain.
+  See ADR-0020.
+
+- **`ExAthena.Sessions.Stores.ETSTest` cleanup no longer races on a dead
+  `Jsonl` process** — `GenServer.stop` in `setup` and `on_exit` is now
+  wrapped to tolerate `:exit` from a process that died between `whereis`
+  and `stop`. Previously caused intermittent failures under certain test
+  orderings.
+
+- **`ExAthena.Lsp.ImplicitDiagnosticsTest` no longer leaks the
+  `:lsp_implicit_diagnostics_enabled` env across tests** — `on_exit` now
+  resets to `false` (matching `config/test.exs`) instead of
+  `Application.delete_env/2`, which left subsequent tests reading the
+  module's literal default of `true`.
+
+### Internal
+
+- `mix.exs` declares an `MCP` module group in `docs/groups_for_modules`
+  alongside the existing `Streaming` and `Errors` groups, so the new
+  `ExAthena.Mcp.*` modules render as a coherent section in HexDocs.
+
 ## v0.5.0 — `apply_patch` tool + parallel mistake-counter reset propagation
 
 ### Added

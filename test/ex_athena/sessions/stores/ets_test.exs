@@ -252,19 +252,25 @@ defmodule ExAthena.Sessions.Stores.ETSTest do
       root = Path.join(System.tmp_dir!(), "migrate_#{System.unique_integer([:positive])}")
       File.mkdir_p!(root)
 
-      case GenServer.whereis(Jsonl) do
-        nil -> :ok
-        pid -> :ok = GenServer.stop(pid, :normal, 1_000)
+      stop_jsonl = fn ->
+        case GenServer.whereis(Jsonl) do
+          nil ->
+            :ok
+
+          pid ->
+            try do
+              GenServer.stop(pid, :normal, 1_000)
+            catch
+              :exit, _ -> :ok
+            end
+        end
       end
 
+      stop_jsonl.()
       {:ok, _} = Jsonl.start_link(root: root, flush_interval_ms: 50_000)
 
       on_exit(fn ->
-        case GenServer.whereis(Jsonl) do
-          nil -> :ok
-          pid -> :ok = GenServer.stop(pid, :normal, 1_000)
-        end
-
+        stop_jsonl.()
         File.rm_rf!(root)
       end)
 

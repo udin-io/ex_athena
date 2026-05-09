@@ -1,7 +1,7 @@
 defmodule ExAthena.MixProject do
   use Mix.Project
 
-  @version "0.5.0"
+  @version "0.6.0"
   @source_url "https://github.com/udin-io/ex_athena"
 
   def project do
@@ -173,7 +173,15 @@ defmodule ExAthena.MixProject do
           ExAthena.Checkpoint.Sweeper
         ],
         Streaming: [ExAthena.Streaming, ExAthena.Streaming.Event],
-        Errors: [ExAthena.Error]
+        Errors: [ExAthena.Error],
+        MCP: [
+          ExAthena.Mcp,
+          ExAthena.Mcp.Client,
+          ExAthena.Mcp.Protocol,
+          ExAthena.Mcp.Transport,
+          ExAthena.Mcp.Transport.Stdio,
+          ExAthena.Mcp.Transport.Http
+        ]
       ]
     ]
   end
