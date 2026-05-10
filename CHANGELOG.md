@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.7.0 — First-class `:gemini` provider atom
+
+### Added
+
+- **`:gemini` provider atom (#39)** — callers can now write
+  `provider: :gemini, model: "gemini-2.5-flash"` directly. The atom
+  delegates to `ExAthena.Providers.ReqLLM` via `req_llm`'s `google`
+  adapter; no hand-rolled HTTP client. Hosted, authenticated — requires
+  a `GEMINI_API_KEY`. See `guides/providers.md` for configuration and
+  the live `@tag :external` test in
+  `test/ex_athena/providers/gemini_live_test.exs`.
+
 ## v0.6.0 — Session persistence, native MCP, and first-class LSP integration
 
 ### Added

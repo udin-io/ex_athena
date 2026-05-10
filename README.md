@@ -84,17 +84,19 @@ Swap the provider by changing one option:
 ExAthena.query("hi", provider: :openai_compatible, model: "gpt-4o-mini")
 ExAthena.query("hi", provider: :claude, model: "claude-opus-4-5")
 ExAthena.query("hi", provider: :ollama, model: "qwen2.5-coder")
+ExAthena.query("hi", provider: :gemini, model: "gemini-2.5-flash")
 ```
 
 ## Providers
 
 | Provider | Module | Notes |
 |---|---|---|
-| `:ollama` | `ExAthena.Providers.Ollama` | Local Ollama, `/api/chat`. Native tool-calls on modern models. |
-| `:openai_compatible` | `ExAthena.Providers.OpenAICompatible` | `/v1/chat/completions` — covers OpenAI, OpenRouter, LM Studio, vLLM, Groq, Together, llama.cpp server mode, etc. |
-| `:openai` | `ExAthena.Providers.OpenAICompatible` | Alias. |
-| `:llamacpp` | `ExAthena.Providers.OpenAICompatible` | Alias. |
-| `:claude` | `ExAthena.Providers.Claude` | Wraps the `claude_code` SDK. Preserves hooks, MCP, session resume. |
+| `:ollama` | `ExAthena.Providers.ReqLLM` | Local Ollama, `/api/chat`. Native tool-calls on modern models. |
+| `:openai_compatible` | `ExAthena.Providers.ReqLLM` | `/v1/chat/completions` — covers OpenAI, OpenRouter, LM Studio, vLLM, Groq, Together, llama.cpp server mode, etc. |
+| `:openai` | `ExAthena.Providers.ReqLLM` | Alias for `:openai_compatible`. |
+| `:llamacpp` | `ExAthena.Providers.ReqLLM` | Alias for local llama.cpp server. |
+| `:claude` | `ExAthena.Providers.ReqLLM` | Anthropic Claude via req_llm. |
+| `:gemini` | `ExAthena.Providers.ReqLLM` | Google Gemini via req_llm. Hosted; requires `GEMINI_API_KEY`. |
 | `:mock` | `ExAthena.Providers.Mock` | In-memory test double. |
 
 Pass a custom module that implements `ExAthena.Provider` directly if you
