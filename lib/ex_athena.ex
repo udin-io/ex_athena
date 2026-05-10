@@ -3,9 +3,9 @@ defmodule ExAthena do
   Provider-agnostic agent loop for Elixir.
 
   ExAthena runs against Ollama, OpenAI-compatible endpoints (OpenAI, OpenRouter,
-  LM Studio, vLLM, and friends), llama.cpp, or the Anthropic Claude API — with
-  the same tools, hooks, permissions, and streaming semantics across every
-  provider.
+  LM Studio, vLLM, and friends), llama.cpp, Google Gemini, or the Anthropic
+  Claude API — with the same tools, hooks, permissions, and streaming semantics
+  across every provider.
 
   ## Phase 1 surface (this release)
 
@@ -35,15 +35,18 @@ defmodule ExAthena do
         api_key: System.get_env("ANTHROPIC_API_KEY"),
         model: "claude-opus-4-5"
 
+      config :ex_athena, :gemini,
+        api_key: System.get_env("GEMINI_API_KEY"),
+        model: "gemini-2.5-flash"
+
   Per-call overrides always win:
 
       ExAthena.query("…", provider: :claude, model: "claude-sonnet-4-6")
 
   ## Providers
 
-  * `ExAthena.Providers.Ollama` — local Ollama via `/api/chat` (native tool-calls).
-  * `ExAthena.Providers.OpenAICompatible` — OpenAI-style `/v1/chat/completions`.
-  * `ExAthena.Providers.Claude` — Anthropic via the `claude_code` SDK.
+  * `ExAthena.Providers.ReqLLM` — multi-backend via `req_llm`. Covers `:gemini`
+    (Google Gemini), `:openai`, `:claude`/`:anthropic`, `:ollama`, and `:llamacpp`.
   * `ExAthena.Providers.Mock` — test double with scripted responses.
 
   Consumers can also pass a custom module that implements `ExAthena.Provider`.
@@ -57,7 +60,7 @@ defmodule ExAthena do
   ## Options
 
     * `:provider` — provider atom (`:ollama`, `:openai_compatible`, `:claude`,
-      `:mock`) or a module that implements `ExAthena.Provider`. Defaults to
+      `:gemini`, `:mock`) or a module that implements `ExAthena.Provider`. Defaults to
       `Application.get_env(:ex_athena, :default_provider)`.
     * `:model` — model name string. Defaults to the provider's configured model.
     * `:system_prompt` — optional system prompt string.

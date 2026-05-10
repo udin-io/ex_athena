@@ -16,11 +16,14 @@ defmodule ExAthena.Config do
 
   | Atom | Module |
   |---|---|
-  | `:ollama` | `ExAthena.Providers.Ollama` |
-  | `:openai_compatible` | `ExAthena.Providers.OpenAICompatible` |
-  | `:openai` | `ExAthena.Providers.OpenAICompatible` |
-  | `:llamacpp` | `ExAthena.Providers.OpenAICompatible` |
-  | `:claude` | `ExAthena.Providers.Claude` |
+  | `:ollama` | `ExAthena.Providers.ReqLLM` |
+  | `:openai_compatible` | `ExAthena.Providers.ReqLLM` |
+  | `:openai` | `ExAthena.Providers.ReqLLM` |
+  | `:llamacpp` | `ExAthena.Providers.ReqLLM` |
+  | `:claude` | `ExAthena.Providers.ReqLLM` |
+  | `:anthropic` | `ExAthena.Providers.ReqLLM` |
+  | `:gemini` | `ExAthena.Providers.ReqLLM` |
+  | `:req_llm` | `ExAthena.Providers.ReqLLM` |
   | `:mock` | `ExAthena.Providers.Mock` |
 
   You may also pass any module that implements `ExAthena.Provider` directly.
@@ -33,6 +36,7 @@ defmodule ExAthena.Config do
     llamacpp: ExAthena.Providers.ReqLLM,
     claude: ExAthena.Providers.ReqLLM,
     anthropic: ExAthena.Providers.ReqLLM,
+    gemini: ExAthena.Providers.ReqLLM,
     mock: ExAthena.Providers.Mock,
     req_llm: ExAthena.Providers.ReqLLM
   }
@@ -50,7 +54,8 @@ defmodule ExAthena.Config do
     openai_compatible: "openai",
     llamacpp: "openai",
     claude: "anthropic",
-    anthropic: "anthropic"
+    anthropic: "anthropic",
+    gemini: "google"
   }
 
   # Provider atoms that talk to a local OpenAI-compatible server. These

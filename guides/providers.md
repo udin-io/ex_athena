@@ -90,6 +90,35 @@ use this provider, add it to your own deps:
 | JSON mode | ❌ (use structured output in Phase 2) |
 | Resume | ✅ via the SDK's session resume |
 
+## Gemini (`:gemini`)
+
+Google Gemini via `req_llm`'s `google` adapter. Hosted, authenticated — requires
+a `GEMINI_API_KEY`.
+
+```elixir
+config :ex_athena, :gemini,
+  api_key: System.get_env("GEMINI_API_KEY"),
+  model: "gemini-2.5-flash"
+```
+
+Per-call override:
+
+```elixir
+ExAthena.query("…",
+  provider: :gemini,
+  model: "gemini-2.5-flash",
+  api_key: System.get_env("GEMINI_API_KEY"))
+```
+
+### Capabilities
+
+| Feature | Status |
+|---|---|
+| Native tool calls | ✅ (via req_llm) |
+| Streaming | ✅ |
+| JSON mode | ✅ |
+| Resume | ❌ (use `ExAthena.Session` in Phase 2) |
+
 ## Mock (`:mock`)
 
 Unit-test double. Scripted responses either via canned text or a responder
