@@ -92,32 +92,24 @@ use this provider, add it to your own deps:
 
 ## Gemini (`:gemini`)
 
-Google Gemini via `req_llm`'s `google` adapter. Hosted, authenticated — requires
-a `GEMINI_API_KEY`.
+Google Gemini via the Google AI Studio API. Backed by `req_llm`'s Google
+adapter — supports native tool calls (via v1beta, the default) and streaming
+via SSE.
 
 ```elixir
 config :ex_athena, :gemini,
-  api_key: System.get_env("GEMINI_API_KEY"),
+  api_key: System.get_env("GOOGLE_API_KEY"),
   model: "gemini-2.5-flash"
 ```
 
 Per-call override:
 
 ```elixir
-ExAthena.query("…",
-  provider: :gemini,
-  model: "gemini-2.5-flash",
-  api_key: System.get_env("GEMINI_API_KEY"))
+ExAthena.query("…", provider: :gemini, model: "gemini-2.5-pro")
 ```
 
-### Capabilities
-
-| Feature | Status |
-|---|---|
-| Native tool calls | ✅ (via req_llm) |
-| Streaming | ✅ |
-| JSON mode | ✅ |
-| Resume | ❌ (use `ExAthena.Session` in Phase 2) |
+For the full walkthrough — API key setup, model table, tool-calling caveats,
+and rate-limit notes — see the **[Gemini setup guide](gemini.md)**.
 
 ## Mock (`:mock`)
 

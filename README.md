@@ -7,8 +7,8 @@
 Provider-agnostic agent loop for Elixir. Drop-in replacement for the Claude
 Code SDK that runs on **Ollama**, **OpenAI-compatible endpoints**
 (OpenAI, OpenRouter, LM Studio, vLLM, Groq, Together, llama.cpp server…),
-or **Anthropic Claude** itself — with the same tools, hooks, permissions,
-and streaming semantics across every provider.
+**Google Gemini**, or **Anthropic Claude** itself — with the same tools,
+hooks, permissions, and streaming semantics across every provider.
 
 > **Status (v0.4):** the operational-harness release. Builds on v0.3's
 > loop kernel with file-based memory (`AGENTS.md`/`CLAUDE.md`),
@@ -96,7 +96,7 @@ ExAthena.query("hi", provider: :gemini, model: "gemini-2.5-flash")
 | `:openai` | `ExAthena.Providers.ReqLLM` | Alias for `:openai_compatible`. |
 | `:llamacpp` | `ExAthena.Providers.ReqLLM` | Alias for local llama.cpp server. |
 | `:claude` | `ExAthena.Providers.ReqLLM` | Anthropic Claude via req_llm. |
-| `:gemini` | `ExAthena.Providers.ReqLLM` | Google Gemini via req_llm. Hosted; requires `GEMINI_API_KEY`. |
+| `:gemini` | `ExAthena.Providers.ReqLLM` | Google Gemini via AI Studio (routed through `req_llm`'s Google adapter). Native tool calls + streaming. See [setup guide](guides/gemini.md). |
 | `:mock` | `ExAthena.Providers.Mock` | In-memory test double. |
 
 Pass a custom module that implements `ExAthena.Provider` directly if you
@@ -203,6 +203,7 @@ a chosen UUID. See [sessions + checkpoints](guides/sessions_and_checkpoints.md).
 
 - [Getting started](guides/getting_started.md)
 - [Providers](guides/providers.md)
+- [Gemini setup](guides/gemini.md)
 - [Tool calls](guides/tool_calls.md)
 - [The agent loop](guides/agent_loop.md)
 - [Tools (incl. tool-result split)](guides/tools.md)
