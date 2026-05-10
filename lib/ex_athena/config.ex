@@ -16,12 +16,14 @@ defmodule ExAthena.Config do
 
   | Atom | Module |
   |---|---|
-  | `:ollama` | `ExAthena.Providers.Ollama` |
-  | `:openai_compatible` | `ExAthena.Providers.OpenAICompatible` |
-  | `:openai` | `ExAthena.Providers.OpenAICompatible` |
-  | `:llamacpp` | `ExAthena.Providers.OpenAICompatible` |
-  | `:claude` | `ExAthena.Providers.Claude` |
+  | `:ollama` | `ExAthena.Providers.ReqLLM` |
+  | `:openai_compatible` | `ExAthena.Providers.ReqLLM` |
+  | `:openai` | `ExAthena.Providers.ReqLLM` |
+  | `:llamacpp` | `ExAthena.Providers.ReqLLM` |
+  | `:claude` | `ExAthena.Providers.ReqLLM` |
+  | `:anthropic` | `ExAthena.Providers.ReqLLM` |
   | `:gemini` | `ExAthena.Providers.ReqLLM` |
+  | `:req_llm` | `ExAthena.Providers.ReqLLM` |
   | `:mock` | `ExAthena.Providers.Mock` |
 
   You may also pass any module that implements `ExAthena.Provider` directly.

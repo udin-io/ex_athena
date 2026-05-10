@@ -45,9 +45,6 @@ defmodule ExAthena do
 
   ## Providers
 
-  * `ExAthena.Providers.Ollama` — local Ollama via `/api/chat` (native tool-calls).
-  * `ExAthena.Providers.OpenAICompatible` — OpenAI-style `/v1/chat/completions`.
-  * `ExAthena.Providers.Claude` — Anthropic via the `claude_code` SDK.
   * `ExAthena.Providers.ReqLLM` — multi-backend via `req_llm`. Covers `:gemini`
     (Google Gemini), `:openai`, `:claude`/`:anthropic`, `:ollama`, and `:llamacpp`.
   * `ExAthena.Providers.Mock` — test double with scripted responses.
