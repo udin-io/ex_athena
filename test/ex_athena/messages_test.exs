@@ -2,7 +2,7 @@ defmodule ExAthena.MessagesTest do
   use ExUnit.Case, async: true
 
   alias ExAthena.Messages
-  alias ExAthena.Messages.{Message, ToolCall, ToolResult}
+  alias ExAthena.Messages.{ContentPart, Message, ToolCall, ToolResult}
 
   describe "constructors" do
     test "user/1" do
@@ -24,6 +24,17 @@ defmodule ExAthena.MessagesTest do
                role: :tool,
                tool_results: [%ToolResult{tool_call_id: "c1", content: "done"}]
              } = Messages.tool_result("c1", "done")
+    end
+  end
+
+  describe "multimodal user/1" do
+    test "accepts a list of content parts" do
+      parts = [ContentPart.text("describe"), ContentPart.image_url("https://example.com/x.png")]
+      assert %Message{role: :user, content: ^parts} = Messages.user(parts)
+    end
+
+    test "existing string behaviour is unchanged" do
+      assert %Message{role: :user, content: "hello"} = Messages.user("hello")
     end
   end
 
