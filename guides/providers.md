@@ -135,6 +135,20 @@ ExAthena.stream("hi", fn _ -> :ok end,
   mock_events: events)
 ```
 
+## Vision / multimodal
+
+Vision support varies by provider. Pass `images: [%{data: binary(), media_type: String.t()}]`
+(or `%{url: String.t()}` entries) to any `ExAthena.query/2`, `ExAthena.stream/3`, or
+`ExAthena.run/2` call. See the **[Multimodal guide](multimodal.md)** for the full
+walkthrough including examples for each provider.
+
+| Provider | Vision support | Notes |
+|---|---|---|
+| `:ollama` | Model-dependent | `llava`, `qwen2-vl`, `llava-phi3`, `bakllava` |
+| `:openai_compatible` | ✅ gpt-4o, gpt-4o-mini | URL + inline |
+| `:claude` | ✅ Any `claude-3`+ model | PNG, JPEG, GIF, WebP |
+| `:gemini` | ✅ Any `gemini-1.5`+ model | Inline + URL |
+
 ## Custom providers
 
 Implement the `ExAthena.Provider` behaviour:

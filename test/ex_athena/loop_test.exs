@@ -265,4 +265,30 @@ defmodule ExAthena.LoopTest do
     assert result.text == "done"
     assert File.read!(Path.join(dir, "new.txt")) == "hi"
   end
+
+  test "images: shorthand reaches the provider as ContentPart content", %{dir: dir} do
+    alias ExAthena.Messages.ContentPart
+
+    png = <<0::8>>
+
+    responder = fn request ->
+      user_msg = Enum.find(request.messages, &(&1.role == :user))
+
+      assert [%ContentPart{type: :text, text: "describe"}, %ContentPart{type: :image}] =
+               user_msg.content
+
+      %Response{text: "saw image", tool_calls: [], finish_reason: :stop, provider: :mock}
+    end
+
+    assert {:ok, result} =
+             Loop.run("describe",
+               provider: :mock,
+               mock: [responder: responder],
+               cwd: dir,
+               tools: [],
+               images: [%{data: png, media_type: "image/png"}]
+             )
+
+    assert result.text == "saw image"
+  end
 end

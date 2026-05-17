@@ -8,7 +8,7 @@ defmodule ExAthena.Request do
   """
 
   alias ExAthena.Messages
-  alias ExAthena.Messages.Message
+  alias ExAthena.Messages.{ContentPart, Message}
 
   @enforce_keys [:messages]
   defstruct [
@@ -48,17 +48,21 @@ defmodule ExAthena.Request do
 
   The prompt is prepended to `opts[:messages]` as a user message. Pass `nil`
   to start from a pre-built message list.
+
+  ## Images shorthand
+
+  Pass `images: [%{data: binary(), media_type: String.t()}]` to attach inline
+  images to the trailing user message. Each entry may also use
+  `%{url: String.t()}` for remote image URLs. When a non-empty prompt is
+  given, a multimodal user message is built with the text first followed by
+  image parts. When prompt is `nil` or `""`, image parts are merged into the
+  last user message in `:messages`, or appended as a new user message.
   """
   @spec new(String.t() | nil, keyword()) :: t()
   def new(prompt, opts) do
     existing = opts |> Keyword.get(:messages, []) |> Enum.map(&Messages.from_map/1)
-
-    messages =
-      case prompt do
-        nil -> existing
-        "" -> existing
-        str when is_binary(str) -> existing ++ [Messages.user(str)]
-      end
+    image_parts = opts |> Keyword.get(:images, []) |> normalize_images()
+    messages = build_messages(prompt, existing, image_parts)
 
     %__MODULE__{
       messages: messages,
@@ -75,5 +79,63 @@ defmodule ExAthena.Request do
       provider_opts: Keyword.get(opts, :provider_opts),
       metadata: Keyword.get(opts, :metadata)
     }
+  end
+
+  # No images — existing behavior unchanged
+  defp build_messages(nil, existing, []), do: existing
+  defp build_messages("", existing, []), do: existing
+  defp build_messages(str, existing, []) when is_binary(str), do: existing ++ [Messages.user(str)]
+
+  # Non-empty prompt + images → multimodal user message (text first, then images)
+  defp build_messages(str, existing, image_parts) when is_binary(str) and str != "" do
+    existing ++ [Messages.user([ContentPart.text(str) | image_parts])]
+  end
+
+  # No prompt (nil or "") + images → merge into last user message or append new one
+  defp build_messages(_prompt, existing, image_parts) do
+    case find_last_user(existing) do
+      {before, %Message{content: text} = msg, after_msgs} when is_binary(text) ->
+        before ++ [%{msg | content: [ContentPart.text(text) | image_parts]}] ++ after_msgs
+
+      {before, %Message{content: parts} = msg, after_msgs} when is_list(parts) ->
+        before ++ [%{msg | content: parts ++ image_parts}] ++ after_msgs
+
+      {before, %Message{} = msg, after_msgs} ->
+        before ++ [%{msg | content: image_parts}] ++ after_msgs
+
+      :none ->
+        existing ++ [Messages.user(image_parts)]
+    end
+  end
+
+  defp normalize_images([]), do: []
+
+  defp normalize_images(images) do
+    Enum.map(images, fn
+      %{url: url} ->
+        ContentPart.image_url(url)
+
+      %{data: data, media_type: media_type} ->
+        ContentPart.image(data, media_type)
+
+      %{data: data} ->
+        ContentPart.image(data, "image/png")
+
+      other ->
+        raise ArgumentError,
+              "invalid image spec #{inspect(other)}; expected %{data: binary(), media_type: String.t()}, %{data: binary()}, or %{url: String.t()}"
+    end)
+  end
+
+  defp find_last_user(messages) do
+    reversed = Enum.reverse(messages)
+
+    case Enum.split_while(reversed, fn m -> m.role != :user end) do
+      {_suffix, []} ->
+        :none
+
+      {suffix_rev, [last_user | rest_rev]} ->
+        {Enum.reverse(rest_rev), last_user, Enum.reverse(suffix_rev)}
+    end
   end
 end
