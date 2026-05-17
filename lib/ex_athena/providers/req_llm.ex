@@ -198,6 +198,30 @@ defmodule ExAthena.Providers.ReqLLM do
   defp text_parts(content) when is_binary(content),
     do: [ReqLLM.Message.ContentPart.text(content)]
 
+  defp text_parts(parts) when is_list(parts),
+    do: Enum.map(parts, &to_req_llm_content_part/1)
+
+  defp to_req_llm_content_part(%ExAthena.Messages.ContentPart{type: :text, text: text}),
+    do: ReqLLM.Message.ContentPart.text(text)
+
+  defp to_req_llm_content_part(%ExAthena.Messages.ContentPart{
+         type: :image,
+         data: data,
+         media_type: media_type
+       }),
+       do: ReqLLM.Message.ContentPart.image(data, media_type)
+
+  defp to_req_llm_content_part(%ExAthena.Messages.ContentPart{type: :image_url, url: url}),
+    do: ReqLLM.Message.ContentPart.image_url(url)
+
+  defp to_req_llm_content_part(%ExAthena.Messages.ContentPart{
+         type: :file,
+         data: data,
+         filename: filename,
+         media_type: media_type
+       }),
+       do: ReqLLM.Message.ContentPart.file(data, filename, media_type)
+
   defp format_tool_calls(calls) do
     Enum.map(calls, fn tc ->
       ReqLLM.ToolCall.new(tc.id, tc.name, encode_arguments(tc.arguments))

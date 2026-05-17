@@ -314,4 +314,67 @@ defmodule ExAthena.Providers.ReqLLMTest do
       refute Keyword.has_key?(opts, :response_format)
     end
   end
+
+  describe "to_req_llm_message/1 multimodal content" do
+    alias ExAthena.Messages
+    alias ExAthena.Messages.ContentPart
+
+    test "text ContentPart list converts to ReqLLM text parts" do
+      msg = Messages.user([ContentPart.text("hello")])
+      result = Adapter.to_req_llm_message(msg)
+      assert [%ReqLLM.Message.ContentPart{type: :text, text: "hello"}] = result.content
+    end
+
+    test "image ContentPart converts to ReqLLM image part" do
+      data = "base64data"
+      msg = Messages.user([ContentPart.image(data, "image/png")])
+      result = Adapter.to_req_llm_message(msg)
+
+      assert [%ReqLLM.Message.ContentPart{type: :image, data: ^data, media_type: "image/png"}] =
+               result.content
+    end
+
+    test "image_url ContentPart converts to ReqLLM image_url part" do
+      msg = Messages.user([ContentPart.image_url("https://example.com/img.png")])
+      result = Adapter.to_req_llm_message(msg)
+
+      assert [%ReqLLM.Message.ContentPart{type: :image_url, url: "https://example.com/img.png"}] =
+               result.content
+    end
+
+    test "file ContentPart converts to ReqLLM file part" do
+      msg = Messages.user([ContentPart.file("filedata", "doc.pdf", "application/pdf")])
+      result = Adapter.to_req_llm_message(msg)
+
+      assert [
+               %ReqLLM.Message.ContentPart{
+                 type: :file,
+                 data: "filedata",
+                 filename: "doc.pdf",
+                 media_type: "application/pdf"
+               }
+             ] = result.content
+    end
+
+    test "mixed ContentParts (text + image_url) convert in order" do
+      parts = [
+        ContentPart.text("describe this"),
+        ContentPart.image_url("https://example.com/img.png")
+      ]
+
+      msg = Messages.user(parts)
+      result = Adapter.to_req_llm_message(msg)
+
+      assert [
+               %ReqLLM.Message.ContentPart{type: :text, text: "describe this"},
+               %ReqLLM.Message.ContentPart{type: :image_url, url: "https://example.com/img.png"}
+             ] = result.content
+    end
+
+    test "existing text-only messages still work" do
+      msg = Messages.user("plain text")
+      result = Adapter.to_req_llm_message(msg)
+      assert [%ReqLLM.Message.ContentPart{type: :text, text: "plain text"}] = result.content
+    end
+  end
 end
