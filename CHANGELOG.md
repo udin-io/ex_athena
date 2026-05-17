@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.8.0 — Multimodal (image) content support
+
+### Added
+
+- **Multimodal content in `ExAthena.Messages.Message` (#44)** — `content` may
+  now be either `String.t()` or a list of `ExAthena.Messages.ContentPart`
+  structs, enabling structured payloads (text + images) within a single
+  message. Text-only callers are unaffected; existing string-content
+  workflows pass through unchanged. See ADR-0024.
+
+- **`ExAthena.Messages.ContentPart` thin wrapper** — abstracts the
+  supported media types behind small constructors:
+  `ContentPart.text/1`, `ContentPart.image/2` (base64 + media type),
+  `ContentPart.image_url/1`, and `ContentPart.file/2`. Mirrors the part
+  shapes used by upstream provider APIs without leaking adapter
+  specifics into caller code. See ADR-0024.
+
+- **`images:` shorthand on `ExAthena.query/2`, `stream/3`, and `run/2`
+  (#44)** — implemented in `ExAthena.Request.new/2` so all three public
+  entry points gain the shorthand from a single normalisation point.
+  Image specs may be `%{data: binary(), media_type: String.t()}`,
+  `%{url: String.t()}`, or `%{data: binary()}` (defaults to
+  `"image/png"`). Image parts are merged into the last user message or
+  appended as a new user message alongside the prompt. See ADR-0023.
+
+- **`ExAthena.Providers.ReqLLM` adapter forwards multimodal parts** —
+  `to_req_llm_message/1` and the per-part serialiser now traverse
+  `ContentPart` lists and emit the `req_llm` message format with image
+  payloads intact (previously images were silently dropped at the
+  adapter boundary). See ADR-0025.
+
+- **`guides/multimodal.md`** — end-to-end guide covering the `images:`
+  shorthand, manual `ContentPart` construction, supported media types,
+  and the per-provider matrix. Linked from `guides/providers.md` and
+  registered as a HexDocs extra in `mix.exs`.
+
 ## v0.7.1 — First-class `:gemini` provider atom
 
 ### Added
