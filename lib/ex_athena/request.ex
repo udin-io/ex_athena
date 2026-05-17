@@ -108,24 +108,26 @@ defmodule ExAthena.Request do
     end
   end
 
-  @doc false
-  @spec normalize_images([map()]) :: [ContentPart.t()]
-  def normalize_images([]), do: []
+  defp normalize_images([]), do: []
 
-  def normalize_images(images) do
+  defp normalize_images(images) do
     Enum.map(images, fn
-      %{url: url} -> ContentPart.image_url(url)
-      %{data: data, media_type: media_type} -> ContentPart.image(data, media_type)
-      %{data: data} -> ContentPart.image(data, "image/png")
+      %{url: url} ->
+        ContentPart.image_url(url)
+
+      %{data: data, media_type: media_type} ->
+        ContentPart.image(data, media_type)
+
+      %{data: data} ->
+        ContentPart.image(data, "image/png")
+
+      other ->
+        raise ArgumentError,
+              "invalid image spec #{inspect(other)}; expected %{data: binary(), media_type: String.t()}, %{data: binary()}, or %{url: String.t()}"
     end)
   end
 
-  # Split messages around the last user-role message.
-  # Returns {before, last_user_msg, after} or :none.
-  @doc false
-  @spec find_last_user([Message.t()]) ::
-          {[Message.t()], Message.t(), [Message.t()]} | :none
-  def find_last_user(messages) do
+  defp find_last_user(messages) do
     reversed = Enum.reverse(messages)
 
     case Enum.split_while(reversed, fn m -> m.role != :user end) do

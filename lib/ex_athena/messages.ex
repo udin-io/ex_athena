@@ -109,7 +109,7 @@ defmodule ExAthena.Messages do
   def from_map(map) when is_map(map) do
     %Message{
       role: fetch_role(map),
-      content: fetch(map, :content),
+      content: maybe_content_parts(fetch(map, :content)),
       tool_calls: maybe_tool_calls(fetch(map, :tool_calls)),
       tool_results: maybe_tool_results(fetch(map, :tool_results)),
       name: fetch(map, :name)
@@ -127,6 +127,35 @@ defmodule ExAthena.Messages do
 
   defp fetch(map, key) when is_atom(key) do
     Map.get(map, key) || Map.get(map, Atom.to_string(key))
+  end
+
+  defp maybe_content_parts(nil), do: nil
+  defp maybe_content_parts(str) when is_binary(str), do: str
+
+  defp maybe_content_parts(parts) when is_list(parts),
+    do: Enum.map(parts, &to_content_part/1)
+
+  defp to_content_part(%ExAthena.Messages.ContentPart{} = cp), do: cp
+
+  defp to_content_part(map) when is_map(map) do
+    type = fetch_atom(map, :type)
+
+    %ExAthena.Messages.ContentPart{
+      type: type,
+      text: fetch(map, :text),
+      url: fetch(map, :url),
+      data: fetch(map, :data),
+      media_type: fetch(map, :media_type),
+      filename: fetch(map, :filename)
+    }
+  end
+
+  defp fetch_atom(map, key) do
+    case fetch(map, key) do
+      nil -> nil
+      v when is_atom(v) -> v
+      v when is_binary(v) -> String.to_existing_atom(v)
+    end
   end
 
   defp maybe_tool_calls(nil), do: nil

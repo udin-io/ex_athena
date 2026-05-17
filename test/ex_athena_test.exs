@@ -85,6 +85,35 @@ defmodule ExAthenaTest do
       assert_receive {:event, %ExAthena.Streaming.Event{type: :text_delta, data: "lo"}}
       assert_receive {:event, %ExAthena.Streaming.Event{type: :stop}}
     end
+
+    test "images: shorthand reaches the provider as ContentPart content via stream" do
+      alias ExAthena.Messages.ContentPart
+
+      png = <<0::8>>
+
+      responder = fn request ->
+        assert [user_msg] = request.messages
+
+        assert [%ContentPart{type: :text, text: "describe"}, %ContentPart{type: :image}] =
+                 user_msg.content
+
+        %ExAthena.Response{
+          text: "saw image",
+          tool_calls: [],
+          finish_reason: :stop,
+          provider: :mock
+        }
+      end
+
+      assert {:ok, response} =
+               ExAthena.stream("describe", fn _ -> :ok end,
+                 provider: :mock,
+                 mock: [responder: responder],
+                 images: [%{data: png, media_type: "image/png"}]
+               )
+
+      assert response.text == "saw image"
+    end
   end
 
   describe "capabilities/1" do
