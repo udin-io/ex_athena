@@ -57,7 +57,7 @@ defmodule ExAthena.Messages do
     @type role :: :system | :user | :assistant | :tool
     @type t :: %__MODULE__{
             role: role(),
-            content: String.t() | nil,
+            content: String.t() | [ExAthena.Messages.ContentPart.t()] | nil,
             tool_calls: [ToolCall.t()] | nil,
             tool_results: [ToolResult.t()] | nil,
             name: String.t() | nil
@@ -65,9 +65,12 @@ defmodule ExAthena.Messages do
   end
 
   @doc "Build a user message."
-  @spec user(String.t()) :: Message.t()
+  @spec user(String.t() | [ExAthena.Messages.ContentPart.t()]) :: Message.t()
   def user(content) when is_binary(content),
     do: %Message{role: :user, content: content}
+
+  def user(parts) when is_list(parts),
+    do: %Message{role: :user, content: parts}
 
   @doc "Build an assistant message (optionally with tool calls)."
   @spec assistant(String.t() | nil, [ToolCall.t()] | nil) :: Message.t()
