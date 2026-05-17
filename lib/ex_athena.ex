@@ -70,6 +70,11 @@ defmodule ExAthena do
     * `:timeout_ms` — request timeout (default 60_000).
     * `:provider_opts` — escape hatch keyword list passed through to the
       underlying provider.
+    * `:images` — list of image maps to attach to the trailing user message.
+      Each entry is `%{data: binary(), media_type: String.t()}` for inline
+      images or `%{url: String.t()}` for remote image URLs. Merged into the
+      user message created from `prompt`, or the last user message in
+      `:messages` when no prompt is given.
   """
   @spec query(String.t() | nil, keyword()) :: {:ok, Response.t()} | {:error, term()}
   def query(prompt \\ nil, opts \\ []) do
@@ -86,7 +91,7 @@ defmodule ExAthena do
   and its return value is ignored. Callbacks must not block the caller; if you
   need to do expensive work per-delta, hand off to a `Task`.
 
-  Options are the same as `query/3`.
+  Options are the same as `query/2`, including `:images`.
   """
   @spec stream(String.t() | nil, function(), keyword()) ::
           {:ok, Response.t()} | {:error, term()}

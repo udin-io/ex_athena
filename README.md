@@ -87,6 +87,20 @@ ExAthena.query("hi", provider: :ollama, model: "qwen2.5-coder")
 ExAthena.query("hi", provider: :gemini, model: "gemini-2.5-flash")
 ```
 
+Attach images with the `images:` shorthand — same API across every provider:
+
+```elixir
+png = File.read!("diagram.png")
+{:ok, response} = ExAthena.query("Describe this diagram",
+  provider: :ollama,
+  model: "llava",
+  images: [%{data: png, media_type: "image/png"}]
+)
+```
+
+See the [Multimodal guide](guides/multimodal.md) for inline images, URL
+references, and per-provider notes.
+
 ## Providers
 
 | Provider | Module | Notes |
@@ -203,6 +217,7 @@ a chosen UUID. See [sessions + checkpoints](guides/sessions_and_checkpoints.md).
 
 - [Getting started](guides/getting_started.md)
 - [Providers](guides/providers.md)
+- [Multimodal (vision)](guides/multimodal.md)
 - [Gemini setup](guides/gemini.md)
 - [Tool calls](guides/tool_calls.md)
 - [The agent loop](guides/agent_loop.md)
