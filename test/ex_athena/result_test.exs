@@ -12,6 +12,8 @@ defmodule ExAthena.ResultTest do
     refute Result.error?(%Result{finish_reason: :stop})
     assert Result.error?(%Result{finish_reason: :error_halted})
     assert Result.error?(%Result{finish_reason: :error_during_execution})
+    assert Result.error?(%Result{finish_reason: :error_schema_validation})
+    assert Result.error?(%Result{finish_reason: :error_provider_auth})
   end
 
   test "category/1 delegates to Terminations" do
@@ -19,6 +21,14 @@ defmodule ExAthena.ResultTest do
     assert Result.category(%Result{finish_reason: :error_max_turns}) == :capacity
     assert Result.category(%Result{finish_reason: :error_during_execution}) == :retryable
     assert Result.category(%Result{finish_reason: :error_halted}) == :fatal
+  end
+
+  test "category/1 returns :fatal for provider auth errors" do
+    assert Result.category(%Result{finish_reason: :error_provider_auth}) == :fatal
+  end
+
+  test "category/1 returns :retryable for schema validation errors" do
+    assert Result.category(%Result{finish_reason: :error_schema_validation}) == :retryable
   end
 
   test "default struct has sane zero values" do
@@ -29,7 +39,8 @@ defmodule ExAthena.ResultTest do
              iterations: 0,
              tool_calls_made: 0,
              usage: nil,
-             cost_usd: nil
+             cost_usd: nil,
+             error_diagnostic: nil
            } = %Result{}
   end
 

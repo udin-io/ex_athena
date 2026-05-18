@@ -15,6 +15,8 @@ defmodule ExAthena.Loop.TerminationsTest do
       assert :error_compaction_failed in Terminations.all()
       assert :error_prompt_too_long in Terminations.all()
       assert :error_no_progress in Terminations.all()
+      assert :error_schema_validation in Terminations.all()
+      assert :error_provider_auth in Terminations.all()
     end
   end
 
@@ -50,9 +52,17 @@ defmodule ExAthena.Loop.TerminationsTest do
       assert Terminations.category(:error_during_execution) == :retryable
     end
 
+    test "schema validation errors are :retryable" do
+      assert Terminations.category(:error_schema_validation) == :retryable
+    end
+
     test "halts and compaction failures are :fatal" do
       assert Terminations.category(:error_halted) == :fatal
       assert Terminations.category(:error_compaction_failed) == :fatal
+    end
+
+    test "provider auth errors are :fatal" do
+      assert Terminations.category(:error_provider_auth) == :fatal
     end
   end
 end

@@ -26,6 +26,9 @@ defmodule ExAthena.Result do
       termination.
     * `:model` — the model identifier as reported by the provider.
     * `:provider` — the provider atom / module that served the run.
+    * `:error_diagnostic` — structured validation failure payload when
+      `finish_reason` is `:error_schema_validation`; `nil` otherwise. Shape:
+      `%{schema: term(), received: String.t() | nil, violations: [%{reason: String.t()}]}`.
     * `:telemetry` — span metadata summarising OTel attrs for the run
       (Phase 4).
     * `:no_progress_snapshot` — the last few message pairs (assistant +
@@ -42,10 +45,17 @@ defmodule ExAthena.Result do
           optional(:total_tokens) => non_neg_integer()
         }
 
+  @type error_diagnostic :: %{
+          schema: term(),
+          received: String.t() | nil,
+          violations: [%{reason: String.t()}]
+        }
+
   defstruct text: nil,
             messages: [],
             finish_reason: :stop,
             halted_reason: nil,
+            error_diagnostic: nil,
             iterations: 0,
             tool_calls_made: 0,
             usage: nil,
@@ -61,6 +71,7 @@ defmodule ExAthena.Result do
           messages: [Message.t()],
           finish_reason: Terminations.subtype(),
           halted_reason: term() | nil,
+          error_diagnostic: error_diagnostic() | nil,
           iterations: non_neg_integer(),
           tool_calls_made: non_neg_integer(),
           usage: usage() | nil,
