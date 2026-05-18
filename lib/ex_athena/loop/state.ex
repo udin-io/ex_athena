@@ -21,7 +21,15 @@ defmodule ExAthena.Loop.State do
   - `budget` — `ExAthena.Budget` accumulator.
   - `max_iterations`, `max_consecutive_mistakes`, `max_budget_usd`,
     `tool_timeout_ms`, `max_concurrency` — reliability knobs.
+  - `max_unproductive_iterations` — consecutive unproductive-iteration cap
+    (default 3); halts with `:error_no_progress` when exceeded.
   - `iterations`, `tool_calls_made`, `consecutive_mistakes` — counters.
+  - `unproductive_iterations` — consecutive iterations with no new tool
+    name+args combination and no new assistant text.
+  - `last_tool_fingerprint` — sorted `[{name, args_binary}]` list from the
+    previous iteration, used to detect identical tool calls.
+  - `no_progress_snapshot` — last few message pairs captured when
+    `:error_no_progress` fires; included in `Result` for remediation.
   - `mode`, `mode_state` — Mode module + its private state.
   - `halted_reason` — populated when a tool / hook returns `:halt`.
   - `session_id` — stable id for this run. Distinct from `ctx.session_id`,
@@ -52,11 +60,15 @@ defmodule ExAthena.Loop.State do
             max_iterations: 25,
             max_consecutive_mistakes: 3,
             max_budget_usd: nil,
+            max_unproductive_iterations: 3,
             tool_timeout_ms: 60_000,
             max_concurrency: 4,
             iterations: 0,
             tool_calls_made: 0,
             consecutive_mistakes: 0,
+            unproductive_iterations: 0,
+            last_tool_fingerprint: nil,
+            no_progress_snapshot: nil,
             mode: nil,
             mode_state: %{},
             halted_reason: nil,
@@ -79,11 +91,15 @@ defmodule ExAthena.Loop.State do
           max_iterations: non_neg_integer(),
           max_consecutive_mistakes: non_neg_integer(),
           max_budget_usd: float() | nil,
+          max_unproductive_iterations: non_neg_integer(),
           tool_timeout_ms: pos_integer(),
           max_concurrency: pos_integer(),
           iterations: non_neg_integer(),
           tool_calls_made: non_neg_integer(),
           consecutive_mistakes: non_neg_integer(),
+          unproductive_iterations: non_neg_integer(),
+          last_tool_fingerprint: list() | nil,
+          no_progress_snapshot: [Message.t()] | nil,
           mode: module() | nil,
           mode_state: map(),
           halted_reason: term() | nil,

@@ -32,4 +32,14 @@ defmodule ExAthena.ResultTest do
              cost_usd: nil
            } = %Result{}
   end
+
+  test "no_progress_snapshot is nil by default" do
+    assert %Result{no_progress_snapshot: nil} = %Result{}
+  end
+
+  test "no_progress_snapshot is populated for :error_no_progress" do
+    msgs = [%{role: :assistant, content: "stuck"}]
+    result = %Result{finish_reason: :error_no_progress, no_progress_snapshot: msgs}
+    assert result.no_progress_snapshot == msgs
+  end
 end

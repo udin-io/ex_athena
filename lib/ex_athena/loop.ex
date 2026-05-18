@@ -39,6 +39,10 @@ defmodule ExAthena.Loop do
     * `:max_iterations` (default 25) — hard iteration cap.
     * `:max_consecutive_mistakes` (default 3) — counter threshold at
       which the loop terminates with `:error_consecutive_mistakes`.
+    * `:max_unproductive_iterations` (default 3) — consecutive-iteration
+      cap for detecting loops with no new tool name+args or assistant text.
+      Trips `:error_no_progress` before `:error_max_turns` fires. Pass
+      `0` to disable the guard.
     * `:max_budget_usd` — optional float. Trips
       `:error_max_budget_usd` when cumulative cost crosses it.
     * `:tool_timeout_ms` (default 60_000) — per-call timeout for parallel
@@ -81,6 +85,7 @@ defmodule ExAthena.Loop do
 
   @default_max_iterations 25
   @default_max_mistakes 3
+  @default_max_unproductive_iterations 3
   @default_max_concurrency 4
   @default_tool_timeout_ms 60_000
 
@@ -126,6 +131,17 @@ defmodule ExAthena.Loop do
         state
         |> set_finish_reason(:error_max_budget_usd)
 
+      state.max_unproductive_iterations > 0 and
+          state.unproductive_iterations >= state.max_unproductive_iterations ->
+        snapshot =
+          Enum.take(
+            state.messages,
+            -min(length(state.messages), state.max_unproductive_iterations * 4)
+          )
+
+        %{state | no_progress_snapshot: snapshot}
+        |> set_finish_reason(:error_no_progress)
+
       true ->
         case maybe_compact(state) do
           {:ok, state} ->
@@ -133,6 +149,7 @@ defmodule ExAthena.Loop do
 
             case state.mode.iterate(state) do
               {:continue, new_state} ->
+                new_state = update_progress_tracking(state, new_state)
                 loop(%{new_state | iterations: new_state.iterations + 1})
 
               {:halt, new_state} ->
@@ -166,6 +183,7 @@ defmodule ExAthena.Loop do
         {:ok, state} ->
           case state.mode.iterate(state) do
             {:continue, new_state} ->
+              new_state = update_progress_tracking(state, new_state)
               loop(%{new_state | iterations: new_state.iterations + 1})
 
             {:halt, new_state} ->
@@ -291,6 +309,64 @@ defmodule ExAthena.Loop do
     put_in(state.meta[:finish_reason], reason)
   end
 
+  # ── No-progress tracking ──────────────────────────────────────────
+
+  @doc false
+  def update_progress_tracking(prev_state, new_state) do
+    current_fp = compute_tool_fingerprint(prev_state, new_state)
+    productive? = check_productivity(prev_state, new_state, current_fp)
+
+    if productive? do
+      %{new_state | unproductive_iterations: 0, last_tool_fingerprint: current_fp}
+    else
+      %{
+        new_state
+        | unproductive_iterations: new_state.unproductive_iterations + 1,
+          last_tool_fingerprint: current_fp
+      }
+    end
+  end
+
+  defp check_productivity(prev_state, new_state, current_fp) do
+    if function_exported?(new_state.mode, :productivity_signal, 2) do
+      new_state.mode.productivity_signal(prev_state, new_state)
+    else
+      default_productivity_signal(prev_state, new_state, current_fp)
+    end
+  end
+
+  defp default_productivity_signal(prev_state, new_state, current_fp) do
+    has_new_text? =
+      new_state.messages
+      |> Enum.drop(length(prev_state.messages))
+      |> Enum.any?(fn
+        %{role: :assistant, content: c} when is_binary(c) and byte_size(c) > 0 -> true
+        _ -> false
+      end)
+
+    current_fp != prev_state.last_tool_fingerprint or has_new_text?
+  end
+
+  defp compute_tool_fingerprint(prev_state, new_state) do
+    new_state.messages
+    |> Enum.drop(length(prev_state.messages))
+    |> Enum.flat_map(fn
+      %{role: :assistant, tool_calls: calls} when is_list(calls) -> calls
+      _ -> []
+    end)
+    |> Enum.map(fn tc ->
+      args_bin =
+        cond do
+          is_nil(tc.arguments) -> "{}"
+          is_binary(tc.arguments) -> tc.arguments
+          true -> Jason.encode!(tc.arguments)
+        end
+
+      {tc.name, args_bin}
+    end)
+    |> Enum.sort()
+  end
+
   # ── Result construction ───────────────────────────────────────────
 
   defp to_result({:error, _} = err, _), do: err
@@ -313,7 +389,8 @@ defmodule ExAthena.Loop do
       duration_ms: duration_ms,
       model: state.request_template && state.request_template.model,
       provider: state.provider_mod,
-      telemetry: %{}
+      telemetry: %{},
+      no_progress_snapshot: state.no_progress_snapshot
     }
 
     fire_terminal_hooks(state, result)
@@ -451,6 +528,8 @@ defmodule ExAthena.Loop do
         max_iterations: Keyword.get(opts, :max_iterations, @default_max_iterations),
         max_consecutive_mistakes:
           Keyword.get(opts, :max_consecutive_mistakes, @default_max_mistakes),
+        max_unproductive_iterations:
+          Keyword.get(opts, :max_unproductive_iterations, @default_max_unproductive_iterations),
         max_budget_usd: Keyword.get(opts, :max_budget_usd),
         tool_timeout_ms: Keyword.get(opts, :tool_timeout_ms, @default_tool_timeout_ms),
         max_concurrency: Keyword.get(opts, :max_concurrency, @default_max_concurrency),
