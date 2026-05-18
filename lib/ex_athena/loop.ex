@@ -430,6 +430,7 @@ defmodule ExAthena.Loop do
       messages: state.messages,
       finish_reason: finish_reason,
       halted_reason: state.halted_reason,
+      error_diagnostic: state.meta[:error_diagnostic],
       iterations: state.iterations,
       tool_calls_made: state.tool_calls_made,
       usage: state.budget && state.budget.usage,

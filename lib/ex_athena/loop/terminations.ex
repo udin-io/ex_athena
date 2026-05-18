@@ -27,6 +27,12 @@ defmodule ExAthena.Loop.Terminations do
       exceeded; the last N iterations produced identical tool calls with no
       new text. The `Result.no_progress_snapshot` field carries the stuck
       message pairs for remediation reprompts.
+    * `:error_schema_validation` — model output could not be parsed as valid
+      structured output or tool calls. Category `:retryable`; caller may retry
+      with a reformat prompt hint. `Result.error_diagnostic` carries the
+      structured failure payload.
+    * `:error_provider_auth` — provider returned HTTP 401 or 403. Category
+      `:fatal`; blind retry will not help — operator must fix credentials.
   """
 
   @type subtype ::
@@ -40,6 +46,8 @@ defmodule ExAthena.Loop.Terminations do
           | :error_compaction_failed
           | :error_prompt_too_long
           | :error_no_progress
+          | :error_schema_validation
+          | :error_provider_auth
 
   @all_subtypes [
     :stop,
@@ -51,7 +59,9 @@ defmodule ExAthena.Loop.Terminations do
     :error_halted,
     :error_compaction_failed,
     :error_prompt_too_long,
-    :error_no_progress
+    :error_no_progress,
+    :error_schema_validation,
+    :error_provider_auth
   ]
 
   @doc "All known termination subtypes."
@@ -84,8 +94,10 @@ defmodule ExAthena.Loop.Terminations do
   def category(:error_max_structured_output_retries), do: :capacity
   def category(:error_consecutive_mistakes), do: :capacity
   def category(:error_during_execution), do: :retryable
+  def category(:error_schema_validation), do: :retryable
   def category(:error_prompt_too_long), do: :capacity
   def category(:error_no_progress), do: :capacity
   def category(:error_halted), do: :fatal
   def category(:error_compaction_failed), do: :fatal
+  def category(:error_provider_auth), do: :fatal
 end

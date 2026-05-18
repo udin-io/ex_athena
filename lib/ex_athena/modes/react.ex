@@ -134,12 +134,25 @@ defmodule ExAthena.Modes.ReAct do
             end
 
           {:error, reason} ->
-            state =
-              %{state | halted_reason: {:tool_call_parse_failed, reason}}
-              |> set_finish_reason(:error_during_execution)
+            diagnostic = %{
+              schema: request.response_format,
+              received: response.text,
+              violations: [%{reason: inspect(reason)}]
+            }
+
+            state = %{state | halted_reason: {:tool_call_parse_failed, reason}}
+            state = put_in(state.meta[:error_diagnostic], diagnostic)
+            state = set_finish_reason(state, :error_schema_validation)
 
             {:halt, state}
         end
+
+      {:error, %ExAthena.Error{kind: :unauthorized} = reason} ->
+        state =
+          %{state | halted_reason: reason}
+          |> set_finish_reason(:error_provider_auth)
+
+        {:halt, state}
 
       {:error, reason} ->
         state =
