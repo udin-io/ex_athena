@@ -1,7 +1,7 @@
 defmodule ExAthena.MixProject do
   use Mix.Project
 
-  @version "0.8.0"
+  @version "0.9.0"
   @source_url "https://github.com/udin-io/ex_athena"
 
   def project do
@@ -156,7 +156,7 @@ defmodule ExAthena.MixProject do
           ExAthena.Compactors.Microcompact,
           ExAthena.Compactors.ContextCollapse
         ],
-        "Permissions + hooks": [ExAthena.Permissions, ExAthena.Hooks],
+        "Permissions + hooks": [ExAthena.Permissions, ExAthena.Permissions.Denial, ExAthena.Hooks],
         Agents: [
           ExAthena.Agents,
           ExAthena.Agents.Definition,

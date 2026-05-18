@@ -5,7 +5,68 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.8.0 — Multimodal (image) content support
+## v0.9.0 — Loop robustness: no-progress detector, compaction pinning, structured denials, typed terminations
+
+### Added
+
+- **`:error_no_progress` termination + kernel-level productivity detector
+  (#49)** — `ExAthena.Loop` now detects when consecutive iterations produce
+  identical tool calls with no new state and terminates with the new
+  `:error_no_progress` finish_reason (category `:capacity`). State grows
+  four fields (`max_unproductive_iterations` — default 3,
+  `unproductive_iterations`, `last_tool_fingerprint`,
+  `no_progress_snapshot`); `Result` gains `no_progress_snapshot` carrying
+  the last `N*4` messages for downstream remediation reprompts.
+  `ExAthena.Loop.Mode` gains an optional `productivity_signal/2`
+  callback so specialised modes can define richer progress semantics;
+  `Modes.ReAct` ships the reference implementation. The kernel default
+  fingerprints sorted `[{tool_name, args_binary}]` from new assistant
+  messages and treats new non-empty assistant text as productive. See
+  ADR-0026.
+
+- **`pin: boolean` on `Message` + `auto_pin:` loop option (#52)** —
+  `ExAthena.Messages.Message` grows a `pin: false` field; any message
+  with `pin: true` is immune to compaction. `Loop.run/2` accepts
+  `auto_pin: %{tool_names: [...]}`; on the reactive-recovery path
+  (`force_compact` triggered by `:error_prompt_too_long`), tool-role
+  messages whose results carry a matching tool name are stamped
+  `pin: true` before the pipeline runs. All five stages (`Snip`,
+  `Microcompact`, `ContextCollapse`, `Summary`, `BudgetReduction`)
+  respect the flag — `Summary` partitions and stitches pinned messages
+  back in after the summary. Prevents silent loss of load-bearing tool
+  results (e.g. `ExitPlanMode` plan text, `set_pr_url` URLs, completion
+  sentinels). See ADR-0027.
+
+- **`ExAthena.Permissions.Denial` struct + `:ToolDenied` hook event
+  (#50)** — `Permissions.check/3` now returns `{:deny, %Denial{}}` with
+  three fields: `reason` (human-readable), `code`
+  (`:phase_gated | :budget_exceeded | :user_denied | :sandbox_violation |
+  :unknown`), and `metadata` (structured context including
+  `requested_tool`, `allowed_tools`, and `phase` where applicable). The
+  new `:ToolDenied` hook fires from `Loop.Parallel.fire_permission_denied`
+  alongside the existing `:PermissionDenied`, carrying the typed struct
+  so consumers can pattern-match on `denial.code` instead of grepping
+  reason strings. `Modes.ReAct` uses `denial.reason` directly as the
+  tool-result content (no more `inspect`-formatted tuples). A
+  `String.Chars` impl returns `denial.reason` for backwards-compat with
+  callers using `to_string/1`. See ADR-0028.
+
+- **`:error_schema_validation` + `:error_provider_auth` termination
+  subtypes (#51)** — `ExAthena.Loop.Terminations` splits two cases out
+  of the catch-all `:error_during_execution`:
+  - `:error_schema_validation` (category `:retryable`) — model output
+    failed `ToolCalls.extract`; callers can retry with a reformat hint.
+  - `:error_provider_auth` (category `:fatal`) — provider returned HTTP
+    401/403 (detected via `%ExAthena.Error{kind: :unauthorized}`); blind
+    retry will not help.
+  `ExAthena.Result` gains `error_diagnostic: nil`, populated when
+  `finish_reason: :error_schema_validation` with `%{schema:, received:,
+  violations:}` (violations carry `reason` strings; future parsers can
+  add structured `path` data). `ExAthena.Modes.ReAct.do_iterate/2`
+  classifies both branches; `Loop.to_result/2` threads the diagnostic
+  through `state.meta[:error_diagnostic]`. See ADR-0029.
+
+
 
 ### Added
 

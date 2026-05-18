@@ -1,5 +1,22 @@
 defmodule ExAthena.Permissions.Denial do
-  @moduledoc false
+  @moduledoc """
+  Structured permission-denial returned by `ExAthena.Permissions.check/3`.
+
+  Returned inside `{:deny, %Denial{}}` so consumers can pattern-match on
+  `denial.code` instead of grepping reason strings. The `String.Chars`
+  implementation returns `reason`, so existing callers using
+  `to_string/1` continue to work.
+
+  ## Fields
+
+    * `:reason` — human-readable message suitable for surfacing in tool-result
+      content or logs.
+    * `:code` — machine-readable cause (`:phase_gated | :budget_exceeded |
+      :user_denied | :sandbox_violation | :unknown`).
+    * `:metadata` — structured context (e.g. `requested_tool`,
+      `allowed_tools`, `phase`); also carries any raw callback `:deny`
+      reason under `metadata.raw`.
+  """
 
   @type code :: :phase_gated | :budget_exceeded | :user_denied | :sandbox_violation | :unknown
 
