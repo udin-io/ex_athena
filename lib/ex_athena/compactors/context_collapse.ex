@@ -56,6 +56,9 @@ defmodule ExAthena.Compactors.ContextCollapse do
     edited_paths = collect_edited_paths(messages)
 
     Enum.map(messages, fn
+      %Message{role: :tool, pin: true} = msg ->
+        msg
+
       %Message{role: :tool, tool_results: results} = msg ->
         new_results =
           Enum.map(results, fn r ->

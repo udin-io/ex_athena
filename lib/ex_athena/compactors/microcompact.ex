@@ -67,6 +67,10 @@ defmodule ExAthena.Compactors.Microcompact do
 
   defp do_collapse([], acc, runs, _t, _ex), do: {Enum.reverse(acc), runs}
 
+  defp do_collapse([%Message{pin: true} = head | tail], acc, runs, threshold, excerpt_chars) do
+    do_collapse(tail, [head | acc], runs, threshold, excerpt_chars)
+  end
+
   defp do_collapse([head | tail], acc, runs, threshold, excerpt_chars) do
     case take_tool_run(head, tail) do
       {[_, _, _ | _] = run, rest} when length(run) >= threshold ->
@@ -80,13 +84,16 @@ defmodule ExAthena.Compactors.Microcompact do
 
   # Greedily collect a contiguous run of same-named single-tool-result messages
   # starting at `head`. Returns {[head | run...], remaining_tail}.
-  defp take_tool_run(%Message{role: :tool, tool_results: [first | _]} = head, tail) do
+  defp take_tool_run(%Message{role: :tool, pin: false, tool_results: [first | _]} = head, tail) do
     name = first.tool_call_id
 
     {run, rest} =
       Enum.split_while(tail, fn
-        %Message{role: :tool, tool_results: [tr | _]} -> kindred?(tr.tool_call_id, name)
-        _ -> false
+        %Message{role: :tool, pin: false, tool_results: [tr | _]} ->
+          kindred?(tr.tool_call_id, name)
+
+        _ ->
+          false
       end)
 
     {[head | run], rest}

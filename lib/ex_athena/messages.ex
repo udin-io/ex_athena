@@ -52,7 +52,7 @@ defmodule ExAthena.Messages do
     @moduledoc "A single turn in the conversation."
 
     @enforce_keys [:role]
-    defstruct [:role, :content, :tool_calls, :tool_results, :name]
+    defstruct [:role, :content, :tool_calls, :tool_results, :name, pin: false]
 
     @type role :: :system | :user | :assistant | :tool
     @type t :: %__MODULE__{
@@ -60,7 +60,8 @@ defmodule ExAthena.Messages do
             content: String.t() | [ExAthena.Messages.ContentPart.t()] | nil,
             tool_calls: [ToolCall.t()] | nil,
             tool_results: [ToolResult.t()] | nil,
-            name: String.t() | nil
+            name: String.t() | nil,
+            pin: boolean()
           }
   end
 
@@ -112,7 +113,8 @@ defmodule ExAthena.Messages do
       content: maybe_content_parts(fetch(map, :content)),
       tool_calls: maybe_tool_calls(fetch(map, :tool_calls)),
       tool_results: maybe_tool_results(fetch(map, :tool_results)),
-      name: fetch(map, :name)
+      name: fetch(map, :name),
+      pin: fetch(map, :pin) || false
     }
   end
 

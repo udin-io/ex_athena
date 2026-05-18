@@ -82,6 +82,7 @@ defmodule ExAthena.Loop do
   alias ExAthena.{Budget, Config, Error, Memory, Request, Result, Skills, Telemetry, Tools}
   alias ExAthena.Loop.{Events, Mode, State}
   alias ExAthena.Lsp.ImplicitDiagnostics
+  alias ExAthena.Messages.Message
 
   @default_max_iterations 25
   @default_max_mistakes 3
@@ -200,6 +201,7 @@ defmodule ExAthena.Loop do
   end
 
   defp force_compact(%State{} = state) do
+    state = apply_auto_pin(state)
     compactor = compactor_module(state)
 
     estimate = %{
@@ -235,6 +237,56 @@ defmodule ExAthena.Loop do
         {:error, reason} ->
           {:error, reason}
       end
+    end
+  end
+
+  defp apply_auto_pin(%State{meta: meta, messages: messages} = state) do
+    case Map.get(meta, :auto_pin) do
+      %{tool_names: names} when is_list(names) and names != [] ->
+        id_to_name =
+          messages
+          |> Enum.flat_map(fn
+            %Message{role: :assistant, tool_calls: tcs} when is_list(tcs) ->
+              Enum.map(tcs, &{&1.id, &1.name})
+
+            _ ->
+              []
+          end)
+          |> Map.new()
+
+        # Build the set of tool_call_ids whose tool name is in the pinned names list.
+        # Pinning both the tool-result message AND its paired assistant message prevents
+        # Summary from dropping the tool_calls entry and producing an orphaned tool_result.
+        matching_ids =
+          id_to_name
+          |> Enum.filter(fn {_id, name} -> name in names end)
+          |> Enum.map(&elem(&1, 0))
+          |> MapSet.new()
+
+        new_messages =
+          Enum.map(messages, fn
+            %Message{role: :tool, tool_results: results} = msg when is_list(results) ->
+              if Enum.any?(results, fn tr -> tr.tool_call_id in matching_ids end) do
+                %{msg | pin: true}
+              else
+                msg
+              end
+
+            %Message{role: :assistant, tool_calls: tcs} = msg when is_list(tcs) ->
+              if Enum.any?(tcs, fn tc -> tc.id in matching_ids end) do
+                %{msg | pin: true}
+              else
+                msg
+              end
+
+            msg ->
+              msg
+          end)
+
+        %{state | messages: new_messages}
+
+      _ ->
+        state
     end
   end
 
@@ -650,7 +702,9 @@ defmodule ExAthena.Loop do
       :pinned_prefix_count,
       :live_suffix_count,
       :conversation_id,
-      :agent_id
+      :agent_id,
+      :reactive_compact,
+      :auto_pin
     ]
     |> Enum.reduce(%{}, fn key, acc ->
       case Keyword.get(opts, key) do

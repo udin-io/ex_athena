@@ -35,9 +35,12 @@ defmodule ExAthena.Compactor.Pipeline do
 
   @behaviour ExAthena.Compactor
 
+  require Logger
+
   alias ExAthena.Compactor
   alias ExAthena.Compactor.Stage
   alias ExAthena.Loop.State
+  alias ExAthena.Messages.Message
   alias ExAthena.Telemetry
 
   @impl ExAthena.Compactor
@@ -128,7 +131,7 @@ defmodule ExAthena.Compactor.Pipeline do
 
         case result do
           {:ok, new_state, new_estimate} ->
-            {new_state, new_estimate, log ++ [stage.name()]}
+            {restore_pinned(new_state, state.messages), new_estimate, log ++ [stage.name()]}
 
           :skip ->
             {state, estimate, log}
@@ -136,6 +139,56 @@ defmodule ExAthena.Compactor.Pipeline do
           {:error, reason} ->
             {:error, {stage.name(), reason}}
         end
+    end
+  end
+
+  # ── Pin protection ───────────────────────────────────────────────
+
+  # After a stage runs, re-insert any pinned messages it dropped.
+  # Pinned messages are re-inserted at proportional positions relative
+  # to the original list.  We sort by target position descending before
+  # inserting so that no insertion shifts the position of a later one
+  # (inserting at a higher index first means all lower-index insertions
+  # are unaffected).  When the stage dropped everything (new_total == 0)
+  # we fall back to orig_idx directly so original relative order is kept.
+  defp restore_pinned(%State{messages: new_messages} = state, original_messages) do
+    orig_total = length(original_messages)
+
+    missing =
+      original_messages
+      |> Enum.with_index()
+      |> Enum.filter(fn {%Message{pin: pin}, _} -> pin end)
+      |> Enum.reject(fn {msg, _} -> msg in new_messages end)
+
+    case missing do
+      [] ->
+        state
+
+      _ ->
+        Logger.warning(
+          "[ExAthena.Compactor.Pipeline] restore_pinned: re-inserting #{length(missing)} pinned message(s) dropped by a compaction stage"
+        )
+
+        new_total = length(new_messages)
+
+        restored =
+          missing
+          |> Enum.map(fn {msg, orig_idx} ->
+            insert_at =
+              if new_total > 0 do
+                round(orig_idx * new_total / orig_total)
+              else
+                orig_idx
+              end
+
+            {insert_at, msg}
+          end)
+          |> Enum.sort_by(&elem(&1, 0), :desc)
+          |> Enum.reduce(new_messages, fn {pos, msg}, msgs ->
+            List.insert_at(msgs, pos, msg)
+          end)
+
+        %{state | messages: restored}
     end
   end
 
