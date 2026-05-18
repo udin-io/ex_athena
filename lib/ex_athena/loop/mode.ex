@@ -48,6 +48,16 @@ defmodule ExAthena.Loop.Mode do
   """
   @callback iterate(State.t()) :: {:continue, State.t()} | {:halt, State.t()} | {:error, term()}
 
+  @doc """
+  Optional. Called after each `{:continue, new_state}` to determine whether
+  the iteration was productive. Return `true` if the run made progress (new
+  tool name+args pair OR new assistant text), `false` otherwise. When not
+  implemented, the kernel uses its own default check.
+  """
+  @callback productivity_signal(prev_state :: State.t(), new_state :: State.t()) :: boolean()
+
+  @optional_callbacks [productivity_signal: 2]
+
   @builtins %{
     react: ExAthena.Modes.ReAct,
     plan_and_solve: ExAthena.Modes.PlanAndSolve,

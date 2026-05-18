@@ -28,6 +28,9 @@ defmodule ExAthena.Result do
     * `:provider` — the provider atom / module that served the run.
     * `:telemetry` — span metadata summarising OTel attrs for the run
       (Phase 4).
+    * `:no_progress_snapshot` — the last few message pairs (assistant +
+      tool results) captured when `finish_reason` is `:error_no_progress`.
+      `nil` for all other terminations.
   """
 
   alias ExAthena.Loop.Terminations
@@ -50,7 +53,8 @@ defmodule ExAthena.Result do
             duration_ms: nil,
             model: nil,
             provider: nil,
-            telemetry: %{}
+            telemetry: %{},
+            no_progress_snapshot: nil
 
   @type t :: %__MODULE__{
           text: String.t() | nil,
@@ -64,7 +68,8 @@ defmodule ExAthena.Result do
           duration_ms: non_neg_integer() | nil,
           model: String.t() | nil,
           provider: atom() | module() | nil,
-          telemetry: map()
+          telemetry: map(),
+          no_progress_snapshot: [Message.t()] | nil
         }
 
   @doc "Whether the run finished normally (no error termination)."

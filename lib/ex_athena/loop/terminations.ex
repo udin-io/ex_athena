@@ -23,6 +23,10 @@ defmodule ExAthena.Loop.Terminations do
       assembled prompt exceeded the model's context window. Modes signal this
       to the kernel so the compaction pipeline can attempt reactive recovery
       before the run terminates.
+    * `:error_no_progress` — consecutive-iteration productivity threshold
+      exceeded; the last N iterations produced identical tool calls with no
+      new text. The `Result.no_progress_snapshot` field carries the stuck
+      message pairs for remediation reprompts.
   """
 
   @type subtype ::
@@ -35,6 +39,7 @@ defmodule ExAthena.Loop.Terminations do
           | :error_halted
           | :error_compaction_failed
           | :error_prompt_too_long
+          | :error_no_progress
 
   @all_subtypes [
     :stop,
@@ -45,7 +50,8 @@ defmodule ExAthena.Loop.Terminations do
     :error_consecutive_mistakes,
     :error_halted,
     :error_compaction_failed,
-    :error_prompt_too_long
+    :error_prompt_too_long,
+    :error_no_progress
   ]
 
   @doc "All known termination subtypes."
@@ -79,6 +85,7 @@ defmodule ExAthena.Loop.Terminations do
   def category(:error_consecutive_mistakes), do: :capacity
   def category(:error_during_execution), do: :retryable
   def category(:error_prompt_too_long), do: :capacity
+  def category(:error_no_progress), do: :capacity
   def category(:error_halted), do: :fatal
   def category(:error_compaction_failed), do: :fatal
 end

@@ -31,6 +31,21 @@ defmodule ExAthena.Modes.ReAct do
   def init(%State{} = state), do: {:ok, state}
 
   @impl true
+  def productivity_signal(prev_state, new_state) do
+    current_fp = ExAthena.Loop.compute_tool_fingerprint(prev_state, new_state)
+
+    has_new_text? =
+      new_state.messages
+      |> Enum.drop(length(prev_state.messages))
+      |> Enum.any?(fn
+        %{role: :assistant, content: c} when is_binary(c) and byte_size(c) > 0 -> true
+        _ -> false
+      end)
+
+    current_fp != prev_state.last_tool_fingerprint or has_new_text?
+  end
+
+  @impl true
   def iterate(%State{} = state) do
     request = build_request(state)
 
