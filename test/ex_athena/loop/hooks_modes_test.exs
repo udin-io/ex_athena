@@ -6,6 +6,7 @@ defmodule ExAthena.Loop.HooksModesTest do
 
   alias ExAthena.{Loop, Response}
   alias ExAthena.Messages.{Message, ToolCall}
+  alias ExAthena.Permissions.Denial
 
   defp single_text(text) do
     fn _req -> %Response{text: text, finish_reason: :stop, provider: :mock} end
@@ -257,7 +258,8 @@ defmodule ExAthena.Loop.HooksModesTest do
           memory: false
         )
 
-      assert_receive {^ref, :permission_denied, "bash", {:disallowed, "bash"}}
+      assert_receive {^ref, :permission_denied, "bash",
+                      %Denial{code: :user_denied, metadata: %{requested_tool: "bash"}}}
     end
   end
 
@@ -315,7 +317,7 @@ defmodule ExAthena.Loop.HooksModesTest do
     test ":accept_edits still consults the callback for non-edit tools" do
       cb = fn "bash", _, _ -> {:deny, :user_declined} end
 
-      assert {:deny, :user_declined} =
+      assert {:deny, %Denial{code: :user_denied, metadata: %{raw: :user_declined}}} =
                Permissions.check(call("bash"), ctx(:accept_edits), %{can_use_tool: cb})
     end
 
@@ -329,7 +331,7 @@ defmodule ExAthena.Loop.HooksModesTest do
     end
 
     test ":trusted respects the denylist by default" do
-      assert {:deny, {:disallowed, "bash"}} =
+      assert {:deny, %Denial{code: :user_denied, metadata: %{requested_tool: "bash"}}} =
                Permissions.check(call("bash"), ctx(:trusted), disallowed_tools: ["bash"])
     end
 
@@ -342,7 +344,7 @@ defmodule ExAthena.Loop.HooksModesTest do
     end
 
     test ":bypass_permissions still respects the denylist (deny-first invariant)" do
-      assert {:deny, {:disallowed, "bash"}} =
+      assert {:deny, %Denial{code: :user_denied, metadata: %{requested_tool: "bash"}}} =
                Permissions.check(call("bash"), ctx(:bypass_permissions),
                  disallowed_tools: ["bash"]
                )

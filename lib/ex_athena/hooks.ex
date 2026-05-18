@@ -34,7 +34,7 @@ defmodule ExAthena.Hooks do
     * Session: `:SessionStart`, `:SessionEnd`
     * Per-turn: `:UserPromptSubmit`, `:ChatParams`, `:Stop`, `:StopFailure`
     * Per-tool: `:PreToolUse`, `:PostToolUse`, `:PostToolUseFailure`,
-      `:PermissionRequest`, `:PermissionDenied`
+      `:PermissionRequest`, `:PermissionDenied`, `:ToolDenied`
     * Subagent: `:SubagentStart`, `:SubagentStop`
     * Compaction: `:PreCompact`, `:PreCompactStage`, `:PostCompact`
     * Notification: `:Notification`
@@ -74,6 +74,7 @@ defmodule ExAthena.Hooks do
       :PostToolUseFailure,
       :PermissionRequest,
       :PermissionDenied,
+      :ToolDenied,
       :SubagentStart,
       :SubagentStop,
       :PreCompact,

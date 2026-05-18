@@ -156,7 +156,7 @@ defmodule ExAthena.Mcp.LoopIntegrationTest do
 
       tool_msg = Enum.find(result.messages, &match?(%{role: :tool}, &1))
       assert [%{is_error: true, content: content}] = tool_msg.tool_results
-      assert content =~ "permission denied"
+      assert content =~ "disallowed"
       assert_receive {:permission_denied, "fake_echo"}
     end
   end

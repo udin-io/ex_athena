@@ -200,6 +200,20 @@ defmodule ExAthena.Loop.Parallel do
         reason: reason
       })
 
+    case reason do
+      %Permissions.Denial{} = denial ->
+        _ =
+          Hooks.run_lifecycle(state.hooks, :ToolDenied, %{
+            tool_name: name,
+            tool_use_id: id,
+            arguments: args,
+            denial: denial
+          })
+
+      _ ->
+        :ok
+    end
+
     :ok
   end
 

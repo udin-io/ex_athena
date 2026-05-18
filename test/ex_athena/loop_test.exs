@@ -135,7 +135,7 @@ defmodule ExAthena.LoopTest do
     # The tool message is a tool-result with is_error: true
     tool_msg = Enum.find(result.messages, &match?(%{role: :tool}, &1))
     assert [%{content: content, is_error: true}] = tool_msg.tool_results
-    assert content =~ "permission denied"
+    assert content =~ "disallowed"
   end
 
   test "unknown tool returns an error message in the loop", %{dir: dir} do

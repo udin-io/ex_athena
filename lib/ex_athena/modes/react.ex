@@ -22,7 +22,7 @@ defmodule ExAthena.Modes.ReAct do
 
   @behaviour ExAthena.Loop.Mode
 
-  alias ExAthena.{Budget, Messages, Skills, Telemetry}
+  alias ExAthena.{Budget, Messages, Permissions, Skills, Telemetry}
   alias ExAthena.Loop.{Events, Parallel, State}
   alias ExAthena.Messages.ToolCall
   alias ExAthena.Tools
@@ -188,6 +188,12 @@ defmodule ExAthena.Modes.ReAct do
     case Parallel.pre_tool_gate(call, state) do
       :allow ->
         do_execute(call, state)
+
+      {:deny, %Permissions.Denial{reason: reason_str}} ->
+        result = Messages.tool_result(call.id, reason_str, true)
+        state = bump_mistake(state)
+        Parallel.emit_events(state, call, result)
+        {result, state}
 
       {:deny, reason} ->
         result = Messages.tool_result(call.id, "permission denied: #{inspect(reason)}", true)
