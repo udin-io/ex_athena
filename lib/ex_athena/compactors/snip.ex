@@ -70,6 +70,9 @@ defmodule ExAthena.Compactors.Snip do
     {result, count} =
       Enum.reduce(indexed, {[], 0}, fn {msg, idx}, {acc, c} ->
         cond do
+          msg.pin ->
+            {acc ++ [msg], c}
+
           idx < pin_floor or idx >= suffix_floor ->
             {acc ++ [msg], c}
 

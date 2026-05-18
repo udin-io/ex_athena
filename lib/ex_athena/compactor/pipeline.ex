@@ -38,6 +38,7 @@ defmodule ExAthena.Compactor.Pipeline do
   alias ExAthena.Compactor
   alias ExAthena.Compactor.Stage
   alias ExAthena.Loop.State
+  alias ExAthena.Messages.Message
   alias ExAthena.Telemetry
 
   @impl ExAthena.Compactor
@@ -128,7 +129,7 @@ defmodule ExAthena.Compactor.Pipeline do
 
         case result do
           {:ok, new_state, new_estimate} ->
-            {new_state, new_estimate, log ++ [stage.name()]}
+            {restore_pinned(new_state, state.messages), new_estimate, log ++ [stage.name()]}
 
           :skip ->
             {state, estimate, log}
@@ -136,6 +137,38 @@ defmodule ExAthena.Compactor.Pipeline do
           {:error, reason} ->
             {:error, {stage.name(), reason}}
         end
+    end
+  end
+
+  # ── Pin protection ───────────────────────────────────────────────
+
+  # After a stage runs, re-insert any pinned messages it dropped.
+  # Pinned messages are re-inserted at their proportional original
+  # position so that position semantics are preserved as best as
+  # possible regardless of how many non-pinned messages the stage kept.
+  defp restore_pinned(%State{messages: new_messages} = state, original_messages) do
+    orig_total = length(original_messages)
+
+    missing =
+      original_messages
+      |> Enum.with_index()
+      |> Enum.filter(fn {%Message{pin: pin}, _} -> pin end)
+      |> Enum.reject(fn {msg, _} -> msg in new_messages end)
+
+    case missing do
+      [] ->
+        state
+
+      _ ->
+        new_total = length(new_messages)
+
+        restored =
+          Enum.reduce(missing, new_messages, fn {msg, orig_idx}, msgs ->
+            insert_at = if orig_total > 0, do: round(orig_idx * new_total / orig_total), else: 0
+            List.insert_at(msgs, insert_at, msg)
+          end)
+
+        %{state | messages: restored}
     end
   end
 

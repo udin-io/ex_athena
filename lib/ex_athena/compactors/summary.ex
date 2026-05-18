@@ -91,30 +91,41 @@ defmodule ExAthena.Compactors.Summary do
   # ── Internal ──────────────────────────────────────────────────────
 
   defp do_compact(prefix, middle, suffix, %State{} = state, estimate) do
-    case summarise(middle, state) do
-      {:ok, summary_text, summary_usage} ->
-        summary_msg = %Message{
-          role: :assistant,
-          content: summary_text,
-          name: "compactor_summary"
-        }
+    {pinned_in_middle, summarisable} = Enum.split_with(middle, & &1.pin)
 
-        new_messages = prefix ++ [summary_msg] ++ suffix
+    case summarisable do
+      [] ->
+        :skip
 
-        new_budget = Budget.add(state.budget || Budget.new(), summary_usage, nil)
+      few when length(few) < 3 ->
+        :skip
 
-        metadata = %{
-          before: estimate.tokens,
-          after: ExAthena.Compactor.estimate_tokens(new_messages),
-          dropped_count: length(middle),
-          reason: :token_budget,
-          budget: new_budget
-        }
+      _ ->
+        case summarise(summarisable, state) do
+          {:ok, summary_text, summary_usage} ->
+            summary_msg = %Message{
+              role: :assistant,
+              content: summary_text,
+              name: "compactor_summary"
+            }
 
-        {:compact, new_messages, metadata}
+            new_messages = prefix ++ [summary_msg] ++ pinned_in_middle ++ suffix
 
-      {:error, reason} ->
-        {:error, {:summary_failed, reason}}
+            new_budget = Budget.add(state.budget || Budget.new(), summary_usage, nil)
+
+            metadata = %{
+              before: estimate.tokens,
+              after: ExAthena.Compactor.estimate_tokens(new_messages),
+              dropped_count: length(summarisable),
+              reason: :token_budget,
+              budget: new_budget
+            }
+
+            {:compact, new_messages, metadata}
+
+          {:error, reason} ->
+            {:error, {:summary_failed, reason}}
+        end
     end
   end
 
