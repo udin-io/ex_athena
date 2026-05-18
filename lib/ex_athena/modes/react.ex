@@ -32,34 +32,17 @@ defmodule ExAthena.Modes.ReAct do
 
   @impl true
   def productivity_signal(prev_state, new_state) do
-    prev_count = length(prev_state.messages)
-    new_messages = Enum.drop(new_state.messages, prev_count)
-
-    current_fingerprint =
-      new_messages
-      |> Enum.flat_map(fn
-        %{role: :assistant, tool_calls: calls} when is_list(calls) -> calls
-        _ -> []
-      end)
-      |> Enum.map(fn tc ->
-        args_bin =
-          cond do
-            is_nil(tc.arguments) -> "{}"
-            is_binary(tc.arguments) -> tc.arguments
-            true -> Jason.encode!(tc.arguments)
-          end
-
-        {tc.name, args_bin}
-      end)
-      |> Enum.sort()
+    current_fp = ExAthena.Loop.compute_tool_fingerprint(prev_state, new_state)
 
     has_new_text? =
-      Enum.any?(new_messages, fn
+      new_state.messages
+      |> Enum.drop(length(prev_state.messages))
+      |> Enum.any?(fn
         %{role: :assistant, content: c} when is_binary(c) and byte_size(c) > 0 -> true
         _ -> false
       end)
 
-    current_fingerprint != prev_state.last_tool_fingerprint or has_new_text?
+    current_fp != prev_state.last_tool_fingerprint or has_new_text?
   end
 
   @impl true

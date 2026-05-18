@@ -133,11 +133,7 @@ defmodule ExAthena.Loop do
 
       state.max_unproductive_iterations > 0 and
           state.unproductive_iterations >= state.max_unproductive_iterations ->
-        snapshot =
-          Enum.take(
-            state.messages,
-            -min(length(state.messages), state.max_unproductive_iterations * 4)
-          )
+        snapshot = Enum.take(state.messages, -(state.max_unproductive_iterations * 4))
 
         %{state | no_progress_snapshot: snapshot}
         |> set_finish_reason(:error_no_progress)
@@ -311,8 +307,7 @@ defmodule ExAthena.Loop do
 
   # ── No-progress tracking ──────────────────────────────────────────
 
-  @doc false
-  def update_progress_tracking(prev_state, new_state) do
+  defp update_progress_tracking(prev_state, new_state) do
     current_fp = compute_tool_fingerprint(prev_state, new_state)
     productive? = check_productivity(prev_state, new_state, current_fp)
 
@@ -347,7 +342,8 @@ defmodule ExAthena.Loop do
     current_fp != prev_state.last_tool_fingerprint or has_new_text?
   end
 
-  defp compute_tool_fingerprint(prev_state, new_state) do
+  @doc false
+  def compute_tool_fingerprint(prev_state, new_state) do
     new_state.messages
     |> Enum.drop(length(prev_state.messages))
     |> Enum.flat_map(fn
