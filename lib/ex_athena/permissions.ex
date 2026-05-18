@@ -1,3 +1,22 @@
+defmodule ExAthena.Permissions.Denial do
+  @moduledoc false
+
+  @type code :: :phase_gated | :budget_exceeded | :user_denied | :sandbox_violation | :unknown
+
+  @enforce_keys [:reason, :code]
+  defstruct [:reason, :code, metadata: %{}]
+
+  @type t :: %__MODULE__{
+          reason: String.t(),
+          code: code(),
+          metadata: map()
+        }
+
+  defimpl String.Chars do
+    def to_string(%{reason: r}), do: r
+  end
+end
+
 defmodule ExAthena.Permissions do
   @moduledoc """
   Decides whether a tool call is allowed.
@@ -40,8 +59,9 @@ defmodule ExAthena.Permissions do
       iex> alias ExAthena.Messages.ToolCall
       iex> tc = %ToolCall{id: "1", name: "bash", arguments: %{}}
       iex> ctx = ToolContext.new(cwd: "/tmp", phase: :bypass_permissions)
-      iex> Permissions.check(tc, ctx, %{disallowed_tools: ["bash"]})
-      {:deny, {:disallowed, "bash"}}
+      iex> {:deny, denial} = Permissions.check(tc, ctx, %{disallowed_tools: ["bash"]})
+      iex> denial.code
+      :user_denied
 
   Likewise, an allowlist denies everything outside it even if a callback
   would have allowed:
@@ -51,11 +71,13 @@ defmodule ExAthena.Permissions do
       iex> tc = %ToolCall{id: "1", name: "bash", arguments: %{}}
       iex> ctx = ToolContext.new(cwd: "/tmp", phase: :default)
       iex> opts = %{allowed_tools: ["read"], can_use_tool: fn _, _, _ -> :allow end}
-      iex> Permissions.check(tc, ctx, opts)
-      {:deny, {:not_in_allowlist, "bash"}}
+      iex> {:deny, denial} = Permissions.check(tc, ctx, opts)
+      iex> denial.code
+      :user_denied
   """
 
   alias ExAthena.Messages.ToolCall
+  alias ExAthena.Permissions.Denial
   alias ExAthena.ToolContext
 
   @readonly_tools ~w(read glob grep web_fetch plan_mode spawn_agent lsp)
@@ -67,7 +89,7 @@ defmodule ExAthena.Permissions do
 
   @type result ::
           :allow
-          | {:deny, reason :: term()}
+          | {:deny, Denial.t()}
 
   @type opts :: %{
           optional(:phase) => ToolContext.phase(),
@@ -79,7 +101,7 @@ defmodule ExAthena.Permissions do
 
   @doc """
   Check whether `tool_call` is allowed under `opts`. Returns `:allow` or
-  `{:deny, reason}`.
+  `{:deny, %ExAthena.Permissions.Denial{}}`.
   """
   @spec check(ToolCall.t(), ToolContext.t(), opts()) :: result()
   def check(%ToolCall{name: name, arguments: args}, %ToolContext{} = ctx, opts) do
@@ -108,8 +130,20 @@ defmodule ExAthena.Permissions do
 
   defp check_disallowed_list(name, opts) do
     case opts[:disallowed_tools] do
-      nil -> :allow
-      list when is_list(list) -> if name in list, do: {:deny, {:disallowed, name}}, else: :allow
+      nil ->
+        :allow
+
+      list when is_list(list) ->
+        if name in list do
+          {:deny,
+           %Denial{
+             code: :user_denied,
+             reason: "tool \"#{name}\" is explicitly disallowed",
+             metadata: %{requested_tool: name}
+           }}
+        else
+          :allow
+        end
     end
   end
 
@@ -119,15 +153,34 @@ defmodule ExAthena.Permissions do
         :allow
 
       list when is_list(list) ->
-        if name in list, do: :allow, else: {:deny, {:not_in_allowlist, name}}
+        if name in list do
+          :allow
+        else
+          {:deny,
+           %Denial{
+             code: :user_denied,
+             reason: "tool \"#{name}\" is not in the allowed list",
+             metadata: %{requested_tool: name, allowed_tools: list}
+           }}
+        end
     end
   end
 
   defp check_phase(name, :plan) do
     cond do
-      name in @readonly_tools -> :allow
-      name in @mutating_tools -> {:deny, {:mutation_in_plan_mode, name}}
-      true -> :allow
+      name in @readonly_tools ->
+        :allow
+
+      name in @mutating_tools ->
+        {:deny,
+         %Denial{
+           code: :phase_gated,
+           reason: "tool \"#{name}\" is not allowed in plan phase",
+           metadata: %{phase: :plan, requested_tool: name, allowed_tools: @readonly_tools}
+         }}
+
+      true ->
+        :allow
     end
   end
 
@@ -161,9 +214,23 @@ defmodule ExAthena.Permissions do
 
   defp normalize(:allow), do: :allow
   defp normalize({:allow, _}), do: :allow
-  defp normalize(:deny), do: {:deny, :denied_by_callback}
-  defp normalize({:deny, _} = result), do: result
-  defp normalize(other), do: {:deny, {:unexpected_callback_result, other}}
+
+  defp normalize(:deny),
+    do: {:deny, %Denial{code: :user_denied, reason: "denied by callback", metadata: %{}}}
+
+  defp normalize({:deny, %Denial{}} = result), do: result
+
+  defp normalize({:deny, reason}),
+    do: {:deny, %Denial{code: :user_denied, reason: inspect(reason), metadata: %{raw: reason}}}
+
+  defp normalize(other),
+    do:
+      {:deny,
+       %Denial{
+         code: :unknown,
+         reason: "unexpected callback result: #{inspect(other)}",
+         metadata: %{raw: other}
+       }}
 
   @doc "Static list of read-only tool names the `:plan` phase permits."
   @spec readonly_tools() :: [String.t()]
