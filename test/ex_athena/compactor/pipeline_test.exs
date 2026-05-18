@@ -205,22 +205,18 @@ defmodule ExAthena.Compactor.PipelineTest do
     refute "c2" in tool_ids
   end
 
-  test "apply_auto_pin stamps pin: true on matching tool-result messages" do
-    # We test the auto_pin behaviour indirectly via Loop.run with a
-    # custom compactor spy — see reactive_compaction_test.exs for the
-    # full integration test. Here we unit-test apply_auto_pin directly
-    # through the loop's force_compact path by checking that the
-    # DropToolStage does NOT drop the auto-pinned message.
-    #
-    # Build state with an assistant tool call named "ExitPlanMode" and a
-    # paired tool-result message. Pass auto_pin: %{tool_names: ["ExitPlanMode"]}.
+  test "restore_pinned re-inserts a pre-pinned message that a stage drops" do
+    # Pipeline does not call apply_auto_pin (Loop does). Here we directly
+    # pre-set pin: true to verify that restore_pinned brings back any pinned
+    # message a stage drops. The full auto_pin integration is in
+    # reactive_compaction_test.exs.
     tc = %ExAthena.Messages.ToolCall{id: "tc1", name: "ExitPlanMode", arguments: %{}}
 
     assistant_msg = %Message{role: :assistant, content: nil, tool_calls: [tc]}
 
     tool_result_msg = %Message{
       role: :tool,
-      pin: false,
+      pin: true,
       tool_results: [
         %ToolResult{tool_call_id: "tc1", content: "plan approved", is_error: false}
       ]
@@ -231,25 +227,11 @@ defmodule ExAthena.Compactor.PipelineTest do
     state =
       state_with(messages,
         compaction_pipeline: [DropToolStage],
-        compact_at: 0.5,
-        auto_pin: %{tool_names: ["ExitPlanMode"]}
+        compact_at: 0.5
       )
 
-    # Manually invoke apply_auto_pin via force_compact path: we simulate it
-    # by checking that the Loop respects auto_pin. Here we use the Pipeline
-    # directly with a pre-pinned message (since Pipeline doesn't call
-    # apply_auto_pin itself — Loop does). So the real assertion is that
-    # if pin: true is set, DropToolStage leaves it alone.
-    pre_pinned =
-      Enum.map(messages, fn
-        %Message{role: :tool} = m -> %{m | pin: true}
-        m -> m
-      end)
-
-    state2 = %{state | messages: pre_pinned}
-
     assert {:compact, new_messages, _meta} =
-             Pipeline.compact(state2, %{tokens: 800, max_tokens: 1_000})
+             Pipeline.compact(state, %{tokens: 800, max_tokens: 1_000})
 
     ids =
       Enum.flat_map(new_messages, fn

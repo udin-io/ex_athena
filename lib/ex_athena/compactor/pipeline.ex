@@ -35,6 +35,8 @@ defmodule ExAthena.Compactor.Pipeline do
 
   @behaviour ExAthena.Compactor
 
+  require Logger
+
   alias ExAthena.Compactor
   alias ExAthena.Compactor.Stage
   alias ExAthena.Loop.State
@@ -143,9 +145,12 @@ defmodule ExAthena.Compactor.Pipeline do
   # ── Pin protection ───────────────────────────────────────────────
 
   # After a stage runs, re-insert any pinned messages it dropped.
-  # Pinned messages are re-inserted at their proportional original
-  # position so that position semantics are preserved as best as
-  # possible regardless of how many non-pinned messages the stage kept.
+  # Pinned messages are re-inserted at proportional positions relative
+  # to the original list.  We sort by target position descending before
+  # inserting so that no insertion shifts the position of a later one
+  # (inserting at a higher index first means all lower-index insertions
+  # are unaffected).  When the stage dropped everything (new_total == 0)
+  # we fall back to orig_idx directly so original relative order is kept.
   defp restore_pinned(%State{messages: new_messages} = state, original_messages) do
     orig_total = length(original_messages)
 
@@ -160,12 +165,27 @@ defmodule ExAthena.Compactor.Pipeline do
         state
 
       _ ->
+        Logger.warning(
+          "[ExAthena.Compactor.Pipeline] restore_pinned: re-inserting #{length(missing)} pinned message(s) dropped by a compaction stage"
+        )
+
         new_total = length(new_messages)
 
         restored =
-          Enum.reduce(missing, new_messages, fn {msg, orig_idx}, msgs ->
-            insert_at = if orig_total > 0, do: round(orig_idx * new_total / orig_total), else: 0
-            List.insert_at(msgs, insert_at, msg)
+          missing
+          |> Enum.map(fn {msg, orig_idx} ->
+            insert_at =
+              if new_total > 0 do
+                round(orig_idx * new_total / orig_total)
+              else
+                orig_idx
+              end
+
+            {insert_at, msg}
+          end)
+          |> Enum.sort_by(&elem(&1, 0), :desc)
+          |> Enum.reduce(new_messages, fn {pos, msg}, msgs ->
+            List.insert_at(msgs, pos, msg)
           end)
 
         %{state | messages: restored}

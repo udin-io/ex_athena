@@ -89,8 +89,11 @@ defmodule ExAthena.Compactors.Microcompact do
 
     {run, rest} =
       Enum.split_while(tail, fn
-        %Message{role: :tool, pin: false, tool_results: [tr | _]} -> kindred?(tr.tool_call_id, name)
-        _ -> false
+        %Message{role: :tool, pin: false, tool_results: [tr | _]} ->
+          kindred?(tr.tool_call_id, name)
+
+        _ ->
+          false
       end)
 
     {[head | run], rest}

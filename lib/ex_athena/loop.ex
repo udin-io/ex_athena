@@ -254,10 +254,26 @@ defmodule ExAthena.Loop do
           end)
           |> Map.new()
 
+        # Build the set of tool_call_ids whose tool name is in the pinned names list.
+        # Pinning both the tool-result message AND its paired assistant message prevents
+        # Summary from dropping the tool_calls entry and producing an orphaned tool_result.
+        matching_ids =
+          id_to_name
+          |> Enum.filter(fn {_id, name} -> name in names end)
+          |> Enum.map(&elem(&1, 0))
+          |> MapSet.new()
+
         new_messages =
           Enum.map(messages, fn
             %Message{role: :tool, tool_results: results} = msg when is_list(results) ->
-              if Enum.any?(results, fn tr -> Map.get(id_to_name, tr.tool_call_id) in names end) do
+              if Enum.any?(results, fn tr -> tr.tool_call_id in matching_ids end) do
+                %{msg | pin: true}
+              else
+                msg
+              end
+
+            %Message{role: :assistant, tool_calls: tcs} = msg when is_list(tcs) ->
+              if Enum.any?(tcs, fn tc -> tc.id in matching_ids end) do
                 %{msg | pin: true}
               else
                 msg

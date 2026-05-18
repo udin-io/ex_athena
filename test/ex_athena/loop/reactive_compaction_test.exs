@@ -145,6 +145,109 @@ defmodule ExAthena.Loop.ReactiveCompactionTest do
 
     assert "tc_exit" in pinned_ids,
            "Expected ExitPlanMode tool-result to be pinned before compaction"
+
+    # The paired assistant message must also be pinned so Summary cannot
+    # summarise it away, which would leave an orphaned tool_result.
+    assert Enum.any?(spy_msgs, fn
+             %Message{role: :assistant, pin: true, tool_calls: tcs} when is_list(tcs) ->
+               Enum.any?(tcs, fn tc -> tc.id == "tc_exit" end)
+
+             _ ->
+               false
+           end),
+           "Expected paired assistant message to also be pinned before compaction"
+  end
+
+  test "auto_pin does not pin a tool result whose tool_call_id has no paired assistant message" do
+    # Simulates a tool result from an already-compacted assistant message:
+    # id_to_name won't contain the id, so the result must remain un-pinned (no crash).
+    orphan_tool_result = %Message{
+      role: :tool,
+      pin: false,
+      tool_results: [%ToolResult{tool_call_id: "orphan_id", content: "result", is_error: false}]
+    }
+
+    {:ok, %Result{}} =
+      Loop.run("hi",
+        provider: :mock,
+        mock: [
+          responder: fn _req ->
+            %Response{text: "ok", finish_reason: :stop, provider: :mock}
+          end
+        ],
+        tools: [],
+        mode: FlakyModeWithSpy,
+        memory: false,
+        skills: %{},
+        messages: [orphan_tool_result],
+        compactor: SpyCompactor,
+        auto_pin: %{tool_names: ["ExitPlanMode"]}
+      )
+
+    spy_msgs = Process.get(:spy_messages)
+    assert spy_msgs != nil, "SpyCompactor was never called"
+
+    pinned_ids =
+      Enum.flat_map(spy_msgs, fn
+        %Message{role: :tool, pin: true, tool_results: trs} -> Enum.map(trs, & &1.tool_call_id)
+        _ -> []
+      end)
+
+    refute "orphan_id" in pinned_ids,
+           "Orphaned tool result (no paired assistant) must not be pinned"
+  end
+
+  test "auto_pin pins the whole message when only one of multiple tool_results matches" do
+    tc_exit = %ToolCall{id: "tc_exit", name: "ExitPlanMode", arguments: %{}}
+    tc_other = %ToolCall{id: "tc_other", name: "SomeTool", arguments: %{}}
+
+    # One :tool message containing two results — only tc_exit matches the auto_pin rule.
+    mixed_tool_msg = %Message{
+      role: :tool,
+      pin: false,
+      tool_results: [
+        %ToolResult{tool_call_id: "tc_exit", content: "plan text", is_error: false},
+        %ToolResult{tool_call_id: "tc_other", content: "other result", is_error: false}
+      ]
+    }
+
+    initial_messages = [
+      %Message{role: :assistant, content: nil, tool_calls: [tc_exit, tc_other]},
+      mixed_tool_msg
+    ]
+
+    {:ok, %Result{}} =
+      Loop.run("hi",
+        provider: :mock,
+        mock: [
+          responder: fn _req ->
+            %Response{text: "ok", finish_reason: :stop, provider: :mock}
+          end
+        ],
+        tools: [],
+        mode: FlakyModeWithSpy,
+        memory: false,
+        skills: %{},
+        messages: initial_messages,
+        compactor: SpyCompactor,
+        auto_pin: %{tool_names: ["ExitPlanMode"]}
+      )
+
+    spy_msgs = Process.get(:spy_messages)
+    assert spy_msgs != nil, "SpyCompactor was never called"
+
+    mixed_pinned? =
+      Enum.any?(spy_msgs, fn
+        %Message{role: :tool, pin: true, tool_results: trs} ->
+          ids = Enum.map(trs, & &1.tool_call_id)
+          "tc_exit" in ids and "tc_other" in ids
+
+        _ ->
+          false
+      end)
+
+    assert mixed_pinned?,
+           "Expected the multi-result tool message to be pinned when any result matches"
   end
 
   test "with reactive compaction disabled, prompt-too-long terminates immediately" do
