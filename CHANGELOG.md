@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Added
+
+- **`mix athena.chat` — interactive terminal REPL.** Drops you into a
+  streaming chat session against the ExAthena agent loop, defaulting to the
+  `:ollama` provider, the model configured under `config :ex_athena, :ollama`,
+  the `:react` runner, and every builtin tool. Slash commands (`/model`,
+  `/mode`, `/tools`, `/clear`, `/help`, `/exit`) switch state mid-session;
+  `/model` lists live models from `GET /api/tags`. Built on
+  [`owl`](https://hex.pm/packages/owl) with a pinned `Owl.LiveScreen` status
+  block showing model, mode, iteration, token usage, and cost. New modules:
+  `ExAthena.Chat.Repl`, `ExAthena.Chat.Session`, `ExAthena.Chat.Commands`,
+  `ExAthena.Chat.Renderer`, `ExAthena.Chat.Ollama`.
+
 ## v0.11.0 — Public multimodal capability function
 
 ### Added
