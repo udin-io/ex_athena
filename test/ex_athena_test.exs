@@ -125,4 +125,14 @@ defmodule ExAthenaTest do
       assert %{streaming: true} = ExAthena.capabilities(ExAthena.Providers.Mock)
     end
   end
+
+  describe "supports_multimodal?/0" do
+    test "returns true" do
+      assert ExAthena.supports_multimodal?() == true
+    end
+
+    test "is exported" do
+      assert function_exported?(ExAthena, :supports_multimodal?, 0)
+    end
+  end
 end

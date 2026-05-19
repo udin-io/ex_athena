@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.10.0 — Public multimodal capability function
+
+### Added
+
+- **`ExAthena.supports_multimodal?/0`** — returns `true`, signalling that the
+  library forwards multimodal content parts (image / image_url / file) to the
+  underlying provider. Downstream callers (e.g. `udin_code`) can call this
+  instead of using `function_exported?/3` hacks. References
+  `ExAthena.Messages.ContentPart`. See [#53](https://github.com/udin-io/ex_athena/issues/53).
+
 ## v0.9.0 — Loop robustness: no-progress detector, compaction pinning, structured denials, typed terminations
 
 ### Added
