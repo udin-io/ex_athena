@@ -101,6 +101,34 @@ png = File.read!("diagram.png")
 See the [Multimodal guide](guides/multimodal.md) for inline images, URL
 references, and per-provider notes.
 
+## Try it: `mix athena.chat`
+
+Drop into an interactive chat REPL against a local Ollama model:
+
+```bash
+ollama serve &              # if not already running
+ollama pull llama3.1        # any model you like
+
+mix athena.chat
+mix athena.chat --model qwen2.5-coder:14b --mode plan_and_solve
+```
+
+Tokens stream in real time. A pinned status line at the bottom tracks the
+current model, runner mode, iteration count, token usage, and cost. Slash
+commands switch state without restarting:
+
+| Command | What it does |
+|---|---|
+| `/model` | Live-list installed Ollama models and pick one |
+| `/mode` | Switch between `react`, `plan_and_solve`, `reflexion` |
+| `/tools` | Show the tools the agent currently has access to |
+| `/clear` | Wipe conversation history (start a fresh thread) |
+| `/help` | Print the command reference |
+| `/exit` (or Ctrl-D) | Leave |
+
+Defaults: `:ollama` provider, the model in `config :ex_athena, :ollama, :model`,
+`:react` runner, every builtin tool, `permission_mode: :default`.
+
 ## Providers
 
 | Provider | Module | Notes |
