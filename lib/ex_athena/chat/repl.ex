@@ -17,8 +17,12 @@ defmodule ExAthena.Chat.Repl do
 
   @spec start(keyword()) :: :ok
   def start(opts \\ []) do
+    # Silence routine adapter chatter (`[info] [ExAthena.ReqLLM] →stream …`,
+    # `←done …`, debug text_delta breadcrumbs) so the chat shows just the
+    # prompt, response, and pinned status block. `:warning` keeps real
+    # errors like `←error …` visible.
     prior_log_level = Logger.level()
-    Logger.configure(level: :info)
+    Logger.configure(level: :warning)
 
     try do
       {:ok, _pid} = ensure_live_screen_started()
