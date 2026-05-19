@@ -109,32 +109,44 @@ defmodule ExAthena.Providers.ReqLLM do
   # id (`"qwen2.5-coder:14b"`). When bare, Config threads the provider's
   # `req_llm` tag through opts so we can build the full spec here.
   #
+  # When a tag is available, materialize the spec via `ReqLLM.model!/1` with
+  # the map form (`%{provider: :openai, id: "..."}`). This goes through
+  # req_llm's inline-spec path, which skips the `IO.warn "Using unverified
+  # model: ..."` that fires for catalog misses on non-listed model ids
+  # (Ollama's `gemma:7b`, custom local models, etc.).
+  #
   # Note: bare Ollama model ids legitimately contain `:` (the version
   # separator, e.g. `"qwen2.5-coder:14b"`) so we cannot use the presence
   # of a colon as a "spec already tagged" signal — the tag is the source
-  # of truth. We only skip prefixing when the model string already begins
-  # with the same tag (caller passed a fully-formed spec).
+  # of truth. We only strip when the model string already begins with the
+  # same tag (caller passed a fully-formed spec).
   @doc false
   def resolve_model(%Request{model: model_str}, opts)
       when is_binary(model_str) and model_str != "" do
-    {:ok, prepend_tag(model_str, opts)}
+    {:ok, build_model_spec(model_str, opts)}
   end
 
   def resolve_model(_request, opts) do
     case Keyword.get(opts, :model) do
       m when is_binary(m) and m != "" ->
-        {:ok, prepend_tag(m, opts)}
+        {:ok, build_model_spec(m, opts)}
 
       _ ->
         {:error, Error.new(:bad_request, "no model configured", provider: :req_llm)}
     end
   end
 
-  defp prepend_tag(model, opts) do
+  defp build_model_spec(model, opts) do
     case Keyword.get(opts, :req_llm_provider_tag) do
       tag when is_binary(tag) and tag != "" ->
         prefix = tag <> ":"
-        if String.starts_with?(model, prefix), do: model, else: prefix <> model
+
+        id =
+          if String.starts_with?(model, prefix),
+            do: String.replace_prefix(model, prefix, ""),
+            else: model
+
+        ReqLLM.model!(%{provider: String.to_existing_atom(tag), id: id})
 
       _ ->
         model

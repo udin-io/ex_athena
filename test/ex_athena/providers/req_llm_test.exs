@@ -75,40 +75,46 @@ defmodule ExAthena.Providers.ReqLLMTest do
   describe "resolve_model/2 prefixes the provider tag correctly" do
     alias ExAthena.Request
 
-    test "prepends tag to bare model id" do
-      assert Adapter.resolve_model(%Request{messages: [], model: "gpt-4"},
-               req_llm_provider_tag: "openai"
-             ) ==
-               {:ok, "openai:gpt-4"}
+    test "materializes a tagged inline %LLMDB.Model{} for bare model ids" do
+      # Materializing via `ReqLLM.model!/1` (rather than returning a tagged
+      # string) skips req_llm's catalog lookup, which avoids the
+      # `Using unverified model: openai:<id>` IO.warn for non-catalog ids
+      # like Ollama's `gemma:7b`.
+      assert {:ok, %LLMDB.Model{provider: :openai, id: "gpt-4"}} =
+               Adapter.resolve_model(%Request{messages: [], model: "gpt-4"},
+                 req_llm_provider_tag: "openai"
+               )
     end
 
-    test "prepends tag even when model id contains a colon (Ollama version separator)" do
+    test "preserves Ollama-style version-tag colons in the inline spec" do
       # Regression: Ollama model ids use `:` as the version separator
-      # (`qwen2.5-coder:14b`). The previous heuristic treated the colon as
-      # "already tagged" and shipped the bare name to req_llm, which then
-      # parsed `qwen2.5-coder` as a provider name and failed validation
-      # with `{:error, :bad_provider}` because of the `.`.
-      assert Adapter.resolve_model(
-               %Request{messages: [], model: "qwen2.5-coder:14b"},
-               req_llm_provider_tag: "openai"
-             ) == {:ok, "openai:qwen2.5-coder:14b"}
+      # (`qwen2.5-coder:14b`). The id must reach req_llm verbatim, including
+      # the colon — otherwise the openai adapter sees a truncated model id.
+      assert {:ok, %LLMDB.Model{provider: :openai, id: "qwen2.5-coder:14b"}} =
+               Adapter.resolve_model(
+                 %Request{messages: [], model: "qwen2.5-coder:14b"},
+                 req_llm_provider_tag: "openai"
+               )
 
-      assert Adapter.resolve_model(
-               %Request{messages: [], model: "qwen3-coder:30b"},
-               req_llm_provider_tag: "openai"
-             ) == {:ok, "openai:qwen3-coder:30b"}
+      assert {:ok, %LLMDB.Model{provider: :openai, id: "qwen3-coder:30b"}} =
+               Adapter.resolve_model(
+                 %Request{messages: [], model: "qwen3-coder:30b"},
+                 req_llm_provider_tag: "openai"
+               )
     end
 
-    test "does not double-prefix when model already starts with the tag" do
-      assert Adapter.resolve_model(
-               %Request{messages: [], model: "openai:gpt-4"},
-               req_llm_provider_tag: "openai"
-             ) == {:ok, "openai:gpt-4"}
+    test "strips a leading tag prefix when the caller passed a fully-formed spec" do
+      assert {:ok, %LLMDB.Model{provider: :openai, id: "gpt-4"}} =
+               Adapter.resolve_model(
+                 %Request{messages: [], model: "openai:gpt-4"},
+                 req_llm_provider_tag: "openai"
+               )
 
-      assert Adapter.resolve_model(
-               %Request{messages: [], model: "openai:qwen2.5-coder:14b"},
-               req_llm_provider_tag: "openai"
-             ) == {:ok, "openai:qwen2.5-coder:14b"}
+      assert {:ok, %LLMDB.Model{provider: :openai, id: "qwen2.5-coder:14b"}} =
+               Adapter.resolve_model(
+                 %Request{messages: [], model: "openai:qwen2.5-coder:14b"},
+                 req_llm_provider_tag: "openai"
+               )
     end
 
     test "passes the model through unchanged when no tag is set" do
@@ -117,11 +123,12 @@ defmodule ExAthena.Providers.ReqLLMTest do
     end
 
     test "falls back to opts[:model] when the request has no model and prefixes the tag" do
-      assert Adapter.resolve_model(
-               %Request{messages: [], model: nil},
-               model: "qwen2.5-coder:14b",
-               req_llm_provider_tag: "openai"
-             ) == {:ok, "openai:qwen2.5-coder:14b"}
+      assert {:ok, %LLMDB.Model{provider: :openai, id: "qwen2.5-coder:14b"}} =
+               Adapter.resolve_model(
+                 %Request{messages: [], model: nil},
+                 model: "qwen2.5-coder:14b",
+                 req_llm_provider_tag: "openai"
+               )
     end
 
     test "errors when no model is supplied anywhere" do
