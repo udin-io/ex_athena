@@ -130,6 +130,5 @@ defmodule ExAthenaTest do
     test "returns true" do
       assert ExAthena.supports_multimodal?() == true
     end
-
   end
 end
