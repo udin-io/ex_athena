@@ -129,4 +129,16 @@ defmodule ExAthena do
     |> Config.provider_module()
     |> apply(:capabilities, [])
   end
+
+  @doc """
+  Returns `true` if the library forwards multimodal content parts
+  (image / image_url / file) to the underlying provider.
+
+  Callers can use this to decide whether to build `ExAthena.Messages.ContentPart`
+  image or file parts, rather than falling back to text-only prompts.
+
+  See `ExAthena.Messages.ContentPart`.
+  """
+  @spec supports_multimodal?() :: true
+  def supports_multimodal?, do: true
 end
