@@ -17,16 +17,22 @@ defmodule ExAthena.Chat.Repl do
 
   @spec start(keyword()) :: :ok
   def start(opts \\ []) do
-    {:ok, _pid} = ensure_live_screen_started()
-    Owl.LiveScreen.add_block(:status, render: &render_status_block/1)
+    prior_log_level = Logger.level()
+    Logger.configure(level: :info)
 
-    session = opts |> Session.new() |> reconcile_model_with_ollama()
-    update_status(session)
-    print_banner(session)
+    try do
+      {:ok, _pid} = ensure_live_screen_started()
+      Owl.LiveScreen.add_block(:status, render: &render_status_block/1)
 
-    loop(session)
-  after
-    Owl.LiveScreen.flush()
+      session = opts |> Session.new() |> reconcile_model_with_ollama()
+      update_status(session)
+      print_banner(session)
+
+      loop(session)
+    after
+      Owl.LiveScreen.flush()
+      Logger.configure(level: prior_log_level)
+    end
   end
 
   defp reconcile_model_with_ollama(session) do
