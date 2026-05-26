@@ -294,5 +294,4 @@ defmodule ExAthena.ContextWindowTest do
                )
     end
   end
-
 end

@@ -27,7 +27,11 @@ defmodule ExAthena.ContextWindow do
 
         :miss ->
           try do
-            GenServer.call(__MODULE__, {:fetch, backend, base_url, model, key}, @timeout_ms + 1_000)
+            GenServer.call(
+              __MODULE__,
+              {:fetch, backend, base_url, model, key},
+              @timeout_ms + 1_000
+            )
           catch
             :exit, _ -> :error
           end
@@ -43,6 +47,12 @@ defmodule ExAthena.ContextWindow do
     {:ok, %{}}
   end
 
+  # Blocking HTTP is intentional: this call happens at most once per
+  # (backend, base_url, model) tuple across the process lifetime — subsequent
+  # calls hit the ETS cache directly and never reach the GenServer. Serialising
+  # through the GenServer also prevents duplicate HTTP requests when two callers
+  # race on the same key. The 3 s HTTP timeout is well within the 4 s
+  # GenServer call timeout set by the caller.
   @impl GenServer
   def handle_call({:fetch, backend, base_url, model, key}, _from, state) do
     case ets_lookup(key) do
@@ -71,9 +81,13 @@ defmodule ExAthena.ContextWindow do
   end
 
   defp ets_lookup(key) do
-    case :ets.lookup(@table, key) do
-      [{^key, value}] -> {:ok, value}
-      [] -> :miss
+    try do
+      case :ets.lookup(@table, key) do
+        [{^key, value}] -> {:ok, value}
+        [] -> :miss
+      end
+    rescue
+      ArgumentError -> :miss
     end
   end
 
@@ -154,8 +168,10 @@ defmodule ExAthena.ContextWindow do
   end
 
   defp strip_provider_prefix(model, nil), do: model
+
   defp strip_provider_prefix(model, tag) when is_binary(tag) do
     prefix = tag <> ":"
+
     if String.starts_with?(model, prefix),
       do: String.replace_prefix(model, prefix, ""),
       else: model

@@ -797,6 +797,7 @@ defmodule ExAthena.Providers.ReqLLM do
 
   defp strip_provider_prefix(model, tag) do
     prefix = tag <> ":"
+
     if String.starts_with?(model, prefix),
       do: String.replace_prefix(model, prefix, ""),
       else: model
