@@ -67,8 +67,14 @@ defmodule ExAthena.Providers.ReqLLM do
     base = capabilities()
 
     case resolve_llmdb_context(opts) do
-      {:ok, context} -> %{base | max_tokens: context}
-      :error -> base
+      {:ok, context} ->
+        %{base | max_tokens: context}
+
+      :error ->
+        case ExAthena.ContextWindow.lookup(opts) do
+          {:ok, context} -> %{base | max_tokens: context}
+          :error -> base
+        end
     end
   end
 
