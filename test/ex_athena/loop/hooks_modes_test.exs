@@ -49,6 +49,7 @@ defmodule ExAthena.Loop.HooksModesTest do
       assert :PermissionDenied in events
       assert :SubagentStart in events
       assert :SubagentStop in events
+      assert :PreIteration in events
       assert :PreCompact in events
       assert :PreCompactStage in events
       assert :PostCompact in events
