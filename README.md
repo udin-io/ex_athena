@@ -66,6 +66,27 @@ only if you want `mix athena.chat` or `mix athena.web`. Then run
 `mix ex_athena.install` once to wire up defaults, or configure manually (see
 [Configuration](#configuration)).
 
+## Configuring providers
+
+Provider settings resolve in three layers, highest priority first:
+
+1. **Per-call opts** — `ExAthena.query("…", provider: :groq, model: "…")` — overrides everything.
+2. **Application config** — `config :ex_athena, :ollama, model: "…"` in `config.exs`.
+3. **JSON files** — `~/.config/ex_athena/providers/*.json` — named providers loaded at startup.
+
+**Quickstart with a JSON provider (Groq):**
+
+```bash
+mkdir -p ~/.config/ex_athena/providers
+cp priv/provider_examples/groq.json ~/.config/ex_athena/providers/
+export GROQ_API_KEY=gsk_…
+mix athena.chat
+```
+
+ExAthena reads `groq.json` at startup and makes `"groq"` available by name. Full schema,
+security notes, and example files for Groq, Together, Fireworks, DeepSeek, and OpenRouter are
+in [guides/providers.md](guides/providers.md).
+
 ## Quick start
 
 ```elixir
