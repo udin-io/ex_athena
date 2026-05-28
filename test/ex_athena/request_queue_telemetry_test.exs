@@ -90,7 +90,7 @@ defmodule ExAthena.RequestQueueTelemetryTest do
       RequestQueue.release(:mock)
     end
 
-    test "measurements are maps (may be empty, never nil)" do
+    test "measurements carry expected fields" do
       assert {:ok, _} = ExAthena.query("hi", provider: :mock, mock: [text: "ok"])
 
       assert_receive {:telemetry, [:ex_athena, :request_queue, :wait], wait_m, _}
@@ -98,8 +98,26 @@ defmodule ExAthena.RequestQueueTelemetryTest do
       assert_receive {:telemetry, [:ex_athena, :request_queue, :released], rel_m, _}
 
       assert is_map(wait_m)
-      assert is_map(acq_m)
-      assert is_map(rel_m)
+      assert is_integer(acq_m.wait_ms) and acq_m.wait_ms >= 0
+      assert is_integer(acq_m.depth) and acq_m.depth >= 0
+      assert is_integer(rel_m.depth) and rel_m.depth >= 0
+    end
+
+    test ":timeout measurement carries waited_ms" do
+      Application.put_env(:ex_athena, :mock, request_queue: [max_depth: 1])
+      :ok = RequestQueue.acquire(:mock)
+
+      assert {:error, :request_queue_timeout} =
+               ExAthena.query("hi",
+                 provider: :mock,
+                 mock: [text: "never"],
+                 queue_timeout: 20
+               )
+
+      assert_receive {:telemetry, [:ex_athena, :request_queue, :timeout], timeout_m, _}
+      assert is_integer(timeout_m.waited_ms) and timeout_m.waited_ms >= 0
+
+      RequestQueue.release(:mock)
     end
   end
 

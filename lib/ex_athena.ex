@@ -209,11 +209,18 @@ defmodule ExAthena do
   defp with_request_queue(provider_atom, true, timeout, fun)
        when is_atom(provider_atom) and not is_nil(provider_atom) do
     if Config.request_queue_enabled?() do
+      start_ms = System.monotonic_time(:millisecond)
       Telemetry.event([:ex_athena, :request_queue, :wait], %{}, %{provider: provider_atom})
 
       case do_acquire(provider_atom, timeout) do
         :ok ->
-          Telemetry.event([:ex_athena, :request_queue, :acquired], %{}, %{provider: provider_atom})
+          wait_ms = System.monotonic_time(:millisecond) - start_ms
+
+          Telemetry.event(
+            [:ex_athena, :request_queue, :acquired],
+            %{wait_ms: wait_ms, depth: RequestQueue.depth(provider_atom)},
+            %{provider: provider_atom}
+          )
 
           try do
             fun.()
@@ -222,13 +229,20 @@ defmodule ExAthena do
 
             Telemetry.event(
               [:ex_athena, :request_queue, :released],
-              %{},
+              %{depth: RequestQueue.depth(provider_atom)},
               %{provider: provider_atom}
             )
           end
 
         {:error, :timeout} ->
-          Telemetry.event([:ex_athena, :request_queue, :timeout], %{}, %{provider: provider_atom})
+          waited_ms = System.monotonic_time(:millisecond) - start_ms
+
+          Telemetry.event(
+            [:ex_athena, :request_queue, :timeout],
+            %{waited_ms: waited_ms},
+            %{provider: provider_atom}
+          )
+
           {:error, :request_queue_timeout}
       end
     else
@@ -243,7 +257,9 @@ defmodule ExAthena do
     try do
       RequestQueue.acquire(provider_atom, timeout)
     catch
-      :exit, _ -> {:error, :timeout}
+      :exit, _ ->
+        RequestQueue.cancel_acquire(provider_atom)
+        {:error, :timeout}
     end
   end
 end

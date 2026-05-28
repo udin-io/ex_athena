@@ -67,13 +67,35 @@ defmodule ExAthena.RequestQueue do
   Return the number of active (acquired) slots for `provider`.
 
   Reads directly from the ETS table; never blocks the caller and never goes
-  through the GenServer mailbox.
+  through the GenServer mailbox. Returns `0` when the queue is disabled (ETS
+  table does not exist).
   """
   @spec depth(atom()) :: non_neg_integer()
   def depth(provider) do
-    case :ets.lookup(@table, provider) do
-      [{^provider, count}] -> count
-      [] -> 0
+    case :ets.whereis(@table) do
+      :undefined ->
+        0
+
+      _ ->
+        case :ets.lookup(@table, provider) do
+          [{^provider, count}] -> count
+          [] -> 0
+        end
+    end
+  end
+
+  @doc """
+  Cancel any pending acquire for the calling process on `provider`.
+
+  Called automatically by the entry-point helpers when a `GenServer.call`
+  timeout fires so that stale waiting entries do not prevent depth from
+  decrementing on the next `release/1`.
+  """
+  @spec cancel_acquire(atom()) :: :ok
+  def cancel_acquire(provider) do
+    case Process.whereis(__MODULE__) do
+      nil -> :ok
+      _pid -> GenServer.cast(__MODULE__, {:cancel_acquire, provider, self()})
     end
   end
 
@@ -114,6 +136,23 @@ defmodule ExAthena.RequestQueue do
     waiting =
       Map.new(state.waiting, fn {provider, queue} ->
         {provider, Enum.reject(queue, fn {r, _from} -> r == ref end)}
+      end)
+
+    {:noreply, %{state | waiting: waiting}}
+  end
+
+  @impl GenServer
+  def handle_cast({:cancel_acquire, provider, pid}, state) do
+    waiting =
+      Map.update(state.waiting, provider, [], fn queue ->
+        Enum.reject(queue, fn {ref, {from_pid, _tag}} ->
+          if from_pid == pid do
+            Process.demonitor(ref, [:flush])
+            true
+          else
+            false
+          end
+        end)
       end)
 
     {:noreply, %{state | waiting: waiting}}
