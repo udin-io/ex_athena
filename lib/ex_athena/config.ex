@@ -165,17 +165,30 @@ defmodule ExAthena.Config do
     * `:module` — the implementing module
     * `:source` — `:builtin` or `:registry`
   """
-  @spec list_providers() :: [%{name: String.t(), module: module(), source: :builtin | :registry}]
+  @spec list_providers() :: [
+          %{
+            name: String.t(),
+            display_name: String.t(),
+            module: module(),
+            source: :builtin | :registry
+          }
+        ]
   def list_providers do
     builtin_entries =
       Enum.map(@builtin_providers, fn {atom, mod} ->
-        %{name: Atom.to_string(atom), module: mod, source: :builtin}
+        name = Atom.to_string(atom)
+        %{name: name, display_name: name, module: mod, source: :builtin}
       end)
 
     registry_entries =
       registry_list()
       |> Enum.map(fn spec ->
-        %{name: spec.name, module: spec.module, source: :registry}
+        %{
+          name: spec.name,
+          display_name: spec.display_name || spec.name,
+          module: spec.module,
+          source: :registry
+        }
       end)
 
     builtin_entries ++ registry_entries
