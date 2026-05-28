@@ -235,6 +235,102 @@ defmodule ExAthena.ConfigTest do
     end
   end
 
+  describe "pop_provider!/1 threads registry spec fields" do
+    test "threads base_url from spec into opts" do
+      dir = tmp_dir_create()
+
+      write_json(dir, "openrouter.json", %{
+        name: "openrouter",
+        adapter: "req_llm",
+        req_llm_provider_tag: "openrouter",
+        base_url: "https://openrouter.ai/api/v1"
+      })
+
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      {mod, opts} = Config.pop_provider!(provider: :openrouter)
+      assert mod == ExAthena.Providers.ReqLLM
+      assert opts[:req_llm_provider_tag] == "openrouter"
+      assert opts[:base_url] == "https://openrouter.ai/api/v1"
+    end
+
+    test "threads extra_headers from spec into opts" do
+      dir = tmp_dir_create()
+
+      write_json(dir, "openrouter.json", %{
+        name: "openrouter",
+        adapter: "req_llm",
+        extra_headers: %{"HTTP-Referer" => "https://myapp.io"}
+      })
+
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      {_mod, opts} = Config.pop_provider!(provider: :openrouter)
+      assert opts[:extra_headers] == %{"HTTP-Referer" => "https://myapp.io"}
+    end
+
+    test "does not thread extra_headers when map is empty" do
+      dir = tmp_dir_create()
+      write_json(dir, "groq.json", %{name: "groq", adapter: "req_llm", extra_headers: %{}})
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      {_mod, opts} = Config.pop_provider!(provider: :groq)
+      refute Keyword.has_key?(opts, :extra_headers)
+    end
+
+    test "threads api_key from spec into opts" do
+      dir = tmp_dir_create()
+      write_json(dir, "groq.json", %{name: "groq", adapter: "req_llm", api_key: "gsk-abc123"})
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      {_mod, opts} = Config.pop_provider!(provider: :groq)
+      assert opts[:api_key] == "gsk-abc123"
+    end
+
+    test "resolves api_key from api_key_env" do
+      env_var = "EX_ATHENA_TEST_API_KEY_#{System.unique_integer([:positive])}"
+      System.put_env(env_var, "resolved-key-value")
+      on_exit(fn -> System.delete_env(env_var) end)
+
+      dir = tmp_dir_create()
+
+      write_json(dir, "custom.json", %{
+        name: "custom-prov",
+        adapter: "req_llm",
+        api_key_env: env_var
+      })
+
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      {_mod, opts} = Config.pop_provider!(provider: :"custom-prov")
+      assert opts[:api_key] == "resolved-key-value"
+    end
+
+    test "api_key in opts wins over spec api_key" do
+      dir = tmp_dir_create()
+      write_json(dir, "groq.json", %{name: "groq", adapter: "req_llm", api_key: "spec-key"})
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      {_mod, opts} = Config.pop_provider!(provider: :groq, api_key: "call-key")
+      assert opts[:api_key] == "call-key"
+    end
+
+    test "base_url in opts wins over spec base_url" do
+      dir = tmp_dir_create()
+
+      write_json(dir, "groq.json", %{
+        name: "groq",
+        adapter: "req_llm",
+        base_url: "https://api.groq.com/openai/v1"
+      })
+
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      {_mod, opts} = Config.pop_provider!(provider: :groq, base_url: "https://override.example")
+      assert opts[:base_url] == "https://override.example"
+    end
+  end
+
   # ── Helpers for registry-based tests ─────────────────────────────
 
   defp tmp_dir do

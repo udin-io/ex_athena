@@ -42,6 +42,58 @@ defmodule ExAthena.ProviderSpecTest do
       assert spec.metadata == %{}
     end
 
+    test "parses extra_headers map" do
+      json = %{
+        "name" => "openrouter",
+        "adapter" => "req_llm",
+        "extra_headers" => %{"HTTP-Referer" => "https://myapp.io", "X-Title" => "MyApp"}
+      }
+
+      assert {:ok, spec} = ProviderSpec.from_json(json)
+      assert spec.extra_headers == %{"HTTP-Referer" => "https://myapp.io", "X-Title" => "MyApp"}
+    end
+
+    test "defaults extra_headers to empty map when not provided" do
+      assert {:ok, spec} = ProviderSpec.from_json(%{"name" => "x", "adapter" => "mock"})
+      assert spec.extra_headers == %{}
+    end
+
+    test "parses api_key_env" do
+      json = %{"name" => "x", "adapter" => "req_llm", "api_key_env" => "OPENROUTER_API_KEY"}
+      assert {:ok, spec} = ProviderSpec.from_json(json)
+      assert spec.api_key_env == "OPENROUTER_API_KEY"
+    end
+
+    test "defaults api_key_env to nil when not provided" do
+      assert {:ok, spec} = ProviderSpec.from_json(%{"name" => "x", "adapter" => "mock"})
+      assert spec.api_key_env == nil
+    end
+
+    test "parses model_discovery block" do
+      json = %{
+        "name" => "x",
+        "adapter" => "req_llm",
+        "model_discovery" => %{
+          "url" => "https://openrouter.ai/api/v1/models",
+          "path" => "data.id",
+          "ttl_seconds" => 300
+        }
+      }
+
+      assert {:ok, spec} = ProviderSpec.from_json(json)
+
+      assert spec.model_discovery == %{
+               "url" => "https://openrouter.ai/api/v1/models",
+               "path" => "data.id",
+               "ttl_seconds" => 300
+             }
+    end
+
+    test "defaults model_discovery to nil when not provided" do
+      assert {:ok, spec} = ProviderSpec.from_json(%{"name" => "x", "adapter" => "mock"})
+      assert spec.model_discovery == nil
+    end
+
     test "parses mock adapter" do
       assert {:ok, spec} = ProviderSpec.from_json(%{"name" => "test", "adapter" => "mock"})
       assert spec.module == ExAthena.Providers.Mock
