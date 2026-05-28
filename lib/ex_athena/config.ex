@@ -26,7 +26,9 @@ defmodule ExAthena.Config do
   | `:req_llm` | `ExAthena.Providers.ReqLLM` |
   | `:mock` | `ExAthena.Providers.Mock` |
 
-  You may also pass any module that implements `ExAthena.Provider` directly.
+  You may also pass any module that implements `ExAthena.Provider` directly, or
+  define custom providers by placing JSON files in `~/.config/ex_athena/providers/`
+  (loaded at startup by `ExAthena.ProviderRegistry`).
   """
 
   @builtin_providers %{
@@ -102,14 +104,30 @@ defmodule ExAthena.Config do
   Translate an ExAthena provider atom into the `req_llm` provider tag used in
   `"tag:model-id"` specs. Returns `nil` when the atom doesn't map to req_llm
   (e.g. `:mock`, or a user-supplied module).
+
+  For registry-loaded providers the tag is taken from the spec's
+  `req_llm_provider_tag` field when the static map has no entry.
   """
   @spec req_llm_provider_tag(atom() | module()) :: String.t() | nil
-  def req_llm_provider_tag(atom) when is_atom(atom),
-    do: Map.get(@req_llm_provider_tag, atom)
+  def req_llm_provider_tag(atom) when is_atom(atom) do
+    Map.get(@req_llm_provider_tag, atom) ||
+      case registry_lookup(atom) do
+        {:ok, spec} -> spec.req_llm_provider_tag
+        :error -> nil
+      end
+  end
 
   def req_llm_provider_tag(_), do: nil
 
-  @doc "Resolve a provider atom (or module) to its implementing module."
+  @doc """
+  Resolve a provider atom (or module) to its implementing module.
+
+  Resolution order:
+    1. Built-in provider map (compile-time constant, fastest path).
+    2. `ExAthena.ProviderRegistry` — for providers loaded from JSON config files.
+    3. Module check — accepts any atom that is a loaded module implementing
+       `ExAthena.Provider`.
+  """
   @spec provider_module(atom() | module()) :: module()
   def provider_module(mod) when is_atom(mod) do
     case Map.fetch(@builtin_providers, mod) do
@@ -117,13 +135,19 @@ defmodule ExAthena.Config do
         module
 
       :error ->
-        if Code.ensure_loaded?(mod) and function_exported?(mod, :capabilities, 0) do
-          mod
-        else
-          raise ArgumentError,
-                "unknown provider: #{inspect(mod)}. Known: " <>
-                  inspect(Map.keys(@builtin_providers)) <>
-                  ", or pass a module implementing ExAthena.Provider."
+        case registry_lookup(mod) do
+          {:ok, spec} ->
+            spec.module
+
+          :error ->
+            if Code.ensure_loaded?(mod) and function_exported?(mod, :capabilities, 0) do
+              mod
+            else
+              raise ArgumentError,
+                    "unknown provider: #{inspect(mod)}. Known: " <>
+                      inspect(Map.keys(@builtin_providers)) <>
+                      ", or pass a module implementing ExAthena.Provider."
+            end
         end
     end
   end
@@ -131,6 +155,31 @@ defmodule ExAthena.Config do
   @doc false
   @spec builtin_providers() :: %{atom() => module()}
   def builtin_providers, do: @builtin_providers
+
+  @doc """
+  Return all known providers: built-in atoms plus any specs loaded by
+  `ExAthena.ProviderRegistry`.
+
+  Each entry is a map with:
+    * `:name` — string name of the provider
+    * `:module` — the implementing module
+    * `:source` — `:builtin` or `:registry`
+  """
+  @spec list_providers() :: [%{name: String.t(), module: module(), source: :builtin | :registry}]
+  def list_providers do
+    builtin_entries =
+      Enum.map(@builtin_providers, fn {atom, mod} ->
+        %{name: Atom.to_string(atom), module: mod, source: :builtin}
+      end)
+
+    registry_entries =
+      registry_list()
+      |> Enum.map(fn spec ->
+        %{name: spec.name, module: spec.module, source: :registry}
+      end)
+
+    builtin_entries ++ registry_entries
+  end
 
   @doc """
   Look up a single configuration value for `provider_module` with the tiered
@@ -200,5 +249,19 @@ defmodule ExAthena.Config do
       |> Application.get_env(atom, [])
       |> Keyword.get(key)
     end)
+  end
+
+  defp registry_lookup(name) when is_atom(name) do
+    case Process.whereis(ExAthena.ProviderRegistry) do
+      nil -> :error
+      _pid -> ExAthena.ProviderRegistry.lookup(name)
+    end
+  end
+
+  defp registry_list do
+    case Process.whereis(ExAthena.ProviderRegistry) do
+      nil -> []
+      _pid -> ExAthena.ProviderRegistry.list()
+    end
   end
 end
