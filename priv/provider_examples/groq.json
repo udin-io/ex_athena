@@ -4,7 +4,7 @@
   "req_llm_provider_tag": "groq",
   "base_url": "https://api.groq.com/openai/v1",
   "api_key_env": "GROQ_API_KEY",
-  "default_model": "llama3-8b-8192",
+  "default_model": "llama-3.3-70b-versatile",
   "model_discovery": {
     "url": "https://api.groq.com/openai/v1/models",
     "path": "data.id",

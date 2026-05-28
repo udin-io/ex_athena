@@ -15,3 +15,6 @@ config :ex_athena, enable_provider_registry: false
 # Disable implicit LSP diagnostics hook globally in tests so existing tests
 # are not affected. Individual ImplicitDiagnostics tests opt back in.
 config :ex_athena, lsp_implicit_diagnostics_enabled: false
+
+# Disable request queue supervisor; individual tests opt in via start_supervised!.
+config :ex_athena, :request_queue, enabled: false

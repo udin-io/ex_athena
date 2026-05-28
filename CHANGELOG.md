@@ -7,6 +7,49 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+### Added
+
+- **Request queue wired into all public entry points.** `query/2`, `stream/3`,
+  `run/2`, and `extract_structured/2` now acquire a semaphore slot before
+  calling the provider and release it on every exit path — including success,
+  error return, and exception propagation. For streaming, the slot is held for
+  the full duration of the stream. Opt out per call with `queue: false`; set
+  `queue_timeout: ms` to override the default 5 s acquisition timeout. No
+  behaviour change when `config :ex_athena, :request_queue, enabled: true` is
+  not set (opt-in, default disabled).
+
+- **Request queue telemetry.** Four new events emitted around slot
+  acquire/release: `[:ex_athena, :request_queue, :wait]`,
+  `[:ex_athena, :request_queue, :acquired]`,
+  `[:ex_athena, :request_queue, :released]`, and
+  `[:ex_athena, :request_queue, :timeout]`. All carry `%{provider: atom}`
+  metadata and conform to the existing telemetry shape so they wire directly
+  into OpenTelemetry.
+
+- **Runtime JSON provider config + example providers (#111).** Drop a `*.json`
+  file into `~/.config/ex_athena/providers/` to define a named provider at
+  startup with no changes to `config.exs`. The new `ExAthena.ProviderRegistry`
+  reads every file at boot, validates the schema, and registers each provider
+  under its `name` string. Files that fail validation are skipped with a warning
+  — a bad file does not prevent the application from starting. Five ready-to-copy
+  example providers ship in `priv/provider_examples/`:
+  - **`openrouter.json`** — OpenRouter gateway; routes to hundreds of models
+    from Anthropic, Google, Meta, and Mistral through a single OpenAI-compatible
+    endpoint. Also registered as the `:openrouter` built-in atom for
+    `config.exs` users.
+  - **`groq.json`** — Groq LPU inference; ultra-low-latency open-source models
+    including Llama 3.3 and Mixtral.
+  - **`together.json`** — Together AI; broad catalog of hosted open-source
+    models with optional fine-tuning support.
+  - **`fireworks.json`** — Fireworks AI; fast serverless inference for popular
+    open-source models.
+  - **`deepseek.json`** — DeepSeek; cost-effective inference for DeepSeek-series
+    models including the reasoning variant.
+
+  See the [Providers guide](guides/providers.md#runtime-json-config) for the
+  full schema reference and the new [Upgrading guide](guides/upgrading.md) for
+  migration notes (existing `config.exs` setups require no changes).
+
 ## v0.14.0 — Mid-loop intervention hook + structured completion signal
 
 Two control-flow features for steering long agent loops: a per-iteration hook for

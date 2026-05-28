@@ -11,7 +11,8 @@ defmodule ExAthena.ConfigTest do
     :claude,
     :anthropic,
     :req_llm,
-    :gemini
+    :gemini,
+    :openrouter
   ]
 
   setup do
@@ -124,6 +125,7 @@ defmodule ExAthena.ConfigTest do
       assert ExAthena.Providers.ReqLLM = Config.provider_module(:claude)
       assert ExAthena.Providers.Mock = Config.provider_module(:mock)
       assert ExAthena.Providers.ReqLLM = Config.provider_module(:gemini)
+      assert ExAthena.Providers.ReqLLM = Config.provider_module(:openrouter)
     end
 
     test "accepts modules that implement the behaviour" do
@@ -171,6 +173,10 @@ defmodule ExAthena.ConfigTest do
       start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
 
       assert nil == Config.req_llm_provider_tag(:"my-mock")
+    end
+
+    test "returns openai for :openrouter" do
+      assert "openai" = Config.req_llm_provider_tag(:openrouter)
     end
   end
 
@@ -346,5 +352,92 @@ defmodule ExAthena.ConfigTest do
 
   defp write_json(dir, filename, data) do
     File.write!(Path.join(dir, filename), Jason.encode!(data))
+  end
+
+  describe "pop_provider!/1 with :openrouter" do
+    test "resolves to ReqLLM and injects openai req_llm_provider_tag" do
+      assert {ExAthena.Providers.ReqLLM, rest} =
+               Config.pop_provider!(
+                 provider: :openrouter,
+                 base_url: "https://openrouter.ai/api/v1",
+                 model: "anthropic/claude-3.5-sonnet"
+               )
+
+      assert rest[:req_llm_provider_tag] == "openai"
+      assert rest[:model] == "anthropic/claude-3.5-sonnet"
+      refute Keyword.has_key?(rest, :openai_compatible_backend)
+    end
+  end
+
+  describe "request_queue_max_depth/1" do
+    setup do
+      on_exit(fn ->
+        Application.delete_env(:ex_athena, :request_queue)
+
+        for atom <- @all_provider_atoms,
+            do: Application.delete_env(:ex_athena, atom)
+      end)
+
+      :ok
+    end
+
+    test "returns built-in defaults for known local providers" do
+      assert Config.request_queue_max_depth(:ollama) == 2
+      assert Config.request_queue_max_depth(:llamacpp) == 1
+    end
+
+    test "returns 3 for :exo" do
+      assert Config.request_queue_max_depth(:exo) == 3
+    end
+
+    test "returns 10 for cloud providers" do
+      assert Config.request_queue_max_depth(:openai) == 10
+      assert Config.request_queue_max_depth(:anthropic) == 10
+      assert Config.request_queue_max_depth(:claude) == 10
+      assert Config.request_queue_max_depth(:gemini) == 10
+      assert Config.request_queue_max_depth(:openrouter) == 10
+    end
+
+    test "returns 10 for unknown providers" do
+      assert Config.request_queue_max_depth(:some_unknown_provider) == 10
+    end
+
+    test "per-provider config overrides built-in default" do
+      Application.put_env(:ex_athena, :ollama, request_queue: [max_depth: 5])
+      assert Config.request_queue_max_depth(:ollama) == 5
+    end
+
+    test "global max_depth overrides built-in default" do
+      Application.put_env(:ex_athena, :request_queue, max_depth: 7)
+      assert Config.request_queue_max_depth(:ollama) == 7
+    end
+
+    test "per-provider config wins over global max_depth" do
+      Application.put_env(:ex_athena, :ollama, request_queue: [max_depth: 5])
+      Application.put_env(:ex_athena, :request_queue, max_depth: 7)
+      assert Config.request_queue_max_depth(:ollama) == 5
+    end
+  end
+
+  describe "request_queue_enabled?/0" do
+    setup do
+      on_exit(fn -> Application.delete_env(:ex_athena, :request_queue) end)
+      :ok
+    end
+
+    test "returns false when not configured" do
+      Application.delete_env(:ex_athena, :request_queue)
+      refute Config.request_queue_enabled?()
+    end
+
+    test "returns false when explicitly disabled" do
+      Application.put_env(:ex_athena, :request_queue, enabled: false)
+      refute Config.request_queue_enabled?()
+    end
+
+    test "returns true when enabled" do
+      Application.put_env(:ex_athena, :request_queue, enabled: true)
+      assert Config.request_queue_enabled?()
+    end
   end
 end
