@@ -79,6 +79,8 @@ defmodule ExAthena.MixProject do
         "CHANGELOG.md",
         "guides/getting_started.md",
         "guides/providers.md",
+        "guides/tui.md",
+        "guides/web.md",
         "guides/gemini.md",
         "guides/multimodal.md",
         "guides/tool_calls.md",
