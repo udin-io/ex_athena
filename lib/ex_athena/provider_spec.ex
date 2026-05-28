@@ -37,7 +37,8 @@ defmodule ExAthena.ProviderSpec do
           display_name: String.t() | nil,
           api_key_prompt: boolean(),
           api_key_env: String.t() | nil,
-          extra_headers: map()
+          extra_headers: map(),
+          model_discovery: map() | nil
         }
 
   defstruct [
@@ -50,6 +51,7 @@ defmodule ExAthena.ProviderSpec do
     :default_model,
     :display_name,
     :api_key_env,
+    :model_discovery,
     metadata: %{},
     api_key_prompt: false,
     extra_headers: %{}
@@ -78,7 +80,8 @@ defmodule ExAthena.ProviderSpec do
         display_name: Map.get(json, "display_name"),
         api_key_prompt: Map.get(json, "api_key_prompt", false),
         api_key_env: Map.get(json, "api_key_env"),
-        extra_headers: Map.get(json, "extra_headers", %{})
+        extra_headers: Map.get(json, "extra_headers", %{}),
+        model_discovery: Map.get(json, "model_discovery")
       }
 
       {:ok, spec}
