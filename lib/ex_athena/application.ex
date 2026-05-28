@@ -46,6 +46,13 @@ defmodule ExAthena.Application do
         ]
 
     children =
+      if Application.get_env(:ex_athena, :enable_provider_registry, true) do
+        children ++ [ExAthena.ProviderRegistry]
+      else
+        children
+      end
+
+    children =
       if Application.get_env(:ex_athena, :enable_lsp, true) do
         children ++ [ExAthena.Lsp.Supervisor]
       else

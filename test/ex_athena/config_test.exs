@@ -146,5 +146,109 @@ defmodule ExAthena.ConfigTest do
     test "returns google for :gemini" do
       assert "google" = Config.req_llm_provider_tag(:gemini)
     end
+
+    test "returns nil for unknown atom when registry is not running" do
+      assert nil == Config.req_llm_provider_tag(:nonexistent_provider)
+    end
+
+    test "returns tag from registry spec when registry has the provider" do
+      dir = tmp_dir_create()
+
+      write_json(dir, "custom.json", %{
+        name: "my-local",
+        adapter: "req_llm",
+        req_llm_provider_tag: "openai"
+      })
+
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      assert "openai" == Config.req_llm_provider_tag(:"my-local")
+    end
+
+    test "returns nil for registry spec without req_llm_provider_tag" do
+      dir = tmp_dir_create()
+      write_json(dir, "custom.json", %{name: "my-mock", adapter: "mock"})
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      assert nil == Config.req_llm_provider_tag(:"my-mock")
+    end
+  end
+
+  describe "provider_module/1 with registry fallthrough" do
+    test "resolves registry-loaded providers by atom name" do
+      dir = tmp_dir_create()
+      write_json(dir, "custom.json", %{name: "my-mock", adapter: "mock"})
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      assert ExAthena.Providers.Mock = Config.provider_module(:"my-mock")
+    end
+
+    test "built-in providers still resolve when registry is running" do
+      dir = tmp_dir_create()
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      assert ExAthena.Providers.Mock = Config.provider_module(:mock)
+      assert ExAthena.Providers.ReqLLM = Config.provider_module(:ollama)
+    end
+
+    test "raises for unknown atom not in registry" do
+      dir = tmp_dir_create()
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      assert_raise ArgumentError, ~r/unknown provider/, fn ->
+        Config.provider_module(:totally_unknown)
+      end
+    end
+  end
+
+  describe "list_providers/0" do
+    test "includes all built-in provider atoms" do
+      providers = Config.list_providers()
+      names = Enum.map(providers, & &1.name)
+      assert "ollama" in names
+      assert "mock" in names
+      assert "openai" in names
+      assert "gemini" in names
+    end
+
+    test "all built-in entries have source: :builtin" do
+      providers = Config.list_providers()
+      builtin = Enum.filter(providers, &(&1.source == :builtin))
+      assert length(builtin) == map_size(ExAthena.Config.builtin_providers())
+    end
+
+    test "includes registry specs when registry is running" do
+      dir = tmp_dir_create()
+      write_json(dir, "custom.json", %{name: "custom-prov", adapter: "mock"})
+      start_supervised!({ExAthena.ProviderRegistry, providers_dir: dir})
+
+      providers = Config.list_providers()
+      registry_entry = Enum.find(providers, &(&1.name == "custom-prov"))
+      assert registry_entry != nil
+      assert registry_entry.source == :registry
+      assert registry_entry.module == ExAthena.Providers.Mock
+    end
+
+    test "returns only built-ins when registry is not running" do
+      providers = Config.list_providers()
+      assert Enum.all?(providers, &(&1.source == :builtin))
+    end
+  end
+
+  # ── Helpers for registry-based tests ─────────────────────────────
+
+  defp tmp_dir do
+    Path.join(System.tmp_dir!(), "ex_athena_cfg_#{System.unique_integer([:positive])}")
+  end
+
+  defp tmp_dir_create do
+    dir = tmp_dir()
+    File.mkdir_p!(dir)
+    on_exit(fn -> File.rm_rf!(dir) end)
+    dir
+  end
+
+  defp write_json(dir, filename, data) do
+    File.write!(Path.join(dir, filename), Jason.encode!(data))
   end
 end
