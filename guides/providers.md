@@ -204,6 +204,7 @@ not prevent others from loading and the application still starts.
 | `api_key` | string | — | `null` | Static API key (prefer `api_key_env` — see Security) |
 | `api_key_env` | string | — | `null` | Environment variable name; key is read at startup |
 | `default_model` | string | — | `null` | Model used when no `model:` is supplied per-call |
+| `api_key_prompt` | boolean | — | `false` | When `true`, the web UI sidebar shows an inline API-key password field; key is held in socket state and never written to disk. Web UI only — has no effect in the TUI. |
 | `metadata` | object | — | `{}` | Arbitrary pass-through data; ignored by ExAthena |
 
 ### Security

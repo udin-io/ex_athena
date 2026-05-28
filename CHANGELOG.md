@@ -9,7 +9,7 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
-- **Runtime JSON provider config + example providers (#110).** Drop a `*.json`
+- **Runtime JSON provider config + example providers (#111).** Drop a `*.json`
   file into `~/.config/ex_athena/providers/` to define a named provider at
   startup with no changes to `config.exs`. The new `ExAthena.ProviderRegistry`
   reads every file at boot, validates the schema, and registers each provider

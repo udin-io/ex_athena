@@ -112,6 +112,10 @@ The key is read once at application startup and held in memory for the
 session — it is never written to disk by the TUI. Use `api_key_env`
 instead of a literal `api_key` field for any file that may be shared.
 
+The `api_key_prompt: true` field has no effect in the TUI — it only
+activates the inline key field in the web sidebar (`mix athena.web`).
+See the [Web UI guide](web.md#inline-api-key-prompt) for details.
+
 See the [providers guide](providers.md) for the full JSON schema and
 ready-to-copy examples for Groq, Together AI, Fireworks, DeepSeek, and
 others.
