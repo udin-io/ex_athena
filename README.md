@@ -298,6 +298,8 @@ a chosen UUID. See [sessions + checkpoints](guides/sessions_and_checkpoints.md).
 
 - [Getting started](guides/getting_started.md)
 - [Providers](guides/providers.md)
+- [Terminal chat (mix athena.chat)](guides/tui.md)
+- [Browser chat (mix athena.web)](guides/web.md)
 - [Multimodal (vision)](guides/multimodal.md)
 - [Gemini setup](guides/gemini.md)
 - [Tool calls](guides/tool_calls.md)
