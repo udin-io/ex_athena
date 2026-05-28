@@ -42,7 +42,8 @@ defmodule ExAthena.Application do
         [
           ExAthena.Sessions.Stores.InMemory,
           ExAthena.Sessions.Stores.ETS,
-          ExAthena.ContextWindow
+          ExAthena.ContextWindow,
+          ExAthena.ModelDiscovery
         ]
 
     children =

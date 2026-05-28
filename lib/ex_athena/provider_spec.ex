@@ -6,18 +6,44 @@ defmodule ExAthena.ProviderSpec do
 
   ```json
   {
-    "name": "my-ollama",
+    "name": "openrouter",
     "adapter": "req_llm",
-    "req_llm_provider_tag": "openai",
-    "base_url": "http://localhost:11434/v1",
-    "api_key": "optional",
-    "default_model": "qwen3-coder",
+    "req_llm_provider_tag": "openrouter",
+    "base_url": "https://openrouter.ai/api/v1",
+    "api_key": "sk-or-...",
+    "api_key_env": "OPENROUTER_API_KEY",
+    "default_model": "openai/gpt-4o",
+    "extra_headers": {
+      "HTTP-Referer": "https://myapp.io",
+      "X-Title": "MyApp"
+    },
+    "model_discovery": {
+      "url": "https://openrouter.ai/api/v1/models",
+      "path": "data.id",
+      "ttl_seconds": 300
+    },
     "metadata": {}
   }
   ```
 
   Required fields: `name`, `adapter`.
   Known adapters: `"req_llm"`, `"mock"`.
+
+  ## Auth resolution
+
+  `api_key` is used as-is. When `api_key` is absent and `api_key_env` is set,
+  `Config.pop_provider!/1` resolves the key from that environment variable.
+
+  ## Extra headers
+
+  `extra_headers` is a string-to-string map of HTTP headers injected into every
+  request through the ReqLLM adapter via `req_http_options`.
+
+  ## Model discovery
+
+  `model_discovery` enables `ExAthena.ModelDiscovery.list_models/1`.  Required
+  sub-field: `url`. Optional: `path` (dot-delimited extraction path, default
+  `"data.id"`), `headers` (map), `ttl_seconds` (default `300`).
   """
 
   @known_adapters %{
@@ -32,7 +58,10 @@ defmodule ExAthena.ProviderSpec do
           req_llm_provider_tag: String.t() | nil,
           base_url: String.t() | nil,
           api_key: String.t() | nil,
+          api_key_env: String.t() | nil,
           default_model: String.t() | nil,
+          extra_headers: %{String.t() => String.t()},
+          model_discovery: map() | nil,
           metadata: map()
         }
 
@@ -43,7 +72,10 @@ defmodule ExAthena.ProviderSpec do
     :req_llm_provider_tag,
     :base_url,
     :api_key,
+    :api_key_env,
     :default_model,
+    :model_discovery,
+    extra_headers: %{},
     metadata: %{}
   ]
 
@@ -65,7 +97,10 @@ defmodule ExAthena.ProviderSpec do
         req_llm_provider_tag: Map.get(json, "req_llm_provider_tag"),
         base_url: Map.get(json, "base_url"),
         api_key: Map.get(json, "api_key"),
+        api_key_env: Map.get(json, "api_key_env"),
         default_model: Map.get(json, "default_model"),
+        extra_headers: Map.get(json, "extra_headers", %{}),
+        model_discovery: Map.get(json, "model_discovery"),
         metadata: Map.get(json, "metadata", %{})
       }
 

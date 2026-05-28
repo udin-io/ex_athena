@@ -73,6 +73,14 @@ defmodule ExAthena.Config do
   Pop `:provider` from opts and return `{provider_module, remaining_opts}`.
 
   Raises `ArgumentError` if no provider is set in opts or in application env.
+
+  For registry-loaded providers the following spec fields are threaded into opts
+  using `Keyword.put_new/3` so per-call overrides always win:
+
+    * `:req_llm_provider_tag` — from `spec.req_llm_provider_tag`
+    * `:base_url` — from `spec.base_url`
+    * `:extra_headers` — from `spec.extra_headers` (non-empty maps only)
+    * `:api_key` — from `spec.api_key`, or resolved from `spec.api_key_env`
   """
   @spec pop_provider!(keyword()) :: {module(), keyword()}
   def pop_provider!(opts) do
@@ -97,8 +105,36 @@ defmodule ExAthena.Config do
         backend -> Keyword.put_new(rest, :openai_compatible_backend, backend)
       end
 
+    rest =
+      case registry_lookup(provider) do
+        {:ok, spec} -> thread_registry_spec_opts(rest, spec)
+        :error -> rest
+      end
+
     {provider_module(provider), rest}
   end
+
+  defp thread_registry_spec_opts(opts, spec) do
+    opts
+    |> maybe_put_new(:base_url, spec.base_url)
+    |> maybe_put_new(:api_key, resolve_spec_api_key(spec))
+    |> maybe_put_new(:extra_headers, non_empty_headers(spec.extra_headers))
+  end
+
+  defp maybe_put_new(opts, _key, nil), do: opts
+  defp maybe_put_new(opts, key, value), do: Keyword.put_new(opts, key, value)
+
+  defp non_empty_headers(m) when is_map(m) and map_size(m) > 0, do: m
+  defp non_empty_headers(_), do: nil
+
+  defp resolve_spec_api_key(%{api_key: key}) when is_binary(key) and key != "", do: key
+
+  defp resolve_spec_api_key(%{api_key_env: env_var})
+       when is_binary(env_var) and env_var != "" do
+    System.get_env(env_var)
+  end
+
+  defp resolve_spec_api_key(_), do: nil
 
   @doc """
   Translate an ExAthena provider atom into the `req_llm` provider tag used in
