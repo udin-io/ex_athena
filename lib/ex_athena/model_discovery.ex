@@ -65,7 +65,7 @@ defmodule ExAthena.ModelDiscovery do
     {:error, :no_model_discovery}
   end
 
-  def list_models(%ProviderSpec{name: name, model_discovery: disc}) when is_map(disc) do
+  def list_models(%ProviderSpec{name: name, model_discovery: disc} = spec) when is_map(disc) do
     ttl_ms = Map.get(disc, "ttl_seconds", @default_ttl_seconds) * 1_000
     now_ms = :erlang.monotonic_time(:millisecond)
 
@@ -74,7 +74,7 @@ defmodule ExAthena.ModelDiscovery do
         {:ok, models}
 
       :miss ->
-        fetch_and_cache(name, disc, now_ms)
+        fetch_and_cache(spec, disc, now_ms)
     end
   end
 
@@ -117,27 +117,50 @@ defmodule ExAthena.ModelDiscovery do
     end
   end
 
-  defp fetch_and_cache(name, disc, now_ms) do
-    url = Map.fetch!(disc, "url")
-    raw_headers = Map.get(disc, "headers", %{})
-    path = Map.get(disc, "path", @default_path)
-    header_list = Enum.map(raw_headers, fn {k, v} -> {k, v} end)
+  defp fetch_and_cache(%ProviderSpec{name: name} = spec, disc, now_ms) do
+    case Map.fetch(disc, "url") do
+      :error ->
+        {:error, :missing_url}
 
-    case Req.get(url, headers: header_list) do
-      {:ok, %{status: 200, body: body}} ->
-        models = extract_models(body, path)
-        :ets.insert(@table, {name, models, now_ms})
-        {:ok, models}
+      {:ok, url} ->
+        raw_headers = Map.get(disc, "headers", %{})
+        path = Map.get(disc, "path", @default_path)
+        header_list = Enum.map(raw_headers, fn {k, v} -> {k, v} end)
+        auth_headers = build_auth_headers(spec)
 
-      {:ok, %{status: status}} ->
-        Logger.warning("[ModelDiscovery] HTTP #{status} fetching models for #{inspect(name)}")
-        {:error, {:http_error, status}}
+        case Req.get(url, headers: header_list ++ auth_headers) do
+          {:ok, %{status: 200, body: body}} ->
+            models = extract_models(body, path)
+            :ets.insert(@table, {name, models, now_ms})
+            {:ok, models}
 
-      {:error, reason} ->
-        Logger.warning("[ModelDiscovery] fetch error for #{inspect(name)}: #{inspect(reason)}")
-        {:error, reason}
+          {:ok, %{status: status}} ->
+            Logger.warning("[ModelDiscovery] HTTP #{status} fetching models for #{inspect(name)}")
+            {:error, {:http_error, status}}
+
+          {:error, reason} ->
+            Logger.warning(
+              "[ModelDiscovery] fetch error for #{inspect(name)}: #{inspect(reason)}"
+            )
+
+            {:error, reason}
+        end
     end
   end
+
+  defp build_auth_headers(%ProviderSpec{api_key: key}) when is_binary(key) and key != "" do
+    [{"authorization", "Bearer #{key}"}]
+  end
+
+  defp build_auth_headers(%ProviderSpec{api_key_env: env_var})
+       when is_binary(env_var) and env_var != "" do
+    case System.get_env(env_var) do
+      nil -> []
+      key -> [{"authorization", "Bearer #{key}"}]
+    end
+  end
+
+  defp build_auth_headers(_), do: []
 
   defp extract_by_path(data, []) when is_binary(data), do: [data]
   defp extract_by_path(data, []) when is_list(data), do: Enum.filter(data, &is_binary/1)

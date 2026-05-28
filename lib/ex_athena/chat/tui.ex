@@ -394,7 +394,7 @@ if Code.ensure_loaded?(ExRatatui.App) do
           {:noreply, State.close_popup(state)}
 
         name when is_binary(name) ->
-          provider_atom = String.to_atom(name)
+          provider_atom = provider_name_to_atom(name)
 
           state
           |> State.set_provider(provider_atom)
@@ -466,18 +466,33 @@ if Code.ensure_loaded?(ExRatatui.App) do
       raw = read_textarea(state) |> String.trim()
       if state.input_ref, do: ExRatatui.textarea_set_value(state.input_ref, "")
 
-      if raw == "" do
-        append_and_noreply(state, {:warning, "API key cannot be empty. Enter it below:"})
-      else
-        pending = state.pending_message
+      cond do
+        raw == "" ->
+          append_and_noreply(
+            state,
+            {:warning, "API key cannot be empty. Enter it below (or /cancel to abort):"}
+          )
 
-        state =
+        raw in ["/exit", "/quit"] ->
+          {:stop, restore_logger(state)}
+
+        raw == "/cancel" ->
           state
-          |> State.set_api_key(raw)
+          |> Map.put(:api_key_pending, false)
           |> Map.put(:pending_message, nil)
-          |> State.append_event({:info, "API key saved for this session."})
+          |> State.append_event({:info, "API key prompt cancelled."})
+          |> noreply()
 
-        if pending, do: do_dispatch_message(pending, state), else: noreply(state)
+        true ->
+          pending = state.pending_message
+
+          state =
+            state
+            |> State.set_api_key(raw)
+            |> Map.put(:pending_message, nil)
+            |> State.append_event({:info, "API key saved for this session."})
+
+          if pending, do: do_dispatch_message(pending, state), else: noreply(state)
       end
     end
 
@@ -611,7 +626,7 @@ if Code.ensure_loaded?(ExRatatui.App) do
     end
 
     defp dispatch_command(:provider, [arg | _], state) when is_binary(arg) do
-      provider = String.to_atom(arg)
+      provider = provider_name_to_atom(arg)
 
       state
       |> State.set_provider(provider)
@@ -1000,6 +1015,12 @@ if Code.ensure_loaded?(ExRatatui.App) do
       |> Enum.reduce(state, fn line, s -> State.append_event(s, {kind, line}) end)
     end
 
+    defp provider_name_to_atom(name) when is_binary(name) do
+      String.to_existing_atom(name)
+    rescue
+      ArgumentError -> String.to_atom(name)
+    end
+
     defp parse_mode_atom(arg) when is_binary(arg) do
       candidate = String.to_existing_atom(arg)
       if candidate in @modes, do: {:ok, candidate}, else: :error
@@ -1017,7 +1038,16 @@ if Code.ensure_loaded?(ExRatatui.App) do
     end
 
     defp list_models_for(%{provider: :llamacpp}), do: LlamaCpp.list_models([])
-    defp list_models_for(_session), do: Ollama.list_models([])
+
+    defp list_models_for(%{provider: provider}) do
+      with pid when not is_nil(pid) <- Process.whereis(ExAthena.ProviderRegistry),
+           {:ok, %ExAthena.ProviderSpec{model_discovery: disc} = spec}
+           when not is_nil(disc) <- ExAthena.ProviderRegistry.lookup(provider) do
+        ExAthena.ModelDiscovery.list_models(spec)
+      else
+        _ -> Ollama.list_models([])
+      end
+    end
 
     defp no_models_message(:llamacpp),
       do: "No models loaded. Start one with: llama-server --model path/to/model.gguf"
