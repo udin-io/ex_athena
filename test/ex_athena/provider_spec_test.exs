@@ -125,5 +125,37 @@ defmodule ExAthena.ProviderSpecTest do
 
       assert reason =~ "unknown adapter"
     end
+
+    test "parses display_name, api_key_prompt, api_key_env, extra_headers" do
+      json = %{
+        "name" => "my-openai",
+        "adapter" => "req_llm",
+        "display_name" => "My OpenAI",
+        "api_key_prompt" => true,
+        "api_key_env" => "MY_OPENAI_API_KEY",
+        "extra_headers" => %{"X-Custom" => "value"}
+      }
+
+      assert {:ok, spec} = ProviderSpec.from_json(json)
+      assert spec.display_name == "My OpenAI"
+      assert spec.api_key_prompt == true
+      assert spec.api_key_env == "MY_OPENAI_API_KEY"
+      assert spec.extra_headers == %{"X-Custom" => "value"}
+    end
+
+    test "display_name defaults to nil when not provided" do
+      assert {:ok, spec} = ProviderSpec.from_json(%{"name" => "x", "adapter" => "mock"})
+      assert spec.display_name == nil
+    end
+
+    test "api_key_prompt defaults to false when not provided" do
+      assert {:ok, spec} = ProviderSpec.from_json(%{"name" => "x", "adapter" => "mock"})
+      assert spec.api_key_prompt == false
+    end
+
+    test "extra_headers defaults to empty map when not provided" do
+      assert {:ok, spec} = ProviderSpec.from_json(%{"name" => "x", "adapter" => "mock"})
+      assert spec.extra_headers == %{}
+    end
   end
 end
