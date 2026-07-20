@@ -161,11 +161,12 @@ Defaults: `:ollama` provider, the model in `config :ex_athena, :ollama, :model`,
 
 ## Try it: `mix athena.web`
 
-A browser-based chat UI with the same agent loop, accessible from any device on your network:
+A browser-based chat UI with the same agent loop, served on localhost by default:
 
 ```bash
-mix athena.web                  # http://0.0.0.0:4000
+mix athena.web                  # http://localhost:4000 (this machine only)
 mix athena.web --port 8080      # custom port
+mix athena.web --lan            # expose on your network, gated by a token
 ```
 
 The sidebar lets you switch provider, model, and mode without restarting. Features:
@@ -274,10 +275,15 @@ ExAthena.run(prompt, cwd: project, allowed_roots: [project, "/tmp"])
 ```
 
 When on, filesystem tools reject paths outside the roots (`/etc/passwd`,
-`../secret`), Bash runs under an OS sandbox (`sandbox-exec`/`bubblewrap`) that
-blocks out-of-root writes, and WebFetch refuses private/loopback hosts (SSRF).
+`../secret`) and Bash runs under an OS sandbox (`sandbox-exec`/`bubblewrap`)
+that blocks out-of-root writes.
 Library calls default to **unconfined**; `mix athena.web` and `mix athena.chat`
 confine to the open project by default (`EX_ATHENA_CONFINE=0` to disable).
+
+Independent of confinement, WebFetch refuses private/loopback/link-local hosts
+(SSRF guard) on the initial URL **and every redirect hop** — always on, even
+unconfined. Fetching from localhost/private hosts (e.g. a dev server) is an
+explicit per-run opt-in: `ExAthena.run(prompt, allow_local_hosts: true)`.
 
 Resolution is **tiered** — per-call opts always beat app env:
 
