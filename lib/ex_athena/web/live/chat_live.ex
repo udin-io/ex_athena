@@ -3,6 +3,7 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   alias ExAthena.Messages
   alias ExAthena.Messages.ContentPart
+  alias ExAthena.Web.Markdown
   alias ExAthena.Web.Sessions
   alias Phoenix.LiveView.JS
 
@@ -1608,7 +1609,7 @@ defmodule ExAthena.Web.Live.ChatLive do
         </button>
       </div>
       <%= if @items == [] do %>
-        <div class="msg-body md" id={"md-#{@msg.id}"} phx-hook="MarkdownRender" data-raw={@msg.text}></div>
+        <div class="msg-body md" id={"md-#{@msg.id}"}>{Markdown.render(@msg.text)}</div>
       <% else %>
         <.assistant_item
           :for={item <- @items}
@@ -1696,7 +1697,7 @@ defmodule ExAthena.Web.Live.ChatLive do
     assigns = assign(assigns, :e, e)
 
     ~H"""
-    <div class="msg-body md" id={"md-#{@e.id}"} phx-hook="MarkdownRender" data-raw={@e.payload.text}></div>
+    <div class="msg-body md" id={"md-#{@e.id}"}>{Markdown.render(@e.payload.text)}</div>
     """
   end
 
