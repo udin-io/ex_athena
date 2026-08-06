@@ -65,6 +65,11 @@ defmodule ExAthena.Compactors.BudgetReduction do
     end)
   end
 
+  # ADR-0027: pinned messages are compaction-immune. Placeholdering a
+  # pinned tool result (plan text, PR URLs) is exactly the "session
+  # finished but the artifact is gone" failure pinning exists to prevent.
+  defp shrink(%Message{pin: true} = msg, _max_chars, _archive), do: {:kept, msg}
+
   defp shrink(%Message{role: :tool, tool_results: results} = msg, max_chars, archive)
        when is_list(results) do
     {new_results, archive, any_replaced?} =
