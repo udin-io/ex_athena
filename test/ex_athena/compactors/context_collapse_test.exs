@@ -48,4 +48,32 @@ defmodule ExAthena.Compactors.ContextCollapseTest do
 
     assert new_state.meta[:compact_view]
   end
+
+  test "does not rewrite a pinned repeated assistant tool-call (ADR-0027)" do
+    call = %ToolCall{id: "c1", name: "glob", arguments: %{"pattern" => "**/*.ex"}}
+
+    msgs = [
+      %Message{role: :assistant, tool_calls: [call]},
+      %Message{role: :tool, tool_results: [%ToolResult{tool_call_id: "c1", content: "x"}]},
+      %Message{role: :assistant, pin: true, tool_calls: [%{call | id: "c2"}]},
+      %Message{role: :tool, tool_results: [%ToolResult{tool_call_id: "c2", content: "y"}]},
+      %Message{role: :assistant, tool_calls: [%{call | id: "c3"}]},
+      %Message{role: :tool, tool_results: [%ToolResult{tool_call_id: "c3", content: "z"}]}
+    ]
+
+    state = state_with(msgs, [])
+
+    assert {:ok, new_state, _est} =
+             ContextCollapse.compact_stage(state, %{tokens: 100, max_tokens: 1_000})
+
+    # The stage writes its collapsed output into meta[:compact_view].
+    # The pinned assistant keeps its content verbatim; the non-pinned
+    # repeat is still detected and marked.
+    view = new_state.meta[:compact_view]
+    pinned_after = Enum.at(view, 2)
+    non_pinned_after = Enum.at(view, 4)
+
+    refute (pinned_after.content || "") =~ "(repeat)"
+    assert (non_pinned_after.content || "") =~ "(repeat)"
+  end
 end
