@@ -151,14 +151,30 @@ defmodule ExAthena.Compactor.Pipeline do
   # (inserting at a higher index first means all lower-index insertions
   # are unaffected).  When the stage dropped everything (new_total == 0)
   # we fall back to orig_idx directly so original relative order is kept.
+  #
+  # "Dropped" is decided by identity, not value equality: a stage that
+  # rewrites a pinned message in place (excerpting, masking) keeps its
+  # tool_call_id pairing, and re-inserting the original next to the
+  # rewrite would produce two tool results with the same tool_call_id —
+  # strict OpenAI-compatible servers reject that with a 400.
   defp restore_pinned(%State{messages: new_messages} = state, original_messages) do
     orig_total = length(original_messages)
 
-    missing =
+    {missing, _remaining} =
       original_messages
       |> Enum.with_index()
       |> Enum.filter(fn {%Message{pin: pin}, _} -> pin end)
-      |> Enum.reject(fn {msg, _} -> msg in new_messages end)
+      |> Enum.reduce({[], Enum.frequencies_by(new_messages, &message_key/1)}, fn
+        {msg, idx}, {miss, counts} ->
+          key = message_key(msg)
+
+          case counts do
+            %{^key => n} when n > 0 -> {miss, Map.put(counts, key, n - 1)}
+            _ -> {[{msg, idx} | miss], counts}
+          end
+      end)
+
+    missing = Enum.reverse(missing)
 
     case missing do
       [] ->
@@ -191,6 +207,23 @@ defmodule ExAthena.Compactor.Pipeline do
         %{state | messages: restored}
     end
   end
+
+  # Identity key for "is this message still present after the stage?".
+  # Messages carry no id field, so we key on the strongest stable
+  # identity available: tool_call_ids for tool-result and tool-calling
+  # messages (rewrites preserve them), whole-value equality otherwise
+  # (normalising :pin so a stage clearing the flag doesn't read as a
+  # drop). Presence is counted as a multiset so duplicate identical
+  # pinned messages are still restored one-for-one.
+  defp message_key(%Message{role: :tool, tool_results: [_ | _] = results}) do
+    {:tool_results, results |> Enum.map(& &1.tool_call_id) |> Enum.sort()}
+  end
+
+  defp message_key(%Message{role: :assistant, tool_calls: [_ | _] = calls}) do
+    {:tool_calls, calls |> Enum.map(& &1.id) |> Enum.sort()}
+  end
+
+  defp message_key(%Message{} = msg), do: {:value, %{msg | pin: false}}
 
   # ── Configuration ────────────────────────────────────────────────
 
