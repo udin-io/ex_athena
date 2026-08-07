@@ -48,9 +48,7 @@ defmodule ExAthena.Compactors.BudgetReduction do
               meta: Map.put(state.meta, :tool_result_archive, archive)
           }
 
-        new_estimate = %{estimate | tokens: Compactor.estimate_tokens(messages)}
-
-        {:ok, new_state, new_estimate}
+        {:ok, new_state, Compactor.re_estimate(estimate, messages, state)}
     end
   end
 

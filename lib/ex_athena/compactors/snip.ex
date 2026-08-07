@@ -48,7 +48,7 @@ defmodule ExAthena.Compactors.Snip do
 
       _ ->
         new_state = %{state | messages: snipped}
-        {:ok, new_state, %{estimate | tokens: Compactor.estimate_tokens(snipped)}}
+        {:ok, new_state, Compactor.re_estimate(estimate, snipped, state)}
     end
   end
 

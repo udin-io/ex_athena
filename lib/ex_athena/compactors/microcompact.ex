@@ -50,7 +50,7 @@ defmodule ExAthena.Compactors.Microcompact do
 
       _ ->
         new_state = %{state | messages: compacted}
-        {:ok, new_state, %{estimate | tokens: Compactor.estimate_tokens(compacted)}}
+        {:ok, new_state, Compactor.re_estimate(estimate, compacted, state)}
     end
   end
 

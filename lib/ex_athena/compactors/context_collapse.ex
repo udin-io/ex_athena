@@ -46,7 +46,7 @@ defmodule ExAthena.Compactors.ContextCollapse do
       :skip
     else
       new_state = put_compact_view(state, final)
-      {:ok, new_state, %{estimate | tokens: Compactor.estimate_tokens(final)}}
+      {:ok, new_state, Compactor.re_estimate(estimate, final, state)}
     end
   end
 

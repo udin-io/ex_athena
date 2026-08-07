@@ -115,7 +115,7 @@ defmodule ExAthena.Compactors.Summary do
 
             metadata = %{
               before: estimate.tokens,
-              after: ExAthena.Compactor.estimate_tokens(new_messages),
+              after: Compactor.estimate_tokens(new_messages, Compactor.system_prompt(state)),
               dropped_count: length(summarisable),
               reason: :token_budget,
               budget: new_budget
