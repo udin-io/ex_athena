@@ -130,6 +130,16 @@ defmodule ExAthena.Config do
     exo: :exo
   }
 
+  # The local daemons' stock hosts. This is the single copy of these URLs:
+  # the listing path (`ExAthena.list_models/2`) and the TUI runner both read
+  # it through `default_base_url/1`, so a zero-config setup talks to each
+  # daemon's stock port instead of failing on a missing base_url (#189).
+  @local_daemon_base_urls %{
+    ollama: "http://localhost:11434",
+    llamacpp: "http://localhost:8080",
+    exo: "http://localhost:52415"
+  }
+
   # Built-in provider specs for first-class cloud providers that need a fixed
   # base_url + API-key env + model discovery but ship without a user JSON file.
   # A user spec of the same name in the ProviderRegistry always overrides these
@@ -257,6 +267,17 @@ defmodule ExAthena.Config do
   end
 
   def req_llm_provider_tag(_), do: nil
+
+  @doc """
+  The stock base URL for a local-daemon provider (`:ollama`, `:llamacpp`,
+  `:exo`); `nil` for every other provider.
+
+  These defaults only ever fill absence — an explicitly configured or
+  caller-passed `:base_url` always wins — and cloud providers deliberately
+  have no entry, so they can never inherit a localhost default.
+  """
+  @spec default_base_url(atom() | module() | nil) :: String.t() | nil
+  def default_base_url(provider), do: Map.get(@local_daemon_base_urls, provider)
 
   @doc """
   Resolve a provider atom (or module) to its implementing module.

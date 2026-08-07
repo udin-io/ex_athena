@@ -49,6 +49,8 @@ defmodule ExAthena.ModelListing do
       a UI picker, so it fails fast rather than hanging the interface.
     * `:include_cloud` — Ollama only; also fetch the `ollama.com` catalogue.
     * `:cloud_base_url` — Ollama cloud host override (default `https://ollama.com`).
+    * `:req_options` — extra options appended to the underlying `Req.get/2`
+      (tests inject `plug:` here so no network is hit, as in `ExAthena.Search.Http`).
   """
   @spec list(keyword()) :: {:ok, [Model.t()]} | {:error, Error.t()}
   def list(opts \\ []) do
@@ -241,7 +243,11 @@ defmodule ExAthena.ModelListing do
   defp get(url, provider, opts) do
     timeout = Keyword.get(opts, :timeout_ms) || @default_timeout_ms
 
-    case Req.get(url, headers: headers(opts), receive_timeout: timeout, retry: false) do
+    req_opts =
+      [headers: headers(opts), receive_timeout: timeout, retry: false] ++
+        Keyword.get(opts, :req_options, [])
+
+    case Req.get(url, req_opts) do
       {:ok, %Req.Response{status: 200, body: body}} ->
         {:ok, body}
 
