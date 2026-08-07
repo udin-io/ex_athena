@@ -11,9 +11,8 @@ defmodule ExAthena.Chat.LlamaCpp do
   model at a time, so the list usually has a single entry.
   """
 
-  alias ExAthena.ModelListing
+  alias ExAthena.{Config, ModelListing}
 
-  @default_base_url "http://localhost:8080"
   @timeout_ms 2_000
 
   @deprecated "Use ExAthena.list_models(:llamacpp) instead"
@@ -33,6 +32,6 @@ defmodule ExAthena.Chat.LlamaCpp do
   defp configured_base_url do
     :ex_athena
     |> Application.get_env(:llamacpp, [])
-    |> Keyword.get(:base_url, @default_base_url)
+    |> Keyword.get(:base_url, Config.default_base_url(:llamacpp))
   end
 end

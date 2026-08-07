@@ -14,9 +14,8 @@ defmodule ExAthena.Chat.Ollama do
   context windows, and works for every provider rather than just this one.
   """
 
-  alias ExAthena.ModelListing
+  alias ExAthena.{Config, ModelListing}
 
-  @default_base_url "http://localhost:11434"
   @default_cloud_base_url "https://ollama.com"
   @timeout_ms 2_000
 
@@ -66,6 +65,6 @@ defmodule ExAthena.Chat.Ollama do
   defp configured_base_url do
     :ex_athena
     |> Application.get_env(:ollama, [])
-    |> Keyword.get(:base_url, @default_base_url)
+    |> Keyword.get(:base_url, Config.default_base_url(:ollama))
   end
 end
