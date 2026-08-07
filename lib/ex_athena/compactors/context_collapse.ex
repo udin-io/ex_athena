@@ -130,6 +130,11 @@ defmodule ExAthena.Compactors.ContextCollapse do
           msg.role == :tool ->
             {acc ++ [msg], last_sig}
 
+          # ADR-0027: pinned messages are never rewritten. Still record
+          # the signature so a later non-pinned duplicate is detected.
+          msg.pin ->
+            {acc ++ [msg], repeat_signature(msg)}
+
           (sig = repeat_signature(msg)) && sig == last_sig ->
             {acc ++ [mark_repeat(msg)], sig}
 

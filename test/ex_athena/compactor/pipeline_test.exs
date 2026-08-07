@@ -242,6 +242,66 @@ defmodule ExAthena.Compactor.PipelineTest do
     assert "tc1" in ids
   end
 
+  # A stage that rewrites tool-result content in place (keeps the
+  # tool_call_id pairing) — models excerpting/masking stages that shrink
+  # a message without dropping it.
+  defmodule RewriteToolStage do
+    @behaviour ExAthena.Compactor.Stage
+
+    @impl true
+    def name, do: :rewrite_tool_stage
+
+    @impl true
+    def compact_stage(%State{messages: messages} = state, estimate) do
+      new_messages =
+        Enum.map(messages, fn
+          %Message{role: :tool, tool_results: [tr | rest]} = msg ->
+            %{msg | tool_results: [%{tr | content: "(rewritten)"} | rest]}
+
+          msg ->
+            msg
+        end)
+
+      if new_messages == messages do
+        :skip
+      else
+        {:ok, %{state | messages: new_messages}, %{estimate | tokens: estimate.tokens - 50}}
+      end
+    end
+  end
+
+  test "restore_pinned does not duplicate a pinned message a stage rewrote in place" do
+    # A rewritten-in-place pinned message is still PRESENT — re-inserting
+    # the original would produce two tool results with the same
+    # tool_call_id, which strict OpenAI-compatible servers reject with 400.
+    pinned = %Message{
+      role: :tool,
+      pin: true,
+      tool_results: [%ToolResult{tool_call_id: "tc1", content: "the plan", is_error: false}]
+    }
+
+    messages = [Messages.system("sp"), pinned]
+
+    state =
+      state_with(messages,
+        compaction_pipeline: [RewriteToolStage],
+        compact_at: 0.5
+      )
+
+    assert {:compact, new_messages, _meta} =
+             Pipeline.compact(state, %{tokens: 800, max_tokens: 1_000})
+
+    occurrences =
+      new_messages
+      |> Enum.flat_map(fn
+        %Message{role: :tool, tool_results: trs} -> Enum.map(trs, & &1.tool_call_id)
+        _ -> []
+      end)
+      |> Enum.count(&(&1 == "tc1"))
+
+    assert occurrences == 1
+  end
+
   test "tool-result archive entries from BudgetReduction land in state.meta after pipeline runs" do
     big = String.duplicate("Z", 25_000)
 

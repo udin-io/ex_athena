@@ -75,4 +75,39 @@ defmodule ExAthena.Compactors.BudgetReductionTest do
     assert hd(second.tool_results).content =~ "[old output cleared"
     assert hd(fourth.tool_results).content == small
   end
+
+  test "leaves a pinned oversized tool result untouched (ADR-0027)" do
+    big = String.duplicate("P", 20_000)
+    msgs = [Messages.user("hi"), %{tool_result_msg("pin1", big) | pin: true}]
+    state = state_with(msgs, per_tool_result_max_chars: 16_000)
+
+    # The pinned message is the only oversized candidate, so the stage
+    # must decline entirely — pinned artifacts (plan text, PR URLs) are
+    # compaction-immune.
+    assert :skip = BudgetReduction.compact_stage(state, %{tokens: 5_000, max_tokens: 100_000})
+  end
+
+  test "replaces non-pinned oversized results while preserving pinned ones" do
+    big = String.duplicate("Q", 20_000)
+
+    msgs = [
+      %{tool_result_msg("pin1", big) | pin: true},
+      tool_result_msg("c1", big)
+    ]
+
+    state = state_with(msgs, per_tool_result_max_chars: 16_000)
+
+    assert {:ok, new_state, _est} =
+             BudgetReduction.compact_stage(state, %{tokens: 5_000, max_tokens: 100_000})
+
+    [pinned, normal] = new_state.messages
+    assert hd(pinned.tool_results).content == big
+    assert hd(normal.tool_results).content =~ "[old output cleared"
+
+    # Only the non-pinned payload is archived.
+    archive = new_state.meta[:tool_result_archive]
+    assert map_size(archive) == 1
+    [{_ref, entry}] = Enum.to_list(archive)
+    assert entry.tool_call_id == "c1"
+  end
 end
