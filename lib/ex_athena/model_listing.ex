@@ -49,6 +49,8 @@ defmodule ExAthena.ModelListing do
       a UI picker, so it fails fast rather than hanging the interface.
     * `:include_cloud` — Ollama only; also fetch the `ollama.com` catalogue.
     * `:cloud_base_url` — Ollama cloud host override (default `https://ollama.com`).
+    * `:req_options` — extra options appended to the underlying `Req.get/2`
+      (tests inject `plug:` here so no network is hit, as in `ExAthena.Search.Http`).
   """
   @spec list(keyword()) :: {:ok, [Model.t()]} | {:error, Error.t()}
   def list(opts \\ []) do
@@ -89,7 +91,8 @@ defmodule ExAthena.ModelListing do
   # `-cloud`, so the suffix is applied here rather than left to every caller.
 
   defp list_ollama(opts) do
-    with {:ok, local} <- fetch_tags(base_host(opts), :ollama, opts) do
+    with {:ok, host} <- require_base_host(:ollama, opts),
+         {:ok, local} <- fetch_tags(host, :ollama, opts) do
       {:ok, Enum.sort_by(local ++ cloud_models(opts), & &1.id)}
     end
   end
@@ -127,9 +130,9 @@ defmodule ExAthena.ModelListing do
   # ── OpenAI-wire listing ───────────────────────────────────────────
 
   defp list_openai_compatible(provider, opts, params) do
-    url = base_host(opts) <> "/v1/models" <> encode_params(params)
-
-    with {:ok, body} <- get(url, provider, opts),
+    with {:ok, host} <- require_base_host(provider, opts),
+         url = host <> "/v1/models" <> encode_params(params),
+         {:ok, body} <- get(url, provider, opts),
          {:ok, ids} <- decode_list(body, "data", "id") do
       {:ok, Enum.map(ids, &build_model(&1, provider, :server))}
     end
@@ -165,7 +168,7 @@ defmodule ExAthena.ModelListing do
   end
 
   defp list_for_provider(provider, opts) do
-    if Keyword.get(opts, :base_url) do
+    if present?(Keyword.get(opts, :base_url)) do
       with {:ok, models} <- list_openai_compatible(provider, opts, []) do
         {:ok, Enum.map(models, &enrich(&1, provider))}
       end
@@ -240,7 +243,11 @@ defmodule ExAthena.ModelListing do
   defp get(url, provider, opts) do
     timeout = Keyword.get(opts, :timeout_ms) || @default_timeout_ms
 
-    case Req.get(url, headers: headers(opts), receive_timeout: timeout, retry: false) do
+    req_opts =
+      [headers: headers(opts), receive_timeout: timeout, retry: false] ++
+        Keyword.get(opts, :req_options, [])
+
+    case Req.get(url, req_opts) do
       {:ok, %Req.Response{status: 200, body: body}} ->
         {:ok, body}
 
@@ -310,12 +317,28 @@ defmodule ExAthena.ModelListing do
 
   # ExAthena appends `/v1` to a local base_url for chat, but the listing
   # endpoints are defined relative to the bare host.
-  defp base_host(opts) do
-    opts
-    |> Keyword.get(:base_url)
-    |> Kernel.||("")
-    |> strip_v1_suffix()
+  #
+  # A missing or blank base_url must be rejected here rather than handed to
+  # Req: Finch raises `ArgumentError` on a schemeless URL, which would crash
+  # the caller instead of returning the structured error every other failure
+  # mode gets (#189). Mirrors the tag path's "no base_url to enumerate" error.
+  defp require_base_host(provider, opts) do
+    base_url = Keyword.get(opts, :base_url)
+
+    if present?(base_url) do
+      {:ok, strip_v1_suffix(base_url)}
+    else
+      {:error,
+       Error.new(
+         :capability,
+         "cannot list #{provider} models: no base_url to enumerate",
+         provider: provider,
+         raw: :no_base_url
+       )}
+    end
   end
+
+  defp present?(base_url), do: is_binary(base_url) and base_url != ""
 
   defp strip_v1_suffix(url) when is_binary(url) do
     url

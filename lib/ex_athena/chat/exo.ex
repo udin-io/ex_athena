@@ -17,9 +17,8 @@ defmodule ExAthena.Chat.Exo do
   after registration and only affects first-token latency).
   """
 
-  alias ExAthena.ModelListing
+  alias ExAthena.{Config, ModelListing}
 
-  @default_base_url "http://localhost:52415"
   @timeout_ms 2_000
   @default_poll_interval_ms 250
   @default_instance_timeout_ms 10_000
@@ -142,7 +141,7 @@ defmodule ExAthena.Chat.Exo do
   defp configured_base_url do
     :ex_athena
     |> Application.get_env(:exo, [])
-    |> Keyword.get(:base_url, @default_base_url)
+    |> Keyword.get(:base_url, Config.default_base_url(:exo))
   end
 
   defp strip_v1_suffix(url) when is_binary(url) do

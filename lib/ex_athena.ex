@@ -395,7 +395,12 @@ defmodule ExAthena do
 
     cond do
       loaded? and function_exported?(provider_mod, :list_models, 1) ->
-        provider_mod.list_models(Config.provider_opts(provider_mod, opts, provider_atom))
+        listing_opts =
+          provider_mod
+          |> Config.provider_opts(opts, provider_atom)
+          |> put_default_base_url(provider_atom)
+
+        provider_mod.list_models(listing_opts)
 
       loaded? and function_exported?(provider_mod, :list_models, 0) ->
         with {:ok, ids} <- provider_mod.list_models() do
@@ -413,6 +418,23 @@ defmodule ExAthena do
            "#{inspect(provider_mod)} cannot enumerate its models",
            provider: provider_mod
          )}
+    end
+  end
+
+  # Local daemons must list out of the box: before #183 the per-backend shims
+  # each defaulted their daemon's stock URL, and consolidating them behind
+  # `list_models/2` silently dropped that (#189). Applied after
+  # `Config.provider_opts/3` so both app config and per-call opts always win;
+  # `Config.default_base_url/1` is nil for cloud providers, which therefore
+  # never inherit a localhost default.
+  defp put_default_base_url(opts, provider_atom) do
+    default = Config.default_base_url(provider_atom)
+    base_url = Keyword.get(opts, :base_url)
+
+    if is_nil(default) or (is_binary(base_url) and base_url != "") do
+      opts
+    else
+      Keyword.put(opts, :base_url, default)
     end
   end
 

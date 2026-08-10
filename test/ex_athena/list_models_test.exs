@@ -57,6 +57,67 @@ defmodule ExAthena.ListModelsTest do
     assert {:ok, [%Model{id: "default-provider-model"}]} = ExAthena.list_models()
   end
 
+  # Regression for #189: pre-#183 the per-backend shims defaulted the local
+  # daemons' base URLs, so listing worked on a stock setup with zero config.
+  # The plug intercepts before any network I/O, so these tests observe exactly
+  # which host the request would target without needing the daemon (or the
+  # port) to exist.
+  describe "local daemon base-url defaults" do
+    defp capture_plug(test_pid, body) do
+      fn conn ->
+        send(test_pid, {:req, conn.host, conn.port, conn.request_path, conn.query_string})
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, Jason.encode!(body))
+      end
+    end
+
+    test "ollama defaults to http://localhost:11434 when nothing is configured" do
+      plug = capture_plug(self(), %{"models" => [%{"name" => "qwen3-coder:30b"}]})
+
+      assert {:ok, [%Model{id: "qwen3-coder:30b"}]} =
+               ExAthena.list_models(:ollama, cache: false, req_options: [plug: plug])
+
+      assert_received {:req, "localhost", 11_434, "/api/tags", _}
+    end
+
+    test "llamacpp defaults to http://localhost:8080 when nothing is configured" do
+      plug = capture_plug(self(), %{"data" => [%{"id" => "qwen3.gguf"}]})
+
+      assert {:ok, [%Model{id: "qwen3.gguf"}]} =
+               ExAthena.list_models(:llamacpp, cache: false, req_options: [plug: plug])
+
+      assert_received {:req, "localhost", 8080, "/v1/models", _}
+    end
+
+    test "exo defaults to http://localhost:52415 when nothing is configured" do
+      plug = capture_plug(self(), %{"data" => [%{"id" => "mlx-community/Llama-3.2-1B"}]})
+
+      assert {:ok, [%Model{id: "mlx-community/Llama-3.2-1B"}]} =
+               ExAthena.list_models(:exo, cache: false, req_options: [plug: plug])
+
+      assert_received {:req, "localhost", 52_415, "/v1/models", "status=downloaded"}
+    end
+
+    test "a configured base_url always beats the local-daemon default" do
+      Application.put_env(:ex_athena, :ollama, base_url: "http://localhost:9999")
+      plug = capture_plug(self(), %{"models" => [%{"name" => "configured"}]})
+
+      assert {:ok, [%Model{id: "configured"}]} =
+               ExAthena.list_models(:ollama, cache: false, req_options: [plug: plug])
+
+      assert_received {:req, "localhost", 9999, "/api/tags", _}
+    end
+
+    test "cloud providers gain no localhost default and stay on the catalog" do
+      assert {:ok, models} = ExAthena.list_models(:openai, cache: false)
+
+      assert models != []
+      assert Enum.all?(models, &(&1.source == :catalog))
+    end
+  end
+
   test "wraps a provider that only implements the zero-arity callback" do
     # ClaudeCode enumerates a fixed CLI-reported set; it has no list_models/1.
     Application.put_env(:ex_athena, :claude_code_model_source, __MODULE__.StubSource)
