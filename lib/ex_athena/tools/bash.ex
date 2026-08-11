@@ -96,6 +96,13 @@ defmodule ExAthena.Tools.Bash do
   def description,
     do: "Run a shell command in the working directory. Captures stdout+stderr and the exit code."
 
+  # Arity-0 and therefore argument-blind: `bash` as a *tool* can run anything,
+  # so it can never declare itself read-only. Per-invocation classification
+  # lives in `read_only_command?/1` below, which the permissions layer calls
+  # instead for this tool.
+  @impl true
+  def read_only?, do: false
+
   @doc """
   Classify a bash invocation's `args` as read-only or not. Used by the
   permissions layer to allow read-only bash calls (cat, ls, grep, git log,

@@ -102,6 +102,89 @@ defmodule ExAthena.Web.RunServerTest do
     assert_receive {:athena_done, %{text: "final answer"}}, 2_000
   end
 
+  # Structural events were fanned out to whoever was subscribed at that instant
+  # and then dropped (`accumulate/2` ended in a catch-all that discarded them).
+  # A user who reloaded the page mid-run lost every spawn/result/iteration from
+  # the disconnected window — permanently, and with no gap marker, so a spawn
+  # from before the drop rendered directly against a result from after it.
+  describe "event retention across a disconnect" do
+    defp emit(sid, event), do: send(RunServer.whereis(sid), {:run_event, event})
+
+    defp tool_call(id, name), do: %{id: id, name: name, arguments: %{}}
+
+    test "a reattaching subscriber receives the events it missed" do
+      sid = "s-retain"
+      task = blocking_run(sid)
+
+      {:ok, _} = RunServer.attach(sid, self())
+      emit(sid, {:iteration, 1})
+      assert_receive {:athena, {:iteration, 1}}, 1_000
+
+      # The UI goes away (reload) and misses the whole middle of the run.
+      RunServer.detach(sid, self())
+      emit(sid, {:subagent_spawn, %{id: "sub_a", prompt: "explore"}})
+      emit(sid, {:subagent_result, %{id: "sub_a", text: "found it"}})
+      emit(sid, {:iteration, 2})
+
+      assert {:ok, snap} = RunServer.attach(sid, self())
+
+      # The live run emits its own events too, so assert on the relative order
+      # of ours rather than the whole list.
+      assert [
+               {:iteration, 1},
+               {:subagent_spawn, %{id: "sub_a", prompt: "explore"}},
+               {:subagent_result, %{id: "sub_a", text: "found it"}},
+               {:iteration, 2}
+             ] ==
+               Enum.filter(snap.events, fn
+                 {:iteration, n} -> n in [1, 2]
+                 {kind, _} -> kind in [:subagent_spawn, :subagent_result]
+               end)
+
+      send(task, :finish)
+      assert_receive {:athena_done, _}, 2_000
+    end
+
+    # Token deltas already fold into `stream_text`, and retaining every one of
+    # them would swamp the history with the least structural event types.
+    test "content and thinking deltas are not retained (stream_text carries them)" do
+      sid = "s-retain-deltas"
+      task = blocking_run(sid)
+
+      emit(sid, {:content, "hel"})
+      emit(sid, {:content, "lo"})
+      emit(sid, {:thinking, "hmm"})
+      emit(sid, {:tool_call, tool_call("c1", "read")})
+
+      assert {:ok, snap} = RunServer.attach(sid, self())
+
+      refute Enum.any?(snap.events, &match?({:content, _}, &1))
+      refute Enum.any?(snap.events, &match?({:thinking, _}, &1))
+      assert Enum.any?(snap.events, &match?({:tool_call, %{id: "c1"}}, &1))
+      assert snap.stream_text == "hello"
+
+      send(task, :finish)
+      assert_receive {:athena_done, _}, 2_000
+    end
+
+    test "history is capped so a long run cannot grow without bound" do
+      sid = "s-retain-cap"
+      task = blocking_run(sid)
+
+      for n <- 1..(RunServer.max_retained_events() + 25), do: emit(sid, {:iteration, n})
+
+      assert {:ok, snap} = RunServer.attach(sid, self())
+
+      assert length(snap.events) == RunServer.max_retained_events()
+      # The cap drops the OLDEST events — the recent past is what a
+      # reattaching client needs to rebuild its view.
+      assert List.last(snap.events) == {:iteration, RunServer.max_retained_events() + 25}
+
+      send(task, :finish)
+      assert_receive {:athena_done, _}, 2_000
+    end
+  end
+
   test "stop_run kills the in-flight run and retires the server" do
     sid = "s-stop"
     server = RunServer.whereis(sid)

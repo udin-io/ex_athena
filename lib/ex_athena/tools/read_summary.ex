@@ -47,6 +47,9 @@ defmodule ExAthena.Tools.ReadSummary do
   def parallel_safe?, do: true
 
   @impl true
+  def read_only?, do: true
+
+  @impl true
   def execute(%{"path" => path}, %ToolContext{} = ctx) when is_binary(path) do
     case String.trim(path) do
       "" ->

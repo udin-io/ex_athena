@@ -50,6 +50,9 @@ defmodule ExAthena.Tools.UsageRules do
   def parallel_safe?, do: true
 
   @impl true
+  def read_only?, do: true
+
+  @impl true
   def execute(args, ctx) do
     deps = Path.join(ctx.cwd || File.cwd!(), "deps")
 

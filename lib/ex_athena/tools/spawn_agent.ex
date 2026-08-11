@@ -336,7 +336,14 @@ defmodule ExAthena.Tools.SpawnAgent do
               true -> conclusions_digest(sub_result)
             end
 
-          text = truncate_result(text, Map.get(args, "max_result_chars") || 8_000)
+          # Appended AFTER truncation: the report is the worker's own account
+          # of its work, and a verbose worker must never be able to push the
+          # facts about what it actually did out of the orchestrator's view.
+          text =
+            text
+            |> truncate_result(Map.get(args, "max_result_chars") || 8_000)
+            |> append_provenance(sub_result)
+
           emit_event(ctx, {:subagent_result, %{id: sub_id, text: text}})
 
           _ =
@@ -558,12 +565,46 @@ defmodule ExAthena.Tools.SpawnAgent do
     # are relative to it, and the worker must never wander elsewhere.
     brief = append_cwd_line(brief, cwd)
 
-    if brief == "" do
-      prompt
+    composed =
+      if brief == "" do
+        prompt
+      else
+        prompt <> "\n\n## Task brief\n" <> brief
+      end
+
+    composed <> dictated_code_note(prompt)
+  end
+
+  # An orchestrator holds no read tools by design, yet it can still dictate a
+  # full implementation into the brief — and a worker that types it in verbatim
+  # means nobody with eyes on the file ever evaluated the code. Rather than
+  # forbid it (sometimes the parent genuinely knows the change), turn the
+  # typist into a reviewer.
+  @dictated_code_lines 8
+
+  defp dictated_code_note(prompt) do
+    if fenced_code_lines(prompt) >= @dictated_code_lines do
+      "\n\n## About the code in this brief\n" <>
+        "The code above was written by an orchestrator that has NOT read the " <>
+        "target files. Treat it as a PROPOSAL, not a patch: read the real file " <>
+        "first, reconcile the suggestion against what is actually there, and " <>
+        "implement what is correct. Report every place the suggestion did not " <>
+        "fit — a mismatch is a finding the orchestrator needs, not a detail to " <>
+        "smooth over."
     else
-      prompt <> "\n\n## Task brief\n" <> brief
+      ""
     end
   end
+
+  defp fenced_code_lines(prompt) when is_binary(prompt) do
+    ~r/```[^\n]*\n(.*?)```/s
+    |> Regex.scan(prompt, capture: :all_but_first)
+    |> List.flatten()
+    |> Enum.map(&(&1 |> String.split("\n", trim: true) |> length()))
+    |> Enum.sum()
+  end
+
+  defp fenced_code_lines(_), do: 0
 
   # Orchestrating parents (see Loop's :subagent_prompt_suffix opt) append a
   # worker contract to every sub-agent's system prompt.
@@ -695,6 +736,19 @@ defmodule ExAthena.Tools.SpawnAgent do
   end
 
   defp truncate_result(text, _), do: text
+
+  # The worker's report is prose it wrote about itself, so it can claim work it
+  # never did ("the app compiles cleanly" for a run that never built anything).
+  # This appends what the worker's own tool calls prove — nothing for a purely
+  # read-only worker, so explorers stay noise-free.
+  defp append_provenance(text, %ExAthena.Result{messages: messages}) when is_list(messages) do
+    case messages |> ExAthena.Provenance.events() |> ExAthena.Provenance.footer() do
+      nil -> text
+      footer -> String.trim_trailing(text) <> "\n\n" <> footer
+    end
+  end
+
+  defp append_provenance(text, _sub_result), do: text
 
   # Worker iteration caps chosen by the model are floored at the default —
   # live testing showed an orchestrator starving its worker with

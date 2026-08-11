@@ -128,6 +128,51 @@ defmodule ExAthena.Tools.SpawnAgentPromptTest do
     assert task =~ "THE REAL INSTRUCTION"
   end
 
+  # The orchestrator is deliberately blind — it holds no read tools. In the
+  # live failure it nonetheless dictated a full LiveView implementation into
+  # the brief, and the worker typed it in verbatim, so nobody with eyes on the
+  # file ever evaluated it. The dictated code assigned a tuple into a list of
+  # maps two lines above the template that did `doctor.id`.
+  describe "code dictated by a blind orchestrator" do
+    defp code_prompt(lines) do
+      body = Enum.map_join(1..lines, "\n", &"  line_#{&1} = :ok")
+      "Apply this to lib/a.ex:\n\n```elixir\ndef run do\n#{body}\nend\n```"
+    end
+
+    test "a worker told to apply a code block is told to reconcile it first", %{dir: dir} do
+      args = %{"prompt" => code_prompt(20), "objective" => "apply the edit"}
+
+      assert {:ok, _} = run(args, dir)
+
+      assert_receive {:worker_task, task}
+      assert task =~ "has NOT read"
+      assert task =~ ~r/read the (real|actual) file/i
+      # It must be actionable: the worker has to say when the code didn't fit.
+      assert task =~ ~r/report/i
+    end
+
+    test "a brief with only a small snippet is left alone", %{dir: dir} do
+      args = %{
+        "prompt" => "Rename the function. For reference: `def run do :ok end`",
+        "objective" => "rename it"
+      }
+
+      assert {:ok, _} = run(args, dir)
+
+      assert_receive {:worker_task, task}
+      refute task =~ "has NOT read"
+    end
+
+    test "a prose-only brief is left alone", %{dir: dir} do
+      args = %{"prompt" => "Add a doctor filter dropdown to the calendar view."}
+
+      assert {:ok, _} = run(args, dir)
+
+      assert_receive {:worker_task, task}
+      refute task =~ "has NOT read"
+    end
+  end
+
   test "a spawn with nothing to act on is still rejected", %{dir: dir} do
     args = %{"agent" => "explore", "expected_output" => "something"}
 

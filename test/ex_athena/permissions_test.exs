@@ -47,6 +47,26 @@ defmodule ExAthena.PermissionsTest do
     assert :allow = Permissions.check(call("todo_write", %{"todos" => []}), ctx(:plan), %{})
   end
 
+  # Mirrors how Loop assembles `readonly_tools:` — every spec that declares
+  # itself read-only. `read_summary` is absent from the hardcoded allow-list,
+  # so this opt-in path is the only thing that lets it run in the plan phase.
+  test "plan phase allows a tool that declares itself read-only via its spec" do
+    readonly =
+      for spec <- ExAthena.Tools.resolve(ExAthena.Tools.builtins()),
+          spec.read_only?,
+          do: spec.name
+
+    assert "read_summary" in readonly
+
+    assert :allow =
+             Permissions.check(call("read_summary", %{"path" => "a.ex"}), ctx(:plan),
+               readonly_tools: readonly
+             )
+
+    assert {:deny, %Denial{code: :phase_gated}} =
+             Permissions.check(call("write"), ctx(:plan), readonly_tools: readonly)
+  end
+
   test "plan phase allows web_search (read-only online research)" do
     assert :allow = Permissions.check(call("web_search", %{"query" => "q"}), ctx(:plan), %{})
     assert "web_search" in Permissions.readonly_tools()

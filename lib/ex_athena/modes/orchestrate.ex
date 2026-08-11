@@ -138,6 +138,22 @@ defmodule ExAthena.Modes.Orchestrate do
     library docs, current information), use web_search then web_fetch ONCE
     to get it from authoritative sources, then record what you found —
     never web_search the same query twice.
+  - NEVER state how a library, framework or API behaves from memory. Call
+    `usage_rules` for that package first (it reads the local docs the
+    dependency ships); if it has none, web_search the official docs. A
+    confident wrong answer about an API costs far more than the lookup.
+  - If you CHANGE code you must verify it: write or update a test that
+    exercises the new behaviour BEFORE editing the source where practical,
+    then run the project's test command and paste the RAW output tail into
+    your report. Building is not testing — code that compiles can still fail
+    on its first real call. Never report success from reading your own diff,
+    and never claim a command's outcome without having run it.
+  - Test the change through its REAL entry point — the function, action or
+    route a caller actually uses — not a private helper you just wrote. A
+    helper test passes while the feature stays broken. Run the suite with
+    coverage when the project supports it (e.g. `mix test --cover`) and paste
+    the coverage table: a changed module sitting at 0% means nothing you
+    wrote ran it.
   - Your FINAL message is the ONLY thing the orchestrator sees — make it a
     complete, self-contained report: every concrete fact discovered (exact
     paths, file names, patterns, config/frontmatter formats, snippets),
@@ -304,7 +320,31 @@ defmodule ExAthena.Modes.Orchestrate do
     # there delegated nothing, so nudge to record a plan.
     all_done? = todos != [] and pending == []
 
+    # Only a `finish` can be gated on evidence: a bare-text stop is already
+    # handled below, and scanning the transcript is wasted work otherwise.
+    ev = if match?({:submitted, _}, halted.halted_reason), do: evidence(halted), else: nil
+
     cond do
+      # Gate 1 — nothing ran at all. Fires on an otherwise CLEAN finish,
+      # because that is exactly the shape of the failure: every todo marked
+      # completed (self-reported, so it proves nothing) and a deliverable
+      # asserting a build no worker ever ran. Worker provenance is derived
+      # from the workers' own tool calls, so it cannot be narrated away.
+      gate?(halted, ev, :verify_nudged, &(&1.changed != [] and not &1.acted?)) ->
+        nudge(halted, :verify_nudged, verify_note(ev.changed))
+
+      # Gate 2 — something ran, but nothing exercised the change. A build
+      # proves the code parses; the live failure compiled cleanly and raised
+      # on every page load.
+      gate?(halted, ev, :test_nudged, &(&1.source_changed != [] and not &1.tested?)) ->
+        nudge(halted, :test_nudged, test_note(ev.source_changed))
+
+      # Gate 3 — tests ran green, but never executed the changed code. A live
+      # run tested a private helper it had just written, reported 252 passing,
+      # and shipped a page that raised on every load.
+      gate?(halted, ev, :coverage_nudged, &(&1.uncovered != [])) ->
+        nudge(halted, :coverage_nudged, coverage_note(ev.uncovered))
+
       not premature? or all_done? ->
         {:halt, halted}
 
@@ -329,6 +369,103 @@ defmodule ExAthena.Modes.Orchestrate do
          |> put_in([Access.key(:mode_state), :stop_nudged], true)
          |> Map.put(:meta, Map.delete(halted.meta, :finish_reason))}
     end
+  end
+
+  # Each gate is one-shot: it raises the floor without ever trapping a run that
+  # genuinely cannot verify, and the run terminates after at most one extra
+  # iteration per gate.
+  defp gate?(_halted, nil, _flag, _deficient?), do: false
+
+  defp gate?(halted, ev, flag, deficient?),
+    do: halted.mode_state[flag] != true and deficient?.(ev)
+
+  defp nudge(halted, flag, note) do
+    {:continue,
+     halted
+     |> redirect(note)
+     |> Map.put(:halted_reason, nil)
+     |> put_in([Access.key(:mode_state), flag], true)
+     |> Map.put(:meta, Map.delete(halted.meta, :finish_reason))}
+  end
+
+  # What the workers' own tool calls prove about this run.
+  #
+  # `acted?` is a FLOOR, not a proof: any non-read-only command clears it, so a
+  # worker that ran `mkdir` counts. It exists to make "nothing was checked"
+  # impossible to finish through silently. `tested?` is the sharper check —
+  # a test runner that actually exited zero.
+  defp evidence(state) do
+    transcript = transcript_text(state)
+    events = ExAthena.Provenance.scan(transcript)
+    files = ExAthena.Provenance.changed_files(events)
+    commands = ExAthena.Provenance.commands(events)
+    failed = ExAthena.Provenance.failed_commands(events)
+    source_changed = Enum.reject(files, &ExAthena.Provenance.test_file?/1)
+    tested? = Enum.any?(commands, &(ExAthena.Provenance.test_command?(&1) and &1 not in failed))
+
+    %{
+      changed: files,
+      source_changed: source_changed,
+      acted?:
+        Enum.any?(commands, &(not ExAthena.Tools.Bash.read_only_command?(%{"command" => &1}))),
+      tested?: tested?,
+      # Only asked once tests are green: before that, gates 1 and 2 own the
+      # conversation and a coverage demand would be noise on top of them.
+      uncovered: if(tested?, do: uncovered(source_changed, transcript, state.ctx.cwd), else: [])
+    }
+  end
+
+  # `:no_data` means the run never reported coverage at all, so nothing can be
+  # concluded — ask for it rather than read silence as either pass or fail.
+  defp uncovered([], _transcript, _cwd), do: []
+
+  defp uncovered(source_changed, transcript, cwd) do
+    case ExAthena.Coverage.unexercised(source_changed, transcript, cwd) do
+      :no_data -> source_changed
+      {:ok, files} -> files
+    end
+  end
+
+  # Worker reports arrive as tool results, so both channels must be scanned.
+  defp transcript_text(%State{messages: messages}) do
+    messages
+    |> Enum.flat_map(fn msg ->
+      [to_string(msg.content || "")] ++
+        Enum.map(msg.tool_results || [], &to_string(&1.content || ""))
+    end)
+    |> Enum.join("\n")
+  end
+
+  defp verify_note(files) do
+    "[orchestration runtime] Workers changed " <>
+      Enum.join(files, ", ") <>
+      " but no command was run to check them — a completed todo is your own " <>
+      "claim, not evidence. Spawn ONE worker whose brief is to run this " <>
+      "project's build/test command and report its RAW output, then call " <>
+      "finish. If this task genuinely cannot be checked by a command, call " <>
+      "finish again and say so in the deliverable."
+  end
+
+  defp coverage_note(files) do
+    "[orchestration runtime] The suite is green but no test executed " <>
+      Enum.join(files, ", ") <>
+      " — a passing suite proves a test EXISTS, not that it covers your " <>
+      "change. Spawn ONE worker to add a test that calls the changed code " <>
+      "through its real entry point (the function or route a caller actually " <>
+      "uses, not a private helper), run the suite WITH COVERAGE " <>
+      "(e.g. `mix test --cover`), and paste the coverage table plus the raw " <>
+      "test output. Then call finish. If this code genuinely cannot be " <>
+      "executed by a test, call finish again and say why."
+  end
+
+  defp test_note(files) do
+    "[orchestration runtime] Workers changed " <>
+      Enum.join(files, ", ") <>
+      " and no test run covered them — a build proves the code parses, not " <>
+      "that it works. Spawn ONE worker to run this project's test suite, and " <>
+      "to ADD a test exercising the changed behaviour if none does; it must " <>
+      "report the raw output. Then call finish. If this change genuinely " <>
+      "cannot be tested, call finish again and say why in the deliverable."
   end
 
   # Deliver a runtime redirect message while keeping the transcript valid:

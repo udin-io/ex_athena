@@ -671,6 +671,27 @@ defmodule ExAthena.Modes.OrchestrateTest do
     assert state.mode_state.phase == :planning
   end
 
+  # Two failures the contract has to close. A worker reported "the app compiles
+  # cleanly with no new errors" having run no build at all; and an orchestrator
+  # asserted "extra keyword args are passed to the action arguments" about Ash
+  # — a fabricated API fact — while `usage_rules` sat unused in the toolset.
+  test "the worker contract demands verification and library lookups", %{dir: dir} do
+    {:ok, state} =
+      ExAthena.Modes.Orchestrate.init(%ExAthena.Loop.State{
+        max_concurrency: 4,
+        meta: %{provider_atom: :mock},
+        ctx: ExAthena.ToolContext.new(cwd: dir, assigns: %{}),
+        request_template: %ExAthena.Request{messages: [], system_prompt: nil}
+      })
+
+    contract = state.ctx.assigns[:subagent_prompt_suffix]
+
+    assert contract =~ "usage_rules"
+    assert contract =~ ~r/never state.*from memory/is
+    assert contract =~ ~r/raw output/i
+    assert contract =~ ~r/test.*before editing the source/is
+  end
+
   test "orchestrate is uncapped by default but respects an explicit max_iterations", %{dir: dir} do
     base = %ExAthena.Loop.State{
       max_iterations: 25,
