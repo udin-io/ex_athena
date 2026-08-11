@@ -374,9 +374,41 @@ defmodule ExAthena.Providers.ReqLLM do
       when is_binary(r) and r != "" and idx == last_assistant_idx ->
         %{msg | content: "<think>\n#{r}\n</think>\n\n#{msg.content || ""}"}
 
+      # Completed turns lose their reasoning (above). On thinking-first
+      # models the text channel of a tool turn is EMPTY — everything went to
+      # the reasoning channel — so dropping it serialises a totally BLANK
+      # assistant message. The model then sees a wall of tool results with no
+      # record of why it ran any of them, and re-runs them (observed live as
+      # the same file read and the same worker spawned four times over).
+      # Keep a bounded one-line trace instead of nothing.
+      {%Message{role: :assistant, content: c, reasoning: r} = msg, _idx}
+      when is_binary(r) and r != "" and (is_nil(c) or c == "") ->
+        %{msg | content: durable_conclusion(r)}
+
       {msg, _idx} ->
         msg
     end)
+  end
+
+  # One line per completed turn: enough to preserve the causal chain, small
+  # enough that a 100-turn run costs ~5k tokens. Distillation is delegated to
+  # `ExAthena.Conclusions` — the module whose job is already "reduce a turn to
+  # its finding" — so the ledger and the transcript never drift apart.
+  @durable_conclusion_chars 200
+
+  defp durable_conclusion(reasoning) do
+    case ExAthena.Conclusions.from_turn(nil, reasoning, []) do
+      {:ok, %{text: text}} ->
+        condensed =
+          if String.length(text) > @durable_conclusion_chars,
+            do: String.slice(text, 0, @durable_conclusion_chars) <> "…",
+            else: text
+
+        "[earlier turn] " <> condensed
+
+      :none ->
+        ""
+    end
   end
 
   @doc false

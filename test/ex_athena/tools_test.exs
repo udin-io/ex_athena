@@ -16,6 +16,12 @@ defmodule ExAthena.ToolsTest do
       assert Enum.all?(specs, &match?(%Spec{kind: :module}, &1))
     end
 
+    test "read_summary is a builtin so agents can survey a file without reading it" do
+      assert ExAthena.Tools.ReadSummary in Tools.builtins()
+
+      assert Enum.any?(Tools.resolve(tools: :all), &match?(%Spec{name: "read_summary"}, &1))
+    end
+
     test "nil falls back to configured or :all" do
       specs = Tools.resolve([])
       assert is_list(specs)

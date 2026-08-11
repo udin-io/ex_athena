@@ -30,7 +30,29 @@ defmodule ExAthena.Web.Sessions do
         _ -> []
       end
     end)
-    |> Enum.sort_by(& &1.updated_at, :desc)
+    |> sort_by_recency()
+  end
+
+  @doc """
+  Order session headers newest-first.
+
+  Sorts with the `DateTime` module rather than raw term order. `%DateTime{}`
+  values compared as plain terms go key-by-key in ascending key order, which
+  reaches `:day` long before `:month` or `:year` — so `~U[2026-05-31]` sorts
+  above `~U[2026-08-10]` and the sidebar ends up ordered by day-of-month.
+
+  A header with a missing or malformed timestamp sorts last instead of raising.
+  """
+  @spec sort_by_recency([map()]) :: [map()]
+  def sort_by_recency(headers) do
+    Enum.sort_by(headers, &recency_key/1, {:desc, DateTime})
+  end
+
+  defp recency_key(header) do
+    case Map.get(header, :updated_at) do
+      %DateTime{} = dt -> dt
+      _ -> ~U[1970-01-01 00:00:00Z]
+    end
   end
 
   @doc "List session headers for a specific working directory, newest first."

@@ -48,6 +48,54 @@ defmodule ExAthena.Providers.ReasoningReplayTest do
     assert cur_a.content =~ "acting"
   end
 
+  # Thinking-first models (Qwen3.6) leave the text channel EMPTY on tool
+  # turns — everything lands in the reasoning channel. Dropping reasoning for
+  # completed turns then serialises a totally blank assistant message, so the
+  # model sees tool results with no record of why it ran them and re-runs
+  # them. Keep a bounded one-line record instead of "".
+  test "older blank assistant turns keep a condensed record instead of going empty" do
+    old_call = %ToolCall{id: "a", name: "grep", arguments: %{}}
+    cur_call = %ToolCall{id: "b", name: "edit", arguments: %{}}
+
+    messages = [
+      Messages.user("the task"),
+      Messages.assistant(nil, [old_call], "The select element sits at line 113, not 125."),
+      Messages.tool_result("a", "match at 113"),
+      Messages.assistant(nil, [cur_call], "CURRENT reasoning"),
+      Messages.tool_result("b", "edited")
+    ]
+
+    [_, old_a, _, cur_a, _] = Provider.apply_rolling_reasoning(messages)
+
+    # The completed turn keeps a distilled trace of what it concluded.
+    assert old_a.content =~ "line 113"
+    refute old_a.content == ""
+    refute old_a.content == nil
+    # Bounded — it must not replay the whole reasoning blob.
+    refute old_a.content =~ "<think>"
+
+    # The newest turn still gets full reasoning replay.
+    assert cur_a.content =~ "<think>"
+    assert cur_a.content =~ "CURRENT reasoning"
+  end
+
+  test "older assistant turns that already have text are left alone" do
+    old_call = %ToolCall{id: "a", name: "read", arguments: %{}}
+    cur_call = %ToolCall{id: "b", name: "read", arguments: %{}}
+
+    messages = [
+      Messages.user("task"),
+      Messages.assistant("looking", [old_call], "OLD reasoning"),
+      Messages.tool_result("a", "x"),
+      Messages.assistant("acting", [cur_call], "CURRENT reasoning"),
+      Messages.tool_result("b", "y")
+    ]
+
+    [_, old_a, _, _, _] = Provider.apply_rolling_reasoning(messages)
+
+    assert old_a.content == "looking"
+  end
+
   test "messages without reasoning pass through unchanged" do
     messages = [
       Messages.user("task"),

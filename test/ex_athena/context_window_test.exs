@@ -5,6 +5,16 @@ defmodule ExAthena.ContextWindowTest do
 
   setup do
     bypass = Bypass.open()
+
+    # Ollama lookups consult /api/ps for the loaded runner's real context.
+    # Default to "nothing loaded" so tests that only care about /api/show
+    # don't have to declare it; tests that exercise /api/ps override this.
+    Bypass.stub(bypass, "GET", "/api/ps", fn conn ->
+      conn
+      |> Plug.Conn.put_resp_content_type("application/json")
+      |> Plug.Conn.resp(200, Jason.encode!(%{"models" => []}))
+    end)
+
     {:ok, bypass: bypass, base_url: "http://localhost:#{bypass.port}"}
   end
 
@@ -79,6 +89,94 @@ defmodule ExAthena.ContextWindowTest do
                  openai_compatible_backend: :ollama,
                  model: model,
                  base_url: base_url <> "/v1"
+               )
+    end
+
+    test "prefers the served num_ctx over the architecture context_length",
+         %{bypass: bypass, base_url: base_url} do
+      model = "ollama-num-ctx-#{System.unique_integer([:positive])}"
+
+      Bypass.expect_once(bypass, "POST", "/api/show", fn conn ->
+        body =
+          Jason.encode!(%{
+            "model_info" => %{"qwen35moe.context_length" => 262_144},
+            "parameters" => "presence_penalty 1\nnum_ctx 131072\ntop_k 20"
+          })
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, body)
+      end)
+
+      assert {:ok, 131_072} =
+               ContextWindow.lookup(
+                 openai_compatible_backend: :ollama,
+                 model: model,
+                 base_url: base_url
+               )
+    end
+
+    test "prefers the loaded runner context from /api/ps when it is smaller",
+         %{bypass: bypass, base_url: base_url} do
+      model = "ollama-ps-#{System.unique_integer([:positive])}"
+
+      Bypass.expect_once(bypass, "POST", "/api/show", fn conn ->
+        body = Jason.encode!(%{"model_info" => %{"qwen35moe.context_length" => 262_144}})
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, body)
+      end)
+
+      Bypass.expect_once(bypass, "GET", "/api/ps", fn conn ->
+        body =
+          Jason.encode!(%{
+            "models" => [%{"name" => model, "model" => model, "context_length" => 4_096}]
+          })
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, body)
+      end)
+
+      assert {:ok, 4_096} =
+               ContextWindow.lookup(
+                 openai_compatible_backend: :ollama,
+                 model: model,
+                 base_url: base_url
+               )
+    end
+
+    test "ignores /api/ps entries belonging to other models",
+         %{bypass: bypass, base_url: base_url} do
+      model = "ollama-ps-other-#{System.unique_integer([:positive])}"
+
+      Bypass.expect_once(bypass, "POST", "/api/show", fn conn ->
+        body = Jason.encode!(%{"model_info" => %{"llama.context_length" => 32_768}})
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, body)
+      end)
+
+      Bypass.expect_once(bypass, "GET", "/api/ps", fn conn ->
+        body =
+          Jason.encode!(%{
+            "models" => [
+              %{"name" => "someone-else", "model" => "someone-else", "context_length" => 512}
+            ]
+          })
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, body)
+      end)
+
+      assert {:ok, 32_768} =
+               ContextWindow.lookup(
+                 openai_compatible_backend: :ollama,
+                 model: model,
+                 base_url: base_url
                )
     end
 

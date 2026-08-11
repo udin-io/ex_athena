@@ -160,4 +160,55 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
       assert length(ChatLive.filter_models(many, "model")) == 60
     end
   end
+
+  # A session used to be written exactly twice — at run start and at run
+  # completion — so a run in flight showed nothing on disk for its whole
+  # duration. The autosave tick fixes that, and this signature is what keeps
+  # an idle tick from rewriting an unchanged (up to 750 KB) session file.
+  describe "session_signature/1 — autosave change detection" do
+    defp assigns(overrides \\ %{}) do
+      Map.merge(
+        %{messages: [], details_stream: [], tool_uis: %{}, session_title: nil},
+        overrides
+      )
+    end
+
+    test "is stable when nothing persisted has changed" do
+      a = assigns(%{details_stream: [%{type: :tool_call, payload: %{name: "read"}}]})
+      assert ChatLive.session_signature(a) == ChatLive.session_signature(a)
+    end
+
+    test "changes when a tool call is appended to the details stream" do
+      before = assigns()
+      after_call = assigns(%{details_stream: [%{type: :tool_call, payload: %{name: "grep"}}]})
+
+      refute ChatLive.session_signature(before) == ChatLive.session_signature(after_call)
+    end
+
+    # Content/thinking deltas EXTEND an existing entry rather than prepending a
+    # new one, so a length-based check would miss a streaming answer entirely.
+    test "changes when a text delta extends an existing details entry" do
+      before = assigns(%{details_stream: [%{type: :assistant_text, payload: %{text: "Look"}}]})
+
+      after_delta =
+        assigns(%{details_stream: [%{type: :assistant_text, payload: %{text: "Looking at"}}]})
+
+      refute ChatLive.session_signature(before) == ChatLive.session_signature(after_delta)
+    end
+
+    test "changes when a message is appended" do
+      before = assigns()
+      after_msg = assigns(%{messages: [%{id: "m1", role: :assistant, text: "hi"}]})
+
+      refute ChatLive.session_signature(before) == ChatLive.session_signature(after_msg)
+    end
+
+    test "changes when the title or a tool UI lands" do
+      refute ChatLive.session_signature(assigns()) ==
+               ChatLive.session_signature(assigns(%{session_title: "Add a doctor filter"}))
+
+      refute ChatLive.session_signature(assigns()) ==
+               ChatLive.session_signature(assigns(%{tool_uis: %{"c1" => %{kind: :diff}}}))
+    end
+  end
 end

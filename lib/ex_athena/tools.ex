@@ -24,6 +24,7 @@ defmodule ExAthena.Tools do
 
   @builtins [
     ExAthena.Tools.Read,
+    ExAthena.Tools.ReadSummary,
     ExAthena.Tools.Glob,
     ExAthena.Tools.Grep,
     ExAthena.Tools.Write,

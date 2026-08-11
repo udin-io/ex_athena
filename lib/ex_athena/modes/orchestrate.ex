@@ -53,7 +53,8 @@ defmodule ExAthena.Modes.Orchestrate do
      self-contained enough to hand to a worker that cannot see this
      conversation.
   2. Delegate each substantial step to spawn_agent. Workers cannot see
-     this conversation — every spawn needs a self-contained brief
+     this conversation — every spawn needs `prompt:` (the instruction the
+     worker acts on — ALWAYS include it), a self-contained brief
      (objective, expected_output, tool_guidance, boundaries) and `todo:`
      set to the exact todo content the worker handles. spawn_agent is
      SYNCHRONOUS: it runs the worker to completion and the worker's report

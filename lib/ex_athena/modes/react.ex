@@ -918,11 +918,38 @@ defmodule ExAthena.Modes.ReAct do
           "via spawn_agent instead (workers have the full toolset)."
 
       known_builtin? ->
-        "tool '#{name}' is not available in this phase."
+        "tool '#{name}' is not available in this phase. " <> toolset_hint(name, state)
 
       true ->
-        "unknown tool: #{name}"
+        "unknown tool: #{name}. " <> toolset_hint(name, state)
     end
+  end
+
+  # A bare rejection makes small models guess at other invented names rather
+  # than re-read their own tool schemas — observed live as ten consecutive
+  # `read_file` attempts, each burning a turn. Naming the toolset (plus the
+  # nearest match) makes the error recoverable in one turn.
+  #
+  # 0.75 separates real near-misses (`read_file`→`read` 0.82,
+  # `write_file`→`write` 0.83) from noise (`read_file`→`grep` 0.57).
+  @suggest_min_similarity 0.75
+
+  defp toolset_hint(name, state) do
+    names = state.tool_specs |> Enum.map(& &1.name) |> Enum.sort()
+
+    suggestion =
+      case names do
+        [] ->
+          ""
+
+        _ ->
+          {score, best} =
+            names |> Enum.map(&{String.jaro_distance(&1, name), &1}) |> Enum.max()
+
+          if score >= @suggest_min_similarity, do: ~s( Did you mean "#{best}"?), else: ""
+      end
+
+    "Available tools: " <> Enum.join(names, ", ") <> "." <> suggestion
   end
 
   # ── Skill auto-load via [skill: name] sentinel ────────────────────

@@ -134,12 +134,30 @@ defmodule ExAthena.Tools.SpawnAgent do
   # see the depth rail in execute/2.
   @default_max_agent_depth 5
 
+  # Where the worker's instruction comes from, in order of preference.
+  #
+  # The orchestration protocol asks the model for a four-field brief
+  # (objective / expected_output / tool_guidance / boundaries) plus `todo:`
+  # and never mentions `prompt` — only the JSON schema does. Models therefore
+  # produce complete, well-formed briefs with no `prompt` key, which used to
+  # hard-fail as `:missing_prompt`. That was the single wall in a module whose
+  # stated design is "every missing field gets a runtime default, never a
+  # wall" (see @brief_defaults), and a rejection just makes small models
+  # repeat the identical call. `objective` carries the same instruction;
+  # `todo` is the next best source.
+  @prompt_sources ~w(prompt objective todo)
+
   @impl true
-  def execute(%{"prompt" => prompt} = args, ctx) when is_binary(prompt) do
+  def execute(args, ctx) when is_map(args) do
     assigns = ctx.assigns || %{}
     todo = Map.get(args, "todo")
+    prompt = resolve_prompt(args)
+    args = if is_binary(prompt), do: Map.put(args, "prompt", prompt), else: args
 
     cond do
+      is_nil(prompt) ->
+        {:error, :missing_prompt}
+
       Map.get(assigns, :agent_depth, 0) >= max_agent_depth(assigns) ->
         # Nesting-depth rail: agents may delegate sub-agents up to a
         # configurable max depth (config :ex_athena, max_agent_depth, default
@@ -164,6 +182,15 @@ defmodule ExAthena.Tools.SpawnAgent do
   end
 
   def execute(_, _), do: {:error, :missing_prompt}
+
+  defp resolve_prompt(args) do
+    Enum.find_value(@prompt_sources, fn key ->
+      case Map.get(args, key) do
+        value when is_binary(value) -> if blank?(value), do: nil, else: value
+        _ -> nil
+      end
+    end)
+  end
 
   defp do_execute(args, prompt, ctx) do
     # 30 min wall clock — covers the 25-iteration budget on a local model

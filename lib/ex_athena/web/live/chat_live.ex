@@ -6,6 +6,11 @@ defmodule ExAthena.Web.Live.ChatLive do
   alias ExAthena.Web.Sessions
   alias Phoenix.LiveView.JS
 
+  # Autosave cadence for an in-flight run. Must be declared before its use in
+  # `handle_info(:autosave_session, _)` — module attributes are evaluated in
+  # source order, and reading an undefined one yields nil.
+  @autosave_interval_ms 5_000
+
   @providers [
     {"llama.cpp", "llamacpp"},
     {"Ollama", "ollama"},
@@ -190,6 +195,9 @@ defmodule ExAthena.Web.Live.ChatLive do
           pending_assistant_msg_id: snap.pending_assistant_msg_id
         )
         |> resubscribe_coordinator(snap.run_sid)
+        # The autosave timer died with the previous LiveView pid — restart it
+        # here or a reconnect silently stops persisting the rest of the run.
+        |> then(fn s -> if snap.streaming, do: schedule_autosave(s), else: s end)
 
       {:error, :not_running} ->
         socket
@@ -819,6 +827,28 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   def handle_info({:athena, _other}, socket), do: {:noreply, socket}
+
+  # Keep the persisted session current while a run is in flight. Stops
+  # rescheduling itself once the run ends — the completion save in
+  # `{:athena_done, _}` writes the final state.
+  def handle_info(:autosave_session, socket) do
+    if socket.assigns.streaming do
+      sig = session_signature(socket.assigns)
+
+      socket =
+        if sig == socket.assigns[:session_sig] do
+          socket
+        else
+          save_session(socket)
+          assign(socket, session_sig: sig)
+        end
+
+      Process.send_after(self(), :autosave_session, @autosave_interval_ms)
+      {:noreply, socket}
+    else
+      {:noreply, assign(socket, autosave_on: false)}
+    end
+  end
 
   # Batched orchestration snapshots (≤ ~10/s) from the run's coordinator.
   # Scoped to the current run — late updates from a previous run are dropped.
@@ -2375,6 +2405,11 @@ defmodule ExAthena.Web.Live.ChatLive do
     # durably append the answer to, and a reconnect mid-run reopens the turn.
     save_session(socket)
 
+    # …then keep it current for the rest of the run, so the session is
+    # inspectable at any moment rather than only at start and finish.
+    socket =
+      socket |> assign(session_sig: session_signature(socket.assigns)) |> schedule_autosave()
+
     # Hand the run to the stable per-session owner, subscribing this LiveView up
     # front (no early event can race the subscription). The run now outlives a
     # reconnect; a remounting LiveView re-attaches via mount.
@@ -2452,6 +2487,52 @@ defmodule ExAthena.Web.Live.ChatLive do
     if connected?(socket),
       do: push_patch(socket, to: "/c/#{socket.assigns.session_id}", replace: true),
       else: socket
+  end
+
+  # ---------------------------------------------------------------------------
+  # Autosave
+  # ---------------------------------------------------------------------------
+
+  # A session was written exactly twice per run — once at run start (with the
+  # user turn) and once at completion. A long local run therefore showed
+  # nothing on disk for its entire duration: reopening it mid-run, or looking
+  # for it in the sidebar, surfaced only the opening question. This tick keeps
+  # the persisted session current while the run is in flight.
+  #
+  # 5 s is far below a local model's 30-90 s turn, so the file is never more
+  # than one turn stale, and `session_signature/1` skips the write entirely
+  # when nothing changed — an idle tick costs no I/O. (The interval itself is
+  # declared at the top of the module: attributes evaluate in source order, so
+  # defining it here would make the handle_info above read `nil`.)
+
+  @doc """
+  Cheap fingerprint of everything `save_session/1` persists that can change
+  mid-run. Compared against the last saved value so the tick only writes when
+  the session actually moved.
+
+  Hashes the whole structure rather than counting entries: content and
+  thinking deltas EXTEND an existing `details_stream` entry instead of
+  prepending a new one, so a length check would miss a streaming answer.
+  """
+  @spec session_signature(map()) :: integer()
+  def session_signature(assigns) do
+    :erlang.phash2({
+      assigns.messages,
+      assigns.details_stream,
+      assigns.tool_uis,
+      assigns.session_title
+    })
+  end
+
+  # Idempotent: a reconnect re-attaches to a live run and must not stack a
+  # second timer on top of the one the previous LiveView pid owned.
+  defp schedule_autosave(socket) do
+    if socket.assigns[:autosave_on] do
+      socket
+    else
+      Process.send_after(self(), :autosave_session, @autosave_interval_ms)
+      assign(socket, autosave_on: true)
+    end
   end
 
   defp save_session(socket) do

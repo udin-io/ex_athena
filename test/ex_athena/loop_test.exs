@@ -266,6 +266,40 @@ defmodule ExAthena.LoopTest do
     assert content =~ "nonexistent_tool"
   end
 
+  # A bare "unknown tool: read_file" gave the model nothing to act on — live
+  # runs showed it burning ten turns guessing ("read_file is not available,
+  # let me try the lsp tool..."). Naming the toolset makes the error
+  # self-correcting in one turn.
+  test "unknown tool error lists the available tools and suggests the closest name",
+       %{dir: dir} do
+    responses = [
+      %Response{
+        text: "",
+        tool_calls: [%ToolCall{id: "c1", name: "read_file", arguments: %{"path" => "f.txt"}}],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      %Response{text: "ok", tool_calls: [], finish_reason: :stop, provider: :mock}
+    ]
+
+    assert {:ok, result} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: script(responses)],
+               cwd: dir,
+               tools: [ExAthena.Tools.Read, ExAthena.Tools.Glob, ExAthena.Tools.Grep]
+             )
+
+    tool_msg = Enum.find(result.messages, &match?(%{role: :tool}, &1))
+    assert [%{is_error: true, content: content}] = tool_msg.tool_results
+
+    assert content =~ "Available tools:"
+    assert content =~ "glob"
+    assert content =~ "grep"
+    # `read_file` is a near-miss for the real `read` tool.
+    assert content =~ ~s(Did you mean "read")
+  end
+
   test "capabilities: %{native_tool_calls: false} injects ~~~tool_call preamble into system prompt",
        %{dir: dir} do
     test_pid = self()
