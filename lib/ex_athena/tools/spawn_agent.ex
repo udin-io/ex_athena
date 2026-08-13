@@ -54,7 +54,14 @@ defmodule ExAthena.Tools.SpawnAgent do
   # with tool-output caps + the Completed/Remaining failure handoff, a
   # worker that runs out hands its progress to a narrower retry instead of
   # burning an hour spinning. Smaller explicit args are floored UP.
-  @default_max_iterations 25
+  @default_max_iterations 50
+
+  # Report cap. Was 8_000 chars (~2k tokens), which clipped 15% of live
+  # reports — against an orchestrator whose context peaks around 32k in a
+  # 128k+ window, so the budget this protects was never scarce. 24_000 covers
+  # every report observed except two outliers, at ~6k tokens on the
+  # orchestrator's largest turn.
+  @default_result_chars 24_000
 
   @impl true
   def name, do: "spawn_agent"
@@ -341,7 +348,7 @@ defmodule ExAthena.Tools.SpawnAgent do
           # facts about what it actually did out of the orchestrator's view.
           text =
             text
-            |> truncate_result(Map.get(args, "max_result_chars") || 8_000)
+            |> truncate_result(Map.get(args, "max_result_chars") || @default_result_chars)
             |> append_provenance(sub_result)
 
           emit_event(ctx, {:subagent_result, %{id: sub_id, text: text}})
@@ -582,8 +589,19 @@ defmodule ExAthena.Tools.SpawnAgent do
   # typist into a reviewer.
   @dictated_code_lines 8
 
+  @doc """
+  Whether a brief carries a dictated implementation rather than an outcome.
+
+  The orchestrator holds no read tools, so code it writes into a brief was
+  composed without seeing the target file. Used both here (to tell the worker
+  to reconcile it) and by the orchestrate mode (to steer the orchestrator back
+  to describing outcomes).
+  """
+  @spec dictated_code?(String.t() | nil) :: boolean()
+  def dictated_code?(prompt), do: fenced_code_lines(prompt) >= @dictated_code_lines
+
   defp dictated_code_note(prompt) do
-    if fenced_code_lines(prompt) >= @dictated_code_lines do
+    if dictated_code?(prompt) do
       "\n\n## About the code in this brief\n" <>
         "The code above was written by an orchestrator that has NOT read the " <>
         "target files. Treat it as a PROPOSAL, not a patch: read the real file " <>
@@ -731,11 +749,28 @@ defmodule ExAthena.Tools.SpawnAgent do
     "#{label}: #{items}"
   end
 
-  defp truncate_result(text, max) when is_integer(max) and max > 0 do
-    if String.length(text) > max, do: String.slice(text, 0, max) <> "…", else: text
+  @doc """
+  Cap a worker's report, saying so when it cuts.
+
+  A bare "…" told the orchestrator nothing: 15% of live reports were being
+  silently clipped, and it responded by re-requesting whole files (one run
+  spent 6 of 28 spawns on "report the FULL contents of…"). Naming the loss
+  lets it ask for the missing part instead of the whole thing again.
+  """
+  @spec truncate_result(String.t(), pos_integer() | any()) :: String.t()
+  def truncate_result(text, max) when is_integer(max) and max > 0 do
+    len = String.length(text)
+
+    if len > max do
+      String.slice(text, 0, max) <>
+        "\n\n[report truncated — #{max} of #{len} characters shown. " <>
+        "Ask for the specific part you still need; do not re-request the whole thing.]"
+    else
+      text
+    end
   end
 
-  defp truncate_result(text, _), do: text
+  def truncate_result(text, _), do: text
 
   # The worker's report is prose it wrote about itself, so it can claim work it
   # never did ("the app compiles cleanly" for a run that never built anything).

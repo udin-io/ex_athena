@@ -349,17 +349,27 @@ defmodule ExAthena.Web.RunServer do
 
   defp accumulate(state, _event), do: state
 
-  # Token-level deltas are excluded: they arrive in the thousands and already
-  # fold into `stream_text` (content) — retaining them would swamp the history
-  # with the two event types carrying the least structure. The cost is that
-  # `thinking` text from a disconnected window is not recoverable; the
-  # structural skeleton a client needs to rebuild its view is.
-  defp retain(state, {:content, _}), do: state
-  defp retain(state, {:thinking, _}), do: state
+  # Text deltas are COALESCED, not dropped. Dropping them looks tempting (they
+  # arrive in the thousands) but the interleaving is the meaning: a replayed
+  # stream without them bunches every tool row together and every thinking
+  # blob at the other end, which is not what the run looked like. Merging each
+  # contiguous run of deltas into one entry costs one entry per segment —
+  # exactly what the UI renders anyway.
+  defp retain(state, {kind, text} = event) when kind in [:content, :thinking] do
+    case :queue.out_r(state.events) do
+      {{:value, {^kind, prev}}, rest} ->
+        %{state | events: :queue.in({kind, prev <> text}, rest)}
+
+      _ ->
+        append(state, event)
+    end
+  end
+
+  defp retain(state, event), do: append(state, event)
 
   # `:queue` keeps both ends O(1): this runs on every event of every run, so a
   # list with `++` (O(n) per append) would make long runs quadratic.
-  defp retain(state, event) do
+  defp append(state, event) do
     if state.event_count >= @max_retained_events do
       {_dropped, trimmed} = :queue.out(state.events)
       %{state | events: :queue.in(event, trimmed)}

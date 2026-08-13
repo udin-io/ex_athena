@@ -145,23 +145,48 @@ defmodule ExAthena.Web.RunServerTest do
       assert_receive {:athena_done, _}, 2_000
     end
 
-    # Token deltas already fold into `stream_text`, and retaining every one of
-    # them would swamp the history with the least structural event types.
-    test "content and thinking deltas are not retained (stream_text carries them)" do
+    # Text deltas MUST be retained, or replay rebuilds a stream in which every
+    # tool row is bunched together and every thinking blob is bunched at the
+    # other end — the interleaving carries the meaning ("it thought THIS, then
+    # ran THAT"). They are coalesced so a run's thousands of tokens cost one
+    # entry per contiguous segment, which is exactly what the UI renders.
+    test "coalesces consecutive text deltas into one entry, preserving order" do
       sid = "s-retain-deltas"
       task = blocking_run(sid)
 
-      emit(sid, {:content, "hel"})
-      emit(sid, {:content, "lo"})
-      emit(sid, {:thinking, "hmm"})
+      emit(sid, {:thinking, "let me "})
+      emit(sid, {:thinking, "look"})
       emit(sid, {:tool_call, tool_call("c1", "read")})
+      emit(sid, {:content, "the "})
+      emit(sid, {:content, "answer"})
 
       assert {:ok, snap} = RunServer.attach(sid, self())
 
-      refute Enum.any?(snap.events, &match?({:content, _}, &1))
-      refute Enum.any?(snap.events, &match?({:thinking, _}, &1))
-      assert Enum.any?(snap.events, &match?({:tool_call, %{id: "c1"}}, &1))
-      assert snap.stream_text == "hello"
+      assert [
+               {:thinking, "let me look"},
+               {:tool_call, %{id: "c1"}},
+               {:content, "the answer"}
+             ] =
+               Enum.filter(snap.events, fn
+                 {kind, _} -> kind in [:thinking, :content, :tool_call]
+               end)
+
+      send(task, :finish)
+      assert_receive {:athena_done, _}, 2_000
+    end
+
+    test "a delta after an interruption starts a new entry" do
+      sid = "s-retain-split"
+      task = blocking_run(sid)
+
+      emit(sid, {:content, "before"})
+      emit(sid, {:tool_call, tool_call("c1", "read")})
+      emit(sid, {:content, "after"})
+
+      assert {:ok, snap} = RunServer.attach(sid, self())
+
+      assert [{:content, "before"}, {:content, "after"}] =
+               Enum.filter(snap.events, &match?({:content, _}, &1))
 
       send(task, :finish)
       assert_receive {:athena_done, _}, 2_000

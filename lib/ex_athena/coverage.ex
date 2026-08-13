@@ -2,20 +2,17 @@ defmodule ExAthena.Coverage do
   @moduledoc """
   Decide whether a run's tests actually **executed** the code it changed.
 
-  A green test suite proves a test exists, not that it covers the change. A
-  live run wrote a test for a private helper it had just written, reported
-  "252 tests, 0 failures", and shipped a page that raised on every load — the
-  changed LiveView was never executed by anything in the suite.
+  A green test suite proves a test exists, not that it covers the change: a
+  test written for a private helper passes while the feature it was meant to
+  cover is never executed at all.
 
   ## Why zero, and never a threshold
 
-  Percentages lie for declarative code. In a real report the buggy Ash
-  resource showed **100%** — its body is compile-time DSL, so merely loading
-  the module "covers" it — while the buggy LiveView showed **0%**. A
-  threshold would therefore be both unfair to DSL modules and useless as a
-  correctness signal. "Never executed at all" is the only claim a coverage
-  table supports unambiguously, and it is the one that catches this class of
-  failure.
+  Percentages lie for declarative code: a module whose body is compile-time
+  DSL reports full coverage merely for being loaded, while a module full of
+  real branches reports a low number for being partly tested. A threshold is
+  therefore both unfair to the first and meaningless for the second. "Never
+  executed at all" is the only claim a coverage table supports unambiguously.
 
   ## Scope
 
@@ -26,7 +23,7 @@ defmodule ExAthena.Coverage do
   callers should treat as "ask for coverage", not "fail".
   """
 
-  # Rows of the summary table, e.g. "     0.00% | IceWeb.AppointmentCalendarLive".
+  # Rows of the summary table, e.g. "     0.00% | MyApp.Some.Module".
   @row ~r/^\s*(\d+(?:\.\d+)?)\s*%\s*\|\s*([A-Za-z_][\w.]*)\s*$/m
 
   @doc """

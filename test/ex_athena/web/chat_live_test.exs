@@ -376,6 +376,118 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
   # and the LiveView only re-subscribes to it while a run is still attachable.
   # Once the run ended — or the server restarted — reloading the page showed a
   # blank Overview, even though the session had the whole run on disk.
+  # Per-agent tokens are tracked on AgentInfo and rendered per row, but
+  # nothing aggregated them — answering "how much did the orchestrator use vs
+  # the workers?" meant adding up rows by hand.
+  # While a worker runs — often for many minutes — the main view said only
+  # "running spawn_agent…". What the worker was actually doing existed on
+  # AgentInfo, but only the Overview tab showed it, so following a run meant
+  # switching tabs or reading the log.
+  describe "active_worker_action/1" do
+    defp worker(id, opts) do
+      %AgentInfo{
+        id: id,
+        name: opts[:name],
+        status: opts[:status] || :running,
+        depth: opts[:depth] || 1,
+        current_action: opts[:action],
+        iteration: opts[:iteration] || 0
+      }
+    end
+
+    test "names the running worker and what it is doing" do
+      snapshot = %{
+        main: %AgentInfo{id: :main},
+        agents: [worker("a1", name: "implementer", action: "running edit…", iteration: 3)]
+      }
+
+      assert ChatLive.active_worker_action(snapshot) == "implementer · running edit… (iter 3)"
+    end
+
+    # A nested subagent is the thing actually working; its parent is just
+    # waiting on it, so the deepest running agent is the informative one.
+    test "prefers the deepest running agent" do
+      snapshot = %{
+        main: %AgentInfo{id: :main},
+        agents: [
+          worker("a1", name: "implementer", action: "running spawn_agent…", depth: 1),
+          worker("a2", name: "explore", action: "running grep…", depth: 2)
+        ]
+      }
+
+      assert ChatLive.active_worker_action(snapshot) =~ "explore · running grep…"
+    end
+
+    test "ignores agents that have finished" do
+      snapshot = %{
+        main: %AgentInfo{id: :main},
+        agents: [worker("a1", name: "implementer", action: "running edit…", status: :done)]
+      }
+
+      assert ChatLive.active_worker_action(snapshot) == nil
+    end
+
+    test "falls back to the worker's name when it has no action yet" do
+      snapshot = %{main: %AgentInfo{id: :main}, agents: [worker("a1", name: "explore")]}
+
+      assert ChatLive.active_worker_action(snapshot) == "explore · starting… (iter 0)"
+    end
+
+    test "returns nil with no snapshot or no workers" do
+      assert ChatLive.active_worker_action(nil) == nil
+      assert ChatLive.active_worker_action(%{main: %AgentInfo{id: :main}, agents: []}) == nil
+    end
+  end
+
+  describe "token_summary/1" do
+    defp agent(id, input, output) do
+      %AgentInfo{id: id, usage: %{input_tokens: input, output_tokens: output}}
+    end
+
+    test "splits the orchestrator's own usage from its workers'" do
+      snapshot = %{
+        main: agent(:main, 30_000, 4_000),
+        agents: [agent("a1", 100_000, 8_000), agent("a2", 50_000, 2_000)]
+      }
+
+      assert %{
+               orchestrator: %{input_tokens: 30_000, output_tokens: 4_000},
+               workers: %{input_tokens: 150_000, output_tokens: 10_000},
+               agent_count: 2
+             } = ChatLive.token_summary(snapshot)
+    end
+
+    test "counts nested subagents alongside top-level workers" do
+      snapshot = %{
+        main: agent(:main, 10, 1),
+        agents: [
+          %AgentInfo{id: "a1", parent_id: :main, usage: %{input_tokens: 5, output_tokens: 1}},
+          %AgentInfo{id: "a2", parent_id: "a1", usage: %{input_tokens: 7, output_tokens: 2}}
+        ]
+      }
+
+      assert %{workers: %{input_tokens: 12, output_tokens: 3}, agent_count: 2} =
+               ChatLive.token_summary(snapshot)
+    end
+
+    test "handles a run with no workers yet" do
+      assert %{workers: %{input_tokens: 0, output_tokens: 0}, agent_count: 0} =
+               ChatLive.token_summary(%{main: agent(:main, 5, 1), agents: []})
+    end
+
+    # Sessions saved before the snapshot was persisted have none.
+    test "returns nil when there is no snapshot" do
+      assert ChatLive.token_summary(nil) == nil
+    end
+
+    test "renders large counts compactly" do
+      assert ChatLive.fmt_tokens(%{input_tokens: 1_500_000, output_tokens: 32_000}) ==
+               "1.5M/32.0k tok"
+
+      assert ChatLive.fmt_tokens(%{input_tokens: 950, output_tokens: 0}) == "950/0 tok"
+    end
+  end
+
   describe "orchestrator snapshot persistence" do
     defp payload_assigns(overrides \\ %{}) do
       Map.merge(
@@ -505,21 +617,42 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
       assert Enum.filter(result.assigns.details_stream, &(&1.message_id == "m0")) == earlier
     end
 
-    # Prose arrives as token deltas, which are NOT retained — so the restored
-    # entries are the only copy. Dropping them would blank the answer.
-    test "keeps streamed assistant text and thinking, which replay cannot rebuild" do
-      restored = [
-        %{id: "d1", type: :assistant_text, message_id: "m1", payload: %{text: "the answer"}},
-        %{id: "d2", type: :thinking, message_id: "m1", payload: %{text: "hmm"}},
-        detail(:iteration, "m1")
+    # The interleaving IS the content: "it thought THIS, then ran THAT". An
+    # earlier version kept the restored text entries and prepended rebuilt
+    # structural ones, which bunched every thinking blob at one end and every
+    # tool row at the other — a transcript that never happened.
+    test "rebuilds thinking and tool rows interleaved, not bunched" do
+      restored = [detail(:thinking, "m1")]
+
+      events = [
+        {:thinking, "let me look"},
+        {:tool_call, %{id: "c1", name: "read", arguments: %{}}},
+        {:thinking, "now I see"},
+        {:tool_call, %{id: "c2", name: "edit", arguments: %{}}}
       ]
 
-      result = reattach(restored, [{:iteration, 1}], "m1")
-      types = Enum.map(result.assigns.details_stream, & &1.type)
+      result = reattach(restored, events, "m1")
 
-      assert :assistant_text in types
-      assert :thinking in types
-      assert Enum.count(types, &(&1 == :iteration)) == 1
+      # newest-first, so reverse to read in the order it happened
+      assert result.assigns.details_stream
+             |> Enum.reverse()
+             |> Enum.map(& &1.type) == [:thinking, :tool_call, :thinking, :tool_call]
+    end
+
+    test "rebuilds the streamed answer rather than doubling it" do
+      restored = [
+        %{id: "d1", type: :assistant_text, message_id: "m1", payload: %{text: "the answer"}}
+      ]
+
+      result = reattach(restored, [{:content, "the answer"}], "m1")
+
+      texts =
+        result.assigns.details_stream
+        |> Enum.filter(&(&1.type == :assistant_text))
+        |> Enum.map(& &1.payload.text)
+
+      assert texts == ["the answer"]
+      assert result.assigns.stream_text == "the answer"
     end
 
     test "an empty history leaves the restored stream alone" do

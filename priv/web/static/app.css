@@ -956,6 +956,21 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 
 /* ── Action indicator ────────────────────────────────────────────────────── */
 
+/* What the running worker is doing, next to the orchestrator's own action.
+   Subordinate to it: same pill shape, no border, so the two read as
+   "orchestrator ⚡ … ↳ worker …" rather than competing. */
+.worker-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  padding: 2px 6px;
+  margin-left: 4px;
+  animation: fadein 0.2s ease;
+}
+
 .current-action {
   display: inline-flex;
   align-items: center;
@@ -1988,6 +2003,15 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   flex-direction: column;
   gap: 10px;
   padding: 12px;
+}
+
+/* Run-level token split. Secondary to the agent tree below it — a reference
+   figure, not something to draw the eye away from task status. */
+.ov-tokens {
+  font-size: 11px;
+  color: var(--muted);
+  padding-bottom: 2px;
+  border-bottom: 1px solid var(--border);
 }
 
 .ov-gpu {

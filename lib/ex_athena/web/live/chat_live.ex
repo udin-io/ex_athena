@@ -299,15 +299,6 @@ defmodule ExAthena.Web.Live.ChatLive do
     end
   end
 
-  # Detail types replay rebuilds — exactly those RunServer retains. The
-  # `:assistant_text` and `:thinking` entries are deliberately NOT here:
-  # they come from token deltas, which are not retained (`stream_text`
-  # carries the prose instead), so dropping them would erase the answer
-  # with nothing to rebuild it from.
-  @replayable_details ~w(tool_call tool_result tool_ui iteration compaction
-                         subagent_spawn subagent_result structured_retry
-                         usage error)a
-
   # Rebuild the part of the run this LiveView was not present for.
   #
   # The session restored from disk may already hold entries for the current
@@ -321,9 +312,12 @@ defmodule ExAthena.Web.Live.ChatLive do
       when is_list(events) and events != [] do
     socket
     |> update(:details_stream, fn stream ->
-      Enum.reject(stream, &(&1.message_id == msg_id and &1.type in @replayable_details))
+      Enum.reject(stream, &(&1.message_id == msg_id))
     end)
-    |> assign(stream_events: [], stream_tool_ui: %{})
+    # Rebuilt wholesale from the retained history, so every accumulator this
+    # turn owns starts empty — otherwise replayed text lands on top of the
+    # restored copy and the answer appears twice.
+    |> assign(stream_events: [], stream_tool_ui: %{}, stream_text: "")
     |> then(&Enum.reduce(events, &1, fn event, s -> apply_event(s, event) end))
   end
 
@@ -1334,6 +1328,7 @@ defmodule ExAthena.Web.Live.ChatLive do
               details_stream={@details_stream}
               msg_id={@pending_assistant_msg_id}
               current_action={@current_action}
+              worker_action={active_worker_action(@orchestrator)}
               chat_expanded={@chat_expanded}
             />
           <% end %>
@@ -1678,6 +1673,9 @@ defmodule ExAthena.Web.Live.ChatLive do
             <span class="action-icon">⚡</span> {@current_action}
           </span>
         <% end %>
+        <%!-- While a worker runs, the orchestrator's own action is just
+              "running spawn_agent…"; this says what the worker is doing. --%>
+        <span :if={@worker_action} class="worker-action">↳ {@worker_action}</span>
       </div>
       <.assistant_item
         :for={{item, idx} <- Enum.with_index(@items)}
@@ -2063,9 +2061,17 @@ defmodule ExAthena.Web.Live.ChatLive do
       |> assign(:focused, find_agent(assigns.orchestrator, assigns.focus))
       # parent_id → [child agents], for rendering the nested agent tree.
       |> assign(:by_parent, Enum.group_by(assigns.orchestrator.agents, & &1.parent_id))
+      |> assign(:tokens, token_summary(assigns.orchestrator))
 
     ~H"""
     <div class="ov-panel">
+      <%= if @tokens && @tokens.agent_count > 0 do %>
+        <div class="ov-tokens">
+          orchestrator {fmt_tokens(@tokens.orchestrator)} · {@tokens.agent_count} agents {fmt_tokens(
+            @tokens.workers
+          )}
+        </div>
+      <% end %>
       <%= if @focus do %>
         <.agent_focus info={@focused} focus_id={@focus} />
       <% else %>
@@ -2701,6 +2707,83 @@ defmodule ExAthena.Web.Live.ChatLive do
       orchestrator: Map.get(a, :orchestrator)
     }
   end
+
+  @doc """
+  What the currently-running worker is doing, for the main streaming line.
+
+  While a worker runs — often many minutes — the orchestrator's own action is
+  just "running spawn_agent…", which says nothing. The useful detail lives on
+  `AgentInfo` but was only rendered in the Overview tab, so following a run
+  meant switching tabs or reading the log.
+
+  The DEEPEST running agent is the informative one: a parent that spawned a
+  child is only waiting on it.
+  """
+  @spec active_worker_action(map() | nil) :: String.t() | nil
+  def active_worker_action(%{agents: agents}) when is_list(agents) do
+    agents
+    |> Enum.filter(&(&1.status == :running))
+    |> Enum.max_by(& &1.depth, fn -> nil end)
+    |> case do
+      nil ->
+        nil
+
+      agent ->
+        "#{agent.name || agent.id} · #{agent.current_action || "starting…"} (iter #{agent.iteration})"
+    end
+  end
+
+  def active_worker_action(_), do: nil
+
+  @doc """
+  Split a run's token use between the orchestrator and its workers.
+
+  Per-agent totals are already tracked on `AgentInfo` and shown per row, but
+  nothing aggregated them. The split is the interesting number: the
+  orchestrator's context stays small by design (workers return summaries, not
+  transcripts), so a large worker total against a small orchestrator total is
+  the architecture behaving, not a leak.
+
+  Nested subagents are counted with the workers — the agent list is flat and
+  every depth carries its own usage.
+  """
+  @spec token_summary(map() | nil) :: map() | nil
+  def token_summary(%{main: main, agents: agents}) when is_list(agents) do
+    %{
+      orchestrator: usage_of(main),
+      workers:
+        Enum.reduce(agents, %{input_tokens: 0, output_tokens: 0}, fn a, acc ->
+          u = usage_of(a)
+
+          %{
+            input_tokens: acc.input_tokens + u.input_tokens,
+            output_tokens: acc.output_tokens + u.output_tokens
+          }
+        end),
+      agent_count: length(agents)
+    }
+  end
+
+  def token_summary(_), do: nil
+
+  defp usage_of(%{usage: %{} = u}),
+    do: %{
+      input_tokens: Map.get(u, :input_tokens, 0),
+      output_tokens: Map.get(u, :output_tokens, 0)
+    }
+
+  defp usage_of(_), do: %{input_tokens: 0, output_tokens: 0}
+
+  @doc false
+  @spec fmt_tokens(map()) :: String.t()
+  def fmt_tokens(%{input_tokens: input, output_tokens: output}),
+    do: "#{compact_count(input)}/#{compact_count(output)} tok"
+
+  # Worker totals run to millions on a long run; raw digits are unreadable in
+  # a one-line summary.
+  defp compact_count(n) when n >= 1_000_000, do: "#{Float.round(n / 1_000_000, 1)}M"
+  defp compact_count(n) when n >= 1_000, do: "#{Float.round(n / 1_000, 1)}k"
+  defp compact_count(n), do: to_string(n)
 
   @doc "The orchestrator snapshot stored with a session, if any."
   @spec stored_orchestrator(map()) :: map() | nil

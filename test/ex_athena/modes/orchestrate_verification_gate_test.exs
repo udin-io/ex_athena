@@ -306,6 +306,72 @@ defmodule ExAthena.Modes.OrchestrateVerificationGateTest do
     end
   end
 
+  # Every mechanical gate can be green while the feature is wrong. A live run
+  # was asked for a dropdown "populated with all records in the Pervasive
+  # Employee table" and shipped one filtered to
+  # `employee_type in ["Doctor", "Physician"]` — values it invented, which
+  # match none of the 66 real rows, so the dropdown was empty. It compiled,
+  # tests ran, and the changed code was executed: nothing mechanical can see
+  # a requirement that was silently dropped. Only a comparison against the
+  # original request can.
+  describe "requirements audit" do
+    @request "add a doctor filter dropdown populated with all records in the Employee table"
+
+    defp audit_run(worker_calls, worker_tools, dir) do
+      npm_project(dir, "true")
+
+      Loop.run(@request,
+        provider: :mock,
+        mock: [responder: scripted(orchestrator_script())],
+        cwd: dir,
+        tools: ExAthena.Tools.builtins(),
+        mode: :orchestrate,
+        memory: false,
+        max_iterations: 12,
+        assigns: %{
+          spawn_agent_opts: [
+            provider: :mock,
+            mock: [responder: worker(worker_calls)],
+            tools: worker_tools,
+            memory: false
+          ]
+        }
+      )
+    end
+
+    test "refuses the first finish after a code change until the work is audited",
+         %{dir: dir} do
+      calls = wrote_a_file() ++ [call("b1", "bash", %{"command" => "npm test"})]
+
+      assert {:ok, result} = audit_run(calls, [ExAthena.Tools.Write, ExAthena.Tools.Bash], dir)
+
+      text = transcript(result)
+
+      assert text =~ "requirement"
+      # The audit is worthless without the original ask in front of it — the
+      # orchestrator must not audit against its own paraphrase.
+      assert text =~ "all records in the Employee table"
+    end
+
+    test "a read-only run is never asked to audit", %{dir: dir} do
+      File.write!(Path.join(dir, "a.ex"), "defmodule A do\nend\n")
+
+      assert {:ok, result} =
+               audit_run([call("r1", "read", %{"path" => "a.ex"})], [ExAthena.Tools.Read], dir)
+
+      refute transcript(result) =~ "against the ORIGINAL request"
+      assert result.finish_reason == :submitted
+    end
+
+    test "fires at most once, so the run still completes", %{dir: dir} do
+      calls = wrote_a_file() ++ [call("b1", "bash", %{"command" => "npm test"})]
+
+      assert {:ok, result} = audit_run(calls, [ExAthena.Tools.Write, ExAthena.Tools.Bash], dir)
+
+      assert result.finish_reason == :submitted
+    end
+  end
+
   # The rails raise the floor; they must never trap a run that genuinely
   # cannot verify. Each fires at most once, so the run always terminates.
   test "both gates together still let the run complete", %{dir: dir} do

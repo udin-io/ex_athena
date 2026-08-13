@@ -93,11 +93,11 @@ defmodule ExAthena.Loop do
   alias ExAthena.Lsp.ImplicitDiagnostics
   alias ExAthena.Messages.Message
 
-  @default_max_iterations 25
+  @default_max_iterations 55
   @default_max_mistakes 3
   @default_max_unproductive_iterations 3
   @default_max_concurrency 4
-  @default_tool_timeout_ms 60_000
+  @default_tool_timeout_ms 120_000
 
   @spec run(String.t() | nil, keyword()) :: {:ok, Result.t()} | {:error, term()}
   def run(prompt, opts \\ []) do

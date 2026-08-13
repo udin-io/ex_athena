@@ -80,6 +80,13 @@ defmodule ExAthena.Modes.Orchestrate do
   4. Never delegate work that is not on the todo list — FIRST add the
      todo with todo_write, THEN spawn the worker with `todo:` set to it.
      One todo per worker; do not bundle several steps into one spawn.
+  4b. Brief the OUTCOME, not the code. You hold no read tools, so any
+     implementation you write into a brief was composed without seeing the
+     file — that is how wrong code and invented values get typed in
+     verbatim. State what the change must achieve, the constraints it must
+     respect, and how to tell it worked; the worker can see the file and
+     the data, so let it choose the code. Exact code is for the rare case
+     where the precise text matters — then say what you based it on.
   5. Effort scaling: one worker for a simple step, two for comparisons.
      Workers run one at a time — delegate sequentially.
   6. When every todo is completed, call finish with a deliverable
@@ -148,12 +155,14 @@ defmodule ExAthena.Modes.Orchestrate do
     your report. Building is not testing — code that compiles can still fail
     on its first real call. Never report success from reading your own diff,
     and never claim a command's outcome without having run it.
-  - Test the change through its REAL entry point — the function, action or
-    route a caller actually uses — not a private helper you just wrote. A
-    helper test passes while the feature stays broken. Run the suite with
-    coverage when the project supports it (e.g. `mix test --cover`) and paste
-    the coverage table: a changed module sitting at 0% means nothing you
-    wrote ran it.
+  - Any literal your code compares against real data (enum codes, status
+    strings, column values) must be OBSERVED, not guessed — read it from the
+    data or an existing use, and say where. If you could not observe it, list
+    it as an ASSUMPTION in your report.
+  - Deliver what was ASKED. Do not add conditions nobody requested or narrow
+    a stated scope; if the request seems wrong, implement it and say so.
+  - Test through the REAL entry point a caller uses, not a private helper you
+    just wrote — a helper test passes while the feature stays broken.
   - Your FINAL message is the ONLY thing the orchestrator sees — make it a
     complete, self-contained report: every concrete fact discovered (exact
     paths, file names, patterns, config/frontmatter formats, snippets),
@@ -345,6 +354,14 @@ defmodule ExAthena.Modes.Orchestrate do
       gate?(halted, ev, :coverage_nudged, &(&1.uncovered != [])) ->
         nudge(halted, :coverage_nudged, coverage_note(ev.uncovered))
 
+      # Gate 4 — everything mechanical is satisfied, but nothing has compared
+      # the delivered work to what was actually asked for. A live run was
+      # asked for "all records" and shipped a filter on invented column values
+      # matching none of them: it compiled, tests passed, the changed code
+      # ran. No mechanical check can see a requirement silently dropped.
+      gate?(halted, ev, :audit_nudged, &(&1.source_changed != [])) ->
+        nudge(halted, :audit_nudged, audit_note(original_request(halted)))
+
       not premature? or all_done? ->
         {:halt, halted}
 
@@ -446,6 +463,41 @@ defmodule ExAthena.Modes.Orchestrate do
       "finish again and say so in the deliverable."
   end
 
+  # The FIRST user turn, verbatim. The audit must run against what was
+  # actually asked, never the orchestrator's own restatement of it — a
+  # paraphrase is where the dropped requirement went missing in the first
+  # place. (Compaction was not the cause: the live failure ran 37 iterations
+  # with zero compaction events, so the request was in context throughout and
+  # simply was never re-read.)
+  defp original_request(%State{messages: messages}) do
+    Enum.find_value(messages, "", fn
+      %{role: :user, content: content} when is_binary(content) -> content
+      _ -> nil
+    end)
+  end
+
+  @audit_request_chars 1_500
+
+  defp audit_note(request) do
+    request =
+      if String.length(request) > @audit_request_chars,
+        do: String.slice(request, 0, @audit_request_chars) <> "…",
+        else: request
+
+    "[orchestration runtime] Before finishing: nothing has checked the " <>
+      "delivered work against the ORIGINAL request. Compiling, passing tests " <>
+      "and covered code do not show that you built what was asked. Spawn ONE " <>
+      "worker to audit it. Give that worker the request below VERBATIM and " <>
+      "tell it to: list every explicit requirement as a separate item; for " <>
+      "each, read the actual delivered code and state MET or NOT MET with the " <>
+      "file and line as evidence; and check every literal value the code " <>
+      "compares against real data (enum codes, status strings, column values) " <>
+      "by querying or reading the data — a value that was assumed rather than " <>
+      "observed is NOT MET. It must actively look for requirements that were " <>
+      "narrowed, widened or dropped. Fix anything NOT MET, then finish.\n\n" <>
+      "ORIGINAL REQUEST:\n" <> request
+  end
+
   defp coverage_note(files) do
     "[orchestration runtime] The suite is green but no test executed " <>
       Enum.join(files, ", ") <>
@@ -533,20 +585,133 @@ defmodule ExAthena.Modes.Orchestrate do
     fresh_pending =
       Enum.reject(pending_todos(state), fn t -> MapSet.member?(delegated, field(t, :content)) end)
 
-    if fresh_pending != [] and turns >= @max_turns_without_spawn do
-      todo = hd(fresh_pending)
-      state = auto_delegate(state, todo)
+    {state, repeated?} = track_repeat(state, calls)
+    {state, dictating?} = track_dictated_code(state, calls)
 
-      state =
-        put_in(
-          state.mode_state[:auto_delegated],
-          MapSet.put(delegated, field(todo, :content))
-        )
+    cond do
+      # Writing implementations into briefs is the orchestrator acting as an
+      # implementer while configured as a coordinator: it must know the file
+      # to write the diff, but only receives worker summaries — so it
+      # re-requests files and guesses the rest. Steer it back to outcomes.
+      dictating? ->
+        {:continue, put_watch(redirect(state, dictated_code_note()), turns)}
 
-      {:continue, put_watch(state, 0)}
-    else
-      {:continue, put_watch(state, turns)}
+      # Re-delegating the SAME objective over and over is not progress, but the
+      # no-progress guard cannot see it: spawning is activity. A live run spent
+      # its last hour re-spawning "make mix test pass cleanly" against tests
+      # that could not pass in that environment.
+      repeated? ->
+        {:continue, put_watch(redirect(state, repeat_note()), turns)}
+
+      fresh_pending != [] and turns >= @max_turns_without_spawn ->
+        todo = hd(fresh_pending)
+        state = auto_delegate(state, todo)
+
+        state =
+          put_in(
+            state.mode_state[:auto_delegated],
+            MapSet.put(delegated, field(todo, :content))
+          )
+
+        {:continue, put_watch(state, 0)}
+
+      true ->
+        {:continue, put_watch(state, turns)}
     end
+  end
+
+  # One dictated implementation can be a deliberate, well-founded choice
+  # (the orchestrator may genuinely know the change). A habit of it is the
+  # coordinator/implementer mismatch, so the rail fires on the second.
+  @max_dictated_briefs 2
+
+  defp track_dictated_code(state, calls) do
+    dictated =
+      Enum.count(calls, fn tc ->
+        tc.name == "spawn_agent" and
+          ExAthena.Tools.SpawnAgent.dictated_code?(brief_prompt(tc.arguments))
+      end)
+
+    total = (state.mode_state[:dictated_briefs] || 0) + dictated
+
+    fire? = not (state.mode_state[:dictated_nudged] || false) and total >= @max_dictated_briefs
+
+    mode_state =
+      state.mode_state
+      |> Map.put(:dictated_briefs, total)
+      |> then(fn ms -> if fire?, do: Map.put(ms, :dictated_nudged, true), else: ms end)
+
+    {%{state | mode_state: mode_state}, fire?}
+  end
+
+  defp brief_prompt(args) when is_map(args), do: Map.get(args, "prompt") || ""
+  defp brief_prompt(_), do: ""
+
+  defp dictated_code_note do
+    "[orchestration runtime] You are writing implementations into your " <>
+      "briefs. You have not read these files — you hold no read tools — so " <>
+      "that code is composed blind, and it is why you keep spending workers " <>
+      "on \"report the contents of X\". Delegate the OUTCOME instead: state " <>
+      "what the change must achieve, the constraints it must respect, and " <>
+      "how to tell it worked — then let the worker, which can see the file " <>
+      "and the data, decide the code. Reserve exact code for cases where the " <>
+      "precise text genuinely matters, and say what you based it on."
+  end
+
+  # How many times the same objective may be delegated before the runtime
+  # says so. Two is a legitimate retry with a sharper brief; three is a loop.
+  @max_same_objective 3
+
+  # Objectives are compared on a normalised prefix: a model re-delegating the
+  # same work rarely reproduces it byte-for-byte, but the opening line is
+  # stable ("You are working on `/x`. Your ONLY job is to make mix test pass…").
+  defp track_repeat(state, calls) do
+    objectives =
+      for tc <- calls,
+          tc.name == "spawn_agent",
+          obj = repeat_key(tc.arguments),
+          obj != "",
+          do: obj
+
+    counts = state.mode_state[:objective_counts] || %{}
+
+    counts =
+      Enum.reduce(objectives, counts, fn obj, acc -> Map.update(acc, obj, 1, &(&1 + 1)) end)
+
+    repeated? =
+      not (state.mode_state[:repeat_nudged] || false) and
+        Enum.any?(objectives, &(Map.get(counts, &1, 0) >= @max_same_objective))
+
+    mode_state =
+      state.mode_state
+      |> Map.put(:objective_counts, counts)
+      |> then(fn ms -> if repeated?, do: Map.put(ms, :repeat_nudged, true), else: ms end)
+
+    {%{state | mode_state: mode_state}, repeated?}
+  end
+
+  @repeat_key_chars 120
+
+  defp repeat_key(args) when is_map(args) do
+    (Map.get(args, "objective") || Map.get(args, "prompt") || "")
+    |> to_string()
+    |> String.downcase()
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+    |> String.slice(0, @repeat_key_chars)
+  end
+
+  defp repeat_key(_), do: ""
+
+  defp repeat_note do
+    "[orchestration runtime] You have now delegated the same objective " <>
+      "#{@max_same_objective} times. Repeating it is not progress — the " <>
+      "obstacle is not that the worker misunderstood. Either change the " <>
+      "approach (a different angle, a smaller step, or fixing a blocker the " <>
+      "reports keep naming), or accept that this step cannot be completed in " <>
+      "this environment: record what blocks it, mark the todo, and move on to " <>
+      "the remaining work or finish with the blocker stated in your " <>
+      "deliverable. Do NOT spawn this objective again."
   end
 
   # Todos come from the KERNEL's meta[:todos] (success-filtered — see

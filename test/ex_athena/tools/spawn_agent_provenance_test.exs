@@ -138,6 +138,23 @@ defmodule ExAthena.Tools.SpawnAgentProvenanceTest do
     refute report(result) =~ "[worker provenance]"
   end
 
+  # A bare "…" told the orchestrator nothing had been lost, so it re-requested
+  # whole files instead of the missing part.
+  describe "truncate_result/2" do
+    test "says how much was cut, and what to do about it" do
+      out = ExAthena.Tools.SpawnAgent.truncate_result(String.duplicate("x", 100), 40)
+
+      assert out =~ "40 of 100 characters shown"
+      assert out =~ ~r/do not re-request the whole/i
+      assert String.starts_with?(out, String.duplicate("x", 40))
+    end
+
+    test "leaves a report that fits completely alone" do
+      assert ExAthena.Tools.SpawnAgent.truncate_result("short", 40) == "short"
+      refute ExAthena.Tools.SpawnAgent.truncate_result("short", 40) =~ "truncated"
+    end
+  end
+
   test "the provenance line survives truncation of a long worker report", %{dir: dir} do
     calls = [
       %ToolCall{
