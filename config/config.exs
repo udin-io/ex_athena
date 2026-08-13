@@ -26,24 +26,10 @@ config :ex_athena, max_agent_depth: 5
 
 import_config "#{config_env()}.exs"
 
-# config :ex_athena, :openai_compatible,
-#   base_url: "https://api.openai.com/v1",
-#   model: "gpt-4o-mini"
-
-config :ex_athena, :llamacpp, base_url: "http://192.168.0.238:8181", model: "qwen36-35b"
-
-config :ex_athena, :openai_compatible,
-  base_url: "http://192.168.0.238:8181/v1",
-  model: "qwen36-35b",
-  api_key: System.get_env("OPENAI_API_KEY")
-
-config :ex_athena, default_provider: :ollama
-
-config :ex_athena, :ollama, base_url: "http://192.168.0.238:11434", model: "qwen3.6:35b-a3b-128k"
-# To use a local llama.cpp server instead:,
+# To use a local llama.cpp server instead:
 #
 #   mix athena.chat --provider llamacpp
 #
 # or set it as the default:
 #
-config :ex_athena, default_provider: :llamacpp
+#   config :ex_athena, default_provider: :llamacpp

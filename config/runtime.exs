@@ -12,7 +12,7 @@ import Config
 if config_env() != :test do
   backend =
     System.get_env("EX_ATHENA_SEARCH_BACKEND", "duckduckgo")
-    |> String.to_atom()
+    |> String.to_existing_atom()
 
   config :ex_athena, :search,
     adapter: ExAthena.Search.Http,
