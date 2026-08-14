@@ -47,6 +47,9 @@ defmodule ExAthena.Tools.Glob do
   def parallel_safe?, do: true
 
   @impl true
+  def read_only?, do: true
+
+  @impl true
   def execute(%{"pattern" => pattern} = args, ctx) when is_binary(pattern) do
     cwd = ctx.cwd
     max = clamp(Map.get(args, "max_results", @default_max))

@@ -96,18 +96,72 @@ defmodule ExAthena.ContextWindow do
   defp do_fetch(:llamacpp, base_url, _model), do: fetch_llamacpp(base_url)
   defp do_fetch(:exo, base_url, model), do: fetch_exo(base_url, model)
 
+  # Ollama advertises three different "context lengths" and only the smallest
+  # is real:
+  #
+  #   * `model_info["<arch>.context_length"]` — the GGUF architecture ceiling
+  #     (qwen3.6-a3b reports 262144). NOT what the runner allocated.
+  #   * `parameters`' `num_ctx` — what the Modelfile asks the runner for.
+  #   * `/api/ps` `context_length` — what the loaded runner actually serves,
+  #     which is where `OLLAMA_CONTEXT_LENGTH` shows up for models whose
+  #     Modelfile sets no `num_ctx` (default 4096 against a 262144 ceiling).
+  #
+  # Taking the minimum of whichever are present keeps compaction honest.
+  # Over-reporting is the dangerous direction: the loop then compacts past
+  # the point where the server has already silently truncated the prompt.
   defp fetch_ollama(base_url, model) do
-    url = strip_openai_suffix(base_url) <> "/api/show"
+    root = strip_openai_suffix(base_url)
 
-    case Req.post(url, json: %{"model" => model}, receive_timeout: @timeout_ms, retry: false) do
+    case Req.post(root <> "/api/show",
+           json: %{"model" => model},
+           receive_timeout: @timeout_ms,
+           retry: false
+         ) do
       {:ok, %Req.Response{status: 200, body: body}} ->
-        extract_ollama_context(body)
+        [
+          num_ctx_parameter(body),
+          arch_context_length(body),
+          loaded_context_length(root, model)
+        ]
+        |> Enum.filter(&(is_integer(&1) and &1 > 0))
+        |> case do
+          [] -> :error
+          found -> {:ok, Enum.min(found)}
+        end
 
       {:ok, %Req.Response{}} ->
         :error
 
       {:error, _} ->
         :error
+    end
+  end
+
+  # `parameters` is Ollama's rendered Modelfile parameter block, one
+  # `<key><whitespace><value>` pair per line.
+  defp num_ctx_parameter(%{"parameters" => params}) when is_binary(params) do
+    case Regex.run(~r/^\s*num_ctx\s+(\d+)\s*$/m, params, capture: :all_but_first) do
+      [n] -> String.to_integer(n)
+      _ -> nil
+    end
+  end
+
+  defp num_ctx_parameter(_), do: nil
+
+  defp loaded_context_length(root, model) do
+    case Req.get(root <> "/api/ps", receive_timeout: @timeout_ms, retry: false) do
+      {:ok, %Req.Response{status: 200, body: %{"models" => models}}} when is_list(models) ->
+        Enum.find_value(models, fn entry ->
+          if entry["model"] == model or entry["name"] == model do
+            case entry["context_length"] do
+              n when is_integer(n) and n > 0 -> n
+              _ -> nil
+            end
+          end
+        end)
+
+      _ ->
+        nil
     end
   end
 
@@ -130,16 +184,13 @@ defmodule ExAthena.ContextWindow do
     end
   end
 
-  defp extract_ollama_context(%{"model_info" => model_info}) when is_map(model_info) do
-    case Enum.find_value(model_info, fn {k, v} ->
-           if String.ends_with?(k, ".context_length") and is_integer(v) and v > 0, do: v
-         end) do
-      nil -> :error
-      ctx -> {:ok, ctx}
-    end
+  defp arch_context_length(%{"model_info" => model_info}) when is_map(model_info) do
+    Enum.find_value(model_info, fn {k, v} ->
+      if String.ends_with?(k, ".context_length") and is_integer(v) and v > 0, do: v
+    end)
   end
 
-  defp extract_ollama_context(_), do: :error
+  defp arch_context_length(_), do: nil
 
   defp fetch_exo(base_url, model) do
     url = strip_openai_suffix(base_url) <> "/v1/models"

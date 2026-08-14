@@ -671,6 +671,234 @@ defmodule ExAthena.Modes.OrchestrateTest do
     assert state.mode_state.phase == :planning
   end
 
+  # The orchestrator holds no read tools BY DESIGN, yet a live run wrote whole
+  # implementations into its briefs — 50 lines of HEEX, a filter predicate —
+  # and workers typed them in verbatim. That is an implementer configured as a
+  # coordinator: it must know file contents to write diffs, but only ever
+  # receives lossy worker summaries, so it re-requests files (6 of 28 spawns
+  # were "read and report the FULL contents of…") and fills the rest by
+  # guessing. Delegating outcomes removes the need to know.
+  describe "outcome briefs" do
+    test "steers the orchestrator off dictating implementations", %{dir: dir} do
+      test_pid = self()
+
+      code_brief = """
+      Apply these changes to lib/a.ex:
+
+      ```elixir
+      defp build_list(rows) do
+        rows
+        |> Enum.filter(fn r -> r.type in ["A", "B"] end)
+        |> Enum.map(fn r -> %{id: r.id, name: r.name} end)
+        |> Enum.sort_by(& &1.name)
+      end
+
+      defp render_list(assigns) do
+        ~H"\""
+        <select phx-change="pick">
+          <option value="">All</option>
+          <option :for={r <- @rows} value={r.id}>{r.name}</option>
+        </select>
+        "\""
+      end
+      ```
+      """
+
+      spawn_turn = fn n, request ->
+        send(test_pid, {:req, request})
+
+        %Response{
+          text: "",
+          tool_calls: [
+            %ToolCall{
+              id: "s#{n}",
+              name: "spawn_agent",
+              arguments: %{
+                "prompt" => code_brief <> "\n(variant #{n})",
+                "objective" => "apply edit #{n}",
+                "expected_output" => "edited file",
+                "tool_guidance" => "use edit",
+                "boundaries" => "stay in cwd",
+                "todo" => "do the work"
+              }
+            }
+          ],
+          finish_reason: :tool_calls,
+          provider: :mock
+        }
+      end
+
+      plan = %Response{
+        text: "",
+        tool_calls: [
+          %ToolCall{
+            id: "t1",
+            name: "todo_write",
+            arguments: %{"todos" => [%{"content" => "do the work", "status" => "in_progress"}]}
+          }
+        ],
+        finish_reason: :tool_calls,
+        provider: :mock
+      }
+
+      {:ok, _} =
+        Loop.run("build the feature",
+          provider: :mock,
+          mock: [responder: scripted([plan] ++ List.duplicate(spawn_turn, 8))],
+          cwd: dir,
+          tools: ExAthena.Tools.builtins(),
+          mode: :orchestrate,
+          memory: false,
+          max_iterations: 6,
+          assigns: %{
+            spawn_agent_opts: [
+              provider: :mock,
+              mock: [
+                responder: fn _ ->
+                  %Response{text: "done", finish_reason: :stop, provider: :mock}
+                end
+              ],
+              memory: false
+            ]
+          }
+        )
+
+      notes =
+        Stream.repeatedly(fn ->
+          receive do
+            {:req, r} -> r
+          after
+            0 -> nil
+          end
+        end)
+        |> Enum.take_while(&(&1 != nil))
+        |> Enum.flat_map(fn r ->
+          Enum.flat_map(r.messages, fn m ->
+            [to_string(m.content || "")] ++
+              Enum.map(m.tool_results || [], &to_string(&1.content || ""))
+          end)
+        end)
+        |> Enum.join("\n")
+
+      assert notes =~ ~r/outcome/i
+      assert notes =~ "have not read"
+    end
+  end
+
+  # A live run spent its last hour re-spawning "make `mix test` pass cleanly"
+  # against tests that could not pass (they needed a database the test env
+  # had no config for). The no-progress guard never fired, because spawning
+  # IS activity — the run was busy, just not advancing.
+  describe "repeated-delegation guard" do
+    test "steers the orchestrator off an objective it keeps re-delegating", %{dir: dir} do
+      test_pid = self()
+      brief = "Your ONLY job is to make mix test pass cleanly"
+
+      spawn_turn =
+        fn _n, request ->
+          send(test_pid, {:req, request})
+
+          %Response{
+            text: "",
+            tool_calls: [
+              %ToolCall{
+                id: "s#{System.unique_integer([:positive])}",
+                name: "spawn_agent",
+                arguments: %{
+                  "prompt" => brief,
+                  "objective" => brief,
+                  "expected_output" => "green suite",
+                  "tool_guidance" => "run mix test",
+                  "boundaries" => "stay in cwd",
+                  "todo" => "make tests pass"
+                }
+              }
+            ],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+        end
+
+      plan =
+        %Response{
+          text: "",
+          tool_calls: [
+            %ToolCall{
+              id: "t1",
+              name: "todo_write",
+              arguments: %{
+                "todos" => [%{"content" => "make tests pass", "status" => "in_progress"}]
+              }
+            }
+          ],
+          finish_reason: :tool_calls,
+          provider: :mock
+        }
+
+      {:ok, _} =
+        Loop.run("fix the tests",
+          provider: :mock,
+          mock: [responder: scripted([plan] ++ List.duplicate(spawn_turn, 8))],
+          cwd: dir,
+          tools: ExAthena.Tools.builtins(),
+          mode: :orchestrate,
+          memory: false,
+          max_iterations: 7,
+          assigns: %{
+            spawn_agent_opts: [
+              provider: :mock,
+              mock: [
+                responder: fn _ ->
+                  %Response{text: "still failing", finish_reason: :stop, provider: :mock}
+                end
+              ],
+              memory: false
+            ]
+          }
+        )
+
+      notes =
+        Stream.repeatedly(fn ->
+          receive do
+            {:req, request} -> request
+          after
+            0 -> nil
+          end
+        end)
+        |> Enum.take_while(&(&1 != nil))
+        |> Enum.flat_map(fn r ->
+          Enum.map(r.messages, &to_string(&1.content || "")) ++
+            Enum.flat_map(r.messages, fn m ->
+              Enum.map(m.tool_results || [], &to_string(&1.content || ""))
+            end)
+        end)
+        |> Enum.join("\n")
+
+      assert notes =~ "same objective"
+    end
+  end
+
+  # Two failures the contract has to close. A worker reported "the app compiles
+  # cleanly with no new errors" having run no build at all; and an orchestrator
+  # asserted "extra keyword args are passed to the action arguments" about Ash
+  # — a fabricated API fact — while `usage_rules` sat unused in the toolset.
+  test "the worker contract demands verification and library lookups", %{dir: dir} do
+    {:ok, state} =
+      ExAthena.Modes.Orchestrate.init(%ExAthena.Loop.State{
+        max_concurrency: 4,
+        meta: %{provider_atom: :mock},
+        ctx: ExAthena.ToolContext.new(cwd: dir, assigns: %{}),
+        request_template: %ExAthena.Request{messages: [], system_prompt: nil}
+      })
+
+    contract = state.ctx.assigns[:subagent_prompt_suffix]
+
+    assert contract =~ "usage_rules"
+    assert contract =~ ~r/never state.*from memory/is
+    assert contract =~ ~r/raw output/i
+    assert contract =~ ~r/test.*before editing the source/is
+  end
+
   test "orchestrate is uncapped by default but respects an explicit max_iterations", %{dir: dir} do
     base = %ExAthena.Loop.State{
       max_iterations: 25,

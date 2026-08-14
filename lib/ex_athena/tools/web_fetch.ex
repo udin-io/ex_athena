@@ -86,6 +86,9 @@ defmodule ExAthena.Tools.WebFetch do
   def parallel_safe?, do: true
 
   @impl true
+  def read_only?, do: true
+
+  @impl true
   def execute(%{"url" => url} = args, ctx) when is_binary(url) do
     timeout = Map.get(args, "timeout_ms", @default_timeout)
 

@@ -44,6 +44,16 @@ defmodule ExAthena.Web.RunServer do
   # completion can still see the (non-streaming) snapshot before it retires.
   @grace_ms 60_000
 
+  # Structural events are retained so a LiveView that reconnects mid-run can
+  # rebuild the window it missed. Bounded as a runaway backstop: an orchestrate
+  # run is uncapped by design, and the oldest events are the least useful to a
+  # reattaching client, so the cap drops from the front.
+  @max_retained_events 2_000
+
+  @doc "How many structural events a run retains for reattaching clients."
+  @spec max_retained_events() :: pos_integer()
+  def max_retained_events, do: @max_retained_events
+
   # ---------------------------------------------------------------------------
   # Public API
   # ---------------------------------------------------------------------------
@@ -86,8 +96,19 @@ defmodule ExAthena.Web.RunServer do
   def running?(session_id) do
     case whereis(session_id) do
       nil -> false
-      pid -> GenServer.call(pid, :running?)
+      pid -> call_or(pid, :running?, false)
     end
+  end
+
+  # `whereis` then `call` is a time-of-check/time-of-use race: a server that
+  # retires in between makes the call exit with `:noproc`, crashing a caller
+  # that merely asked whether a run was alive. A gone server IS the answer, so
+  # it is returned rather than raised. (Client-side only — this is not a
+  # callback body swallowing a genuine fault.)
+  defp call_or(pid, request, fallback) do
+    GenServer.call(pid, request)
+  catch
+    :exit, {reason, _} when reason in [:noproc, :normal, :shutdown] -> fallback
   end
 
   @doc """
@@ -100,7 +121,21 @@ defmodule ExAthena.Web.RunServer do
   def attach(session_id, pid) do
     case whereis(session_id) do
       nil -> {:error, :not_running}
-      server -> GenServer.call(server, {:attach, pid})
+      server -> call_or(server, {:attach, pid}, {:error, :not_running})
+    end
+  end
+
+  @doc """
+  Unsubscribe `pid` without stopping the run.
+
+  A dying LiveView is dropped automatically via its monitor; this is for the
+  cases where a subscriber leaves while staying alive.
+  """
+  @spec detach(String.t(), pid()) :: :ok
+  def detach(session_id, pid) do
+    case whereis(session_id) do
+      nil -> :ok
+      server -> GenServer.cast(server, {:detach, pid})
     end
   end
 
@@ -159,7 +194,10 @@ defmodule ExAthena.Web.RunServer do
       streaming: true,
       stream_text: "",
       current_action: nil,
-      awaiting_question: nil
+      awaiting_question: nil,
+      # Oldest-first, so a reattaching client replays in wire order.
+      events: :queue.new(),
+      event_count: 0
     }
 
     {:ok, state, {:continue, :start_run}}
@@ -205,6 +243,18 @@ defmodule ExAthena.Web.RunServer do
   end
 
   @impl GenServer
+  def handle_cast({:detach, pid}, state) do
+    case Map.pop(state.subscribers, pid) do
+      {nil, _} ->
+        {:noreply, state}
+
+      {ref, rest} ->
+        Process.demonitor(ref, [:flush])
+        {:noreply, %{state | subscribers: rest}}
+    end
+  end
+
+  @impl GenServer
   def handle_cast({:answer, tool_call_id, answer}, state) do
     if state.task_pid, do: send(state.task_pid, {:athena_user_answer, tool_call_id, answer})
     {:noreply, %{state | awaiting_question: nil, current_action: "thinking…"}}
@@ -220,7 +270,7 @@ defmodule ExAthena.Web.RunServer do
 
   @impl GenServer
   def handle_info({:run_event, event}, state) do
-    state = accumulate(state, event)
+    state = state |> accumulate(event) |> retain(event)
     broadcast(state, {:athena, event})
     {:noreply, state}
   end
@@ -299,6 +349,35 @@ defmodule ExAthena.Web.RunServer do
 
   defp accumulate(state, _event), do: state
 
+  # Text deltas are COALESCED, not dropped. Dropping them looks tempting (they
+  # arrive in the thousands) but the interleaving is the meaning: a replayed
+  # stream without them bunches every tool row together and every thinking
+  # blob at the other end, which is not what the run looked like. Merging each
+  # contiguous run of deltas into one entry costs one entry per segment —
+  # exactly what the UI renders anyway.
+  defp retain(state, {kind, text} = event) when kind in [:content, :thinking] do
+    case :queue.out_r(state.events) do
+      {{:value, {^kind, prev}}, rest} ->
+        %{state | events: :queue.in({kind, prev <> text}, rest)}
+
+      _ ->
+        append(state, event)
+    end
+  end
+
+  defp retain(state, event), do: append(state, event)
+
+  # `:queue` keeps both ends O(1): this runs on every event of every run, so a
+  # list with `++` (O(n) per append) would make long runs quadratic.
+  defp append(state, event) do
+    if state.event_count >= @max_retained_events do
+      {_dropped, trimmed} = :queue.out(state.events)
+      %{state | events: :queue.in(event, trimmed)}
+    else
+      %{state | events: :queue.in(event, state.events), event_count: state.event_count + 1}
+    end
+  end
+
   defp tool_name(%{name: name}) when is_binary(name), do: name
   defp tool_name(%{"name" => name}) when is_binary(name), do: name
   defp tool_name(_), do: nil
@@ -310,7 +389,10 @@ defmodule ExAthena.Web.RunServer do
       current_action: state.current_action,
       awaiting_question: state.awaiting_question,
       pending_assistant_msg_id: state.assistant_msg_id,
-      run_sid: state.run_sid
+      run_sid: state.run_sid,
+      # Structural events so far, oldest-first. A LiveView that reconnects
+      # mid-run replays these to rebuild the window it was not there for.
+      events: :queue.to_list(state.events)
     }
   end
 end

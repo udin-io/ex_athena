@@ -67,6 +67,9 @@ defmodule ExAthena.Tools.WebSearch do
   def parallel_safe?, do: true
 
   @impl true
+  def read_only?, do: true
+
+  @impl true
   def execute(%{"query" => query} = args, _ctx) when is_binary(query) and query != "" do
     timeout = Map.get(args, "timeout_ms", @default_timeout)
 

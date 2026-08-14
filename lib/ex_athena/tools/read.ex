@@ -55,6 +55,9 @@ defmodule ExAthena.Tools.Read do
   def parallel_safe?, do: true
 
   @impl true
+  def read_only?, do: true
+
+  @impl true
   def execute(args, %ToolContext{} = ctx) do
     with {:ok, path} <- fetch_path(args, ctx),
          {:ok, stat} <- File.stat(path),

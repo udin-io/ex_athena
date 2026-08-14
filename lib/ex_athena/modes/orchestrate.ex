@@ -53,7 +53,8 @@ defmodule ExAthena.Modes.Orchestrate do
      self-contained enough to hand to a worker that cannot see this
      conversation.
   2. Delegate each substantial step to spawn_agent. Workers cannot see
-     this conversation — every spawn needs a self-contained brief
+     this conversation — every spawn needs `prompt:` (the instruction the
+     worker acts on — ALWAYS include it), a self-contained brief
      (objective, expected_output, tool_guidance, boundaries) and `todo:`
      set to the exact todo content the worker handles. spawn_agent is
      SYNCHRONOUS: it runs the worker to completion and the worker's report
@@ -79,6 +80,13 @@ defmodule ExAthena.Modes.Orchestrate do
   4. Never delegate work that is not on the todo list — FIRST add the
      todo with todo_write, THEN spawn the worker with `todo:` set to it.
      One todo per worker; do not bundle several steps into one spawn.
+  4b. Brief the OUTCOME, not the code. You hold no read tools, so any
+     implementation you write into a brief was composed without seeing the
+     file — that is how wrong code and invented values get typed in
+     verbatim. State what the change must achieve, the constraints it must
+     respect, and how to tell it worked; the worker can see the file and
+     the data, so let it choose the code. Exact code is for the rare case
+     where the precise text matters — then say what you based it on.
   5. Effort scaling: one worker for a simple step, two for comparisons.
      Workers run one at a time — delegate sequentially.
   6. When every todo is completed, call finish with a deliverable
@@ -137,6 +145,24 @@ defmodule ExAthena.Modes.Orchestrate do
     library docs, current information), use web_search then web_fetch ONCE
     to get it from authoritative sources, then record what you found —
     never web_search the same query twice.
+  - NEVER state how a library, framework or API behaves from memory. Call
+    `usage_rules` for that package first (it reads the local docs the
+    dependency ships); if it has none, web_search the official docs. A
+    confident wrong answer about an API costs far more than the lookup.
+  - If you CHANGE code you must verify it: write or update a test that
+    exercises the new behaviour BEFORE editing the source where practical,
+    then run the project's test command and paste the RAW output tail into
+    your report. Building is not testing — code that compiles can still fail
+    on its first real call. Never report success from reading your own diff,
+    and never claim a command's outcome without having run it.
+  - Any literal your code compares against real data (enum codes, status
+    strings, column values) must be OBSERVED, not guessed — read it from the
+    data or an existing use, and say where. If you could not observe it, list
+    it as an ASSUMPTION in your report.
+  - Deliver what was ASKED. Do not add conditions nobody requested or narrow
+    a stated scope; if the request seems wrong, implement it and say so.
+  - Test through the REAL entry point a caller uses, not a private helper you
+    just wrote — a helper test passes while the feature stays broken.
   - Your FINAL message is the ONLY thing the orchestrator sees — make it a
     complete, self-contained report: every concrete fact discovered (exact
     paths, file names, patterns, config/frontmatter formats, snippets),
@@ -303,7 +329,39 @@ defmodule ExAthena.Modes.Orchestrate do
     # there delegated nothing, so nudge to record a plan.
     all_done? = todos != [] and pending == []
 
+    # Only a `finish` can be gated on evidence: a bare-text stop is already
+    # handled below, and scanning the transcript is wasted work otherwise.
+    ev = if match?({:submitted, _}, halted.halted_reason), do: evidence(halted), else: nil
+
     cond do
+      # Gate 1 — nothing ran at all. Fires on an otherwise CLEAN finish,
+      # because that is exactly the shape of the failure: every todo marked
+      # completed (self-reported, so it proves nothing) and a deliverable
+      # asserting a build no worker ever ran. Worker provenance is derived
+      # from the workers' own tool calls, so it cannot be narrated away.
+      gate?(halted, ev, :verify_nudged, &(&1.changed != [] and not &1.acted?)) ->
+        nudge(halted, :verify_nudged, verify_note(ev.changed))
+
+      # Gate 2 — something ran, but nothing exercised the change. A build
+      # proves the code parses; the live failure compiled cleanly and raised
+      # on every page load.
+      gate?(halted, ev, :test_nudged, &(&1.source_changed != [] and not &1.tested?)) ->
+        nudge(halted, :test_nudged, test_note(ev.source_changed))
+
+      # Gate 3 — tests ran green, but never executed the changed code. A live
+      # run tested a private helper it had just written, reported 252 passing,
+      # and shipped a page that raised on every load.
+      gate?(halted, ev, :coverage_nudged, &(&1.uncovered != [])) ->
+        nudge(halted, :coverage_nudged, coverage_note(ev.uncovered))
+
+      # Gate 4 — everything mechanical is satisfied, but nothing has compared
+      # the delivered work to what was actually asked for. A live run was
+      # asked for "all records" and shipped a filter on invented column values
+      # matching none of them: it compiled, tests passed, the changed code
+      # ran. No mechanical check can see a requirement silently dropped.
+      gate?(halted, ev, :audit_nudged, &(&1.source_changed != [])) ->
+        nudge(halted, :audit_nudged, audit_note(original_request(halted)))
+
       not premature? or all_done? ->
         {:halt, halted}
 
@@ -328,6 +386,138 @@ defmodule ExAthena.Modes.Orchestrate do
          |> put_in([Access.key(:mode_state), :stop_nudged], true)
          |> Map.put(:meta, Map.delete(halted.meta, :finish_reason))}
     end
+  end
+
+  # Each gate is one-shot: it raises the floor without ever trapping a run that
+  # genuinely cannot verify, and the run terminates after at most one extra
+  # iteration per gate.
+  defp gate?(_halted, nil, _flag, _deficient?), do: false
+
+  defp gate?(halted, ev, flag, deficient?),
+    do: halted.mode_state[flag] != true and deficient?.(ev)
+
+  defp nudge(halted, flag, note) do
+    {:continue,
+     halted
+     |> redirect(note)
+     |> Map.put(:halted_reason, nil)
+     |> put_in([Access.key(:mode_state), flag], true)
+     |> Map.put(:meta, Map.delete(halted.meta, :finish_reason))}
+  end
+
+  # What the workers' own tool calls prove about this run.
+  #
+  # `acted?` is a FLOOR, not a proof: any non-read-only command clears it, so a
+  # worker that ran `mkdir` counts. It exists to make "nothing was checked"
+  # impossible to finish through silently. `tested?` is the sharper check —
+  # a test runner that actually exited zero.
+  defp evidence(state) do
+    transcript = transcript_text(state)
+    events = ExAthena.Provenance.scan(transcript)
+    files = ExAthena.Provenance.changed_files(events)
+    commands = ExAthena.Provenance.commands(events)
+    failed = ExAthena.Provenance.failed_commands(events)
+    source_changed = Enum.reject(files, &ExAthena.Provenance.test_file?/1)
+    tested? = Enum.any?(commands, &(ExAthena.Provenance.test_command?(&1) and &1 not in failed))
+
+    %{
+      changed: files,
+      source_changed: source_changed,
+      acted?:
+        Enum.any?(commands, &(not ExAthena.Tools.Bash.read_only_command?(%{"command" => &1}))),
+      tested?: tested?,
+      # Only asked once tests are green: before that, gates 1 and 2 own the
+      # conversation and a coverage demand would be noise on top of them.
+      uncovered: if(tested?, do: uncovered(source_changed, transcript, state.ctx.cwd), else: [])
+    }
+  end
+
+  # `:no_data` means the run never reported coverage at all, so nothing can be
+  # concluded — ask for it rather than read silence as either pass or fail.
+  defp uncovered([], _transcript, _cwd), do: []
+
+  defp uncovered(source_changed, transcript, cwd) do
+    case ExAthena.Coverage.unexercised(source_changed, transcript, cwd) do
+      :no_data -> source_changed
+      {:ok, files} -> files
+    end
+  end
+
+  # Worker reports arrive as tool results, so both channels must be scanned.
+  defp transcript_text(%State{messages: messages}) do
+    messages
+    |> Enum.flat_map(fn msg ->
+      [to_string(msg.content || "")] ++
+        Enum.map(msg.tool_results || [], &to_string(&1.content || ""))
+    end)
+    |> Enum.join("\n")
+  end
+
+  defp verify_note(files) do
+    "[orchestration runtime] Workers changed " <>
+      Enum.join(files, ", ") <>
+      " but no command was run to check them — a completed todo is your own " <>
+      "claim, not evidence. Spawn ONE worker whose brief is to run this " <>
+      "project's build/test command and report its RAW output, then call " <>
+      "finish. If this task genuinely cannot be checked by a command, call " <>
+      "finish again and say so in the deliverable."
+  end
+
+  # The FIRST user turn, verbatim. The audit must run against what was
+  # actually asked, never the orchestrator's own restatement of it — a
+  # paraphrase is where the dropped requirement went missing in the first
+  # place. (Compaction was not the cause: the live failure ran 37 iterations
+  # with zero compaction events, so the request was in context throughout and
+  # simply was never re-read.)
+  defp original_request(%State{messages: messages}) do
+    Enum.find_value(messages, "", fn
+      %{role: :user, content: content} when is_binary(content) -> content
+      _ -> nil
+    end)
+  end
+
+  @audit_request_chars 1_500
+
+  defp audit_note(request) do
+    request =
+      if String.length(request) > @audit_request_chars,
+        do: String.slice(request, 0, @audit_request_chars) <> "…",
+        else: request
+
+    "[orchestration runtime] Before finishing: nothing has checked the " <>
+      "delivered work against the ORIGINAL request. Compiling, passing tests " <>
+      "and covered code do not show that you built what was asked. Spawn ONE " <>
+      "worker to audit it. Give that worker the request below VERBATIM and " <>
+      "tell it to: list every explicit requirement as a separate item; for " <>
+      "each, read the actual delivered code and state MET or NOT MET with the " <>
+      "file and line as evidence; and check every literal value the code " <>
+      "compares against real data (enum codes, status strings, column values) " <>
+      "by querying or reading the data — a value that was assumed rather than " <>
+      "observed is NOT MET. It must actively look for requirements that were " <>
+      "narrowed, widened or dropped. Fix anything NOT MET, then finish.\n\n" <>
+      "ORIGINAL REQUEST:\n" <> request
+  end
+
+  defp coverage_note(files) do
+    "[orchestration runtime] The suite is green but no test executed " <>
+      Enum.join(files, ", ") <>
+      " — a passing suite proves a test EXISTS, not that it covers your " <>
+      "change. Spawn ONE worker to add a test that calls the changed code " <>
+      "through its real entry point (the function or route a caller actually " <>
+      "uses, not a private helper), run the suite WITH COVERAGE " <>
+      "(e.g. `mix test --cover`), and paste the coverage table plus the raw " <>
+      "test output. Then call finish. If this code genuinely cannot be " <>
+      "executed by a test, call finish again and say why."
+  end
+
+  defp test_note(files) do
+    "[orchestration runtime] Workers changed " <>
+      Enum.join(files, ", ") <>
+      " and no test run covered them — a build proves the code parses, not " <>
+      "that it works. Spawn ONE worker to run this project's test suite, and " <>
+      "to ADD a test exercising the changed behaviour if none does; it must " <>
+      "report the raw output. Then call finish. If this change genuinely " <>
+      "cannot be tested, call finish again and say why in the deliverable."
   end
 
   # Deliver a runtime redirect message while keeping the transcript valid:
@@ -395,20 +585,133 @@ defmodule ExAthena.Modes.Orchestrate do
     fresh_pending =
       Enum.reject(pending_todos(state), fn t -> MapSet.member?(delegated, field(t, :content)) end)
 
-    if fresh_pending != [] and turns >= @max_turns_without_spawn do
-      todo = hd(fresh_pending)
-      state = auto_delegate(state, todo)
+    {state, repeated?} = track_repeat(state, calls)
+    {state, dictating?} = track_dictated_code(state, calls)
 
-      state =
-        put_in(
-          state.mode_state[:auto_delegated],
-          MapSet.put(delegated, field(todo, :content))
-        )
+    cond do
+      # Writing implementations into briefs is the orchestrator acting as an
+      # implementer while configured as a coordinator: it must know the file
+      # to write the diff, but only receives worker summaries — so it
+      # re-requests files and guesses the rest. Steer it back to outcomes.
+      dictating? ->
+        {:continue, put_watch(redirect(state, dictated_code_note()), turns)}
 
-      {:continue, put_watch(state, 0)}
-    else
-      {:continue, put_watch(state, turns)}
+      # Re-delegating the SAME objective over and over is not progress, but the
+      # no-progress guard cannot see it: spawning is activity. A live run spent
+      # its last hour re-spawning "make mix test pass cleanly" against tests
+      # that could not pass in that environment.
+      repeated? ->
+        {:continue, put_watch(redirect(state, repeat_note()), turns)}
+
+      fresh_pending != [] and turns >= @max_turns_without_spawn ->
+        todo = hd(fresh_pending)
+        state = auto_delegate(state, todo)
+
+        state =
+          put_in(
+            state.mode_state[:auto_delegated],
+            MapSet.put(delegated, field(todo, :content))
+          )
+
+        {:continue, put_watch(state, 0)}
+
+      true ->
+        {:continue, put_watch(state, turns)}
     end
+  end
+
+  # One dictated implementation can be a deliberate, well-founded choice
+  # (the orchestrator may genuinely know the change). A habit of it is the
+  # coordinator/implementer mismatch, so the rail fires on the second.
+  @max_dictated_briefs 2
+
+  defp track_dictated_code(state, calls) do
+    dictated =
+      Enum.count(calls, fn tc ->
+        tc.name == "spawn_agent" and
+          ExAthena.Tools.SpawnAgent.dictated_code?(brief_prompt(tc.arguments))
+      end)
+
+    total = (state.mode_state[:dictated_briefs] || 0) + dictated
+
+    fire? = not (state.mode_state[:dictated_nudged] || false) and total >= @max_dictated_briefs
+
+    mode_state =
+      state.mode_state
+      |> Map.put(:dictated_briefs, total)
+      |> then(fn ms -> if fire?, do: Map.put(ms, :dictated_nudged, true), else: ms end)
+
+    {%{state | mode_state: mode_state}, fire?}
+  end
+
+  defp brief_prompt(args) when is_map(args), do: Map.get(args, "prompt") || ""
+  defp brief_prompt(_), do: ""
+
+  defp dictated_code_note do
+    "[orchestration runtime] You are writing implementations into your " <>
+      "briefs. You have not read these files — you hold no read tools — so " <>
+      "that code is composed blind, and it is why you keep spending workers " <>
+      "on \"report the contents of X\". Delegate the OUTCOME instead: state " <>
+      "what the change must achieve, the constraints it must respect, and " <>
+      "how to tell it worked — then let the worker, which can see the file " <>
+      "and the data, decide the code. Reserve exact code for cases where the " <>
+      "precise text genuinely matters, and say what you based it on."
+  end
+
+  # How many times the same objective may be delegated before the runtime
+  # says so. Two is a legitimate retry with a sharper brief; three is a loop.
+  @max_same_objective 3
+
+  # Objectives are compared on a normalised prefix: a model re-delegating the
+  # same work rarely reproduces it byte-for-byte, but the opening line is
+  # stable ("You are working on `/x`. Your ONLY job is to make mix test pass…").
+  defp track_repeat(state, calls) do
+    objectives =
+      for tc <- calls,
+          tc.name == "spawn_agent",
+          obj = repeat_key(tc.arguments),
+          obj != "",
+          do: obj
+
+    counts = state.mode_state[:objective_counts] || %{}
+
+    counts =
+      Enum.reduce(objectives, counts, fn obj, acc -> Map.update(acc, obj, 1, &(&1 + 1)) end)
+
+    repeated? =
+      not (state.mode_state[:repeat_nudged] || false) and
+        Enum.any?(objectives, &(Map.get(counts, &1, 0) >= @max_same_objective))
+
+    mode_state =
+      state.mode_state
+      |> Map.put(:objective_counts, counts)
+      |> then(fn ms -> if repeated?, do: Map.put(ms, :repeat_nudged, true), else: ms end)
+
+    {%{state | mode_state: mode_state}, repeated?}
+  end
+
+  @repeat_key_chars 120
+
+  defp repeat_key(args) when is_map(args) do
+    (Map.get(args, "objective") || Map.get(args, "prompt") || "")
+    |> to_string()
+    |> String.downcase()
+    |> String.replace(~r/\s+/, " ")
+    |> String.trim()
+    |> String.slice(0, @repeat_key_chars)
+  end
+
+  defp repeat_key(_), do: ""
+
+  defp repeat_note do
+    "[orchestration runtime] You have now delegated the same objective " <>
+      "#{@max_same_objective} times. Repeating it is not progress — the " <>
+      "obstacle is not that the worker misunderstood. Either change the " <>
+      "approach (a different angle, a smaller step, or fixing a blocker the " <>
+      "reports keep naming), or accept that this step cannot be completed in " <>
+      "this environment: record what blocks it, mark the todo, and move on to " <>
+      "the remaining work or finish with the blocker stated in your " <>
+      "deliverable. Do NOT spawn this objective again."
   end
 
   # Todos come from the KERNEL's meta[:todos] (success-filtered — see

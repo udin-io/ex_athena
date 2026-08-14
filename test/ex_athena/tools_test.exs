@@ -16,6 +16,12 @@ defmodule ExAthena.ToolsTest do
       assert Enum.all?(specs, &match?(%Spec{kind: :module}, &1))
     end
 
+    test "read_summary is a builtin so agents can survey a file without reading it" do
+      assert ExAthena.Tools.ReadSummary in Tools.builtins()
+
+      assert Enum.any?(Tools.resolve(tools: :all), &match?(%Spec{name: "read_summary"}, &1))
+    end
+
     test "nil falls back to configured or :all" do
       specs = Tools.resolve([])
       assert is_list(specs)
@@ -96,6 +102,32 @@ defmodule ExAthena.ToolsTest do
       # validate! on specs checks spec invariants, not module behaviour
       # An invalid spec (nil name) would fail structural checks
       :ok
+    end
+  end
+
+  # `Tool.read_only?/0` is an optional callback that `Spec.from_module/1` reads
+  # and `Loop` feeds to `Permissions` as `readonly_tools:`. Every builtin left
+  # it undeclared, so every builtin spec claimed `read_only?: false` — which is
+  # why `read_summary` (absent from the hardcoded allow-list) was denied in the
+  # read-only plan phase despite only ever reading a file.
+  describe "read_only? classification of builtin specs" do
+    defp flag(name) do
+      Tools.builtins()
+      |> Tools.resolve()
+      |> Enum.find(&(&1.name == name))
+      |> Map.fetch!(:read_only?)
+    end
+
+    test "tools that only observe are declared read-only" do
+      for name <- ~w(read read_summary glob grep lsp usage_rules web_fetch web_search) do
+        assert flag(name), "expected #{name} to declare itself read-only"
+      end
+    end
+
+    test "tools that mutate the workspace are not" do
+      for name <- ~w(write edit apply_patch bash) do
+        refute flag(name), "expected #{name} NOT to be read-only"
+      end
     end
   end
 end

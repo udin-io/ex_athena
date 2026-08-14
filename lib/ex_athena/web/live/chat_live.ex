@@ -6,6 +6,11 @@ defmodule ExAthena.Web.Live.ChatLive do
   alias ExAthena.Web.Sessions
   alias Phoenix.LiveView.JS
 
+  # Autosave cadence for an in-flight run. Must be declared before its use in
+  # `handle_info(:autosave_session, _)` — module attributes are evaluated in
+  # source order, and reading an undefined one yields nil.
+  @autosave_interval_ms 5_000
+
   @providers [
     {"llama.cpp", "llamacpp"},
     {"Ollama", "ollama"},
@@ -189,12 +194,134 @@ defmodule ExAthena.Web.Live.ChatLive do
           awaiting_question: snap.awaiting_question,
           pending_assistant_msg_id: snap.pending_assistant_msg_id
         )
+        |> replay_run_events(snap)
         |> resubscribe_coordinator(snap.run_sid)
+        # The autosave timer died with the previous LiveView pid — restart it
+        # here or a reconnect silently stops persisting the rest of the run.
+        |> then(fn s -> if snap.streaming, do: schedule_autosave(s), else: s end)
 
       {:error, :not_running} ->
         socket
     end
   end
+
+  @doc """
+  Append `msg`, or replace the existing message with the same id.
+
+  `restore_open_turn/1` may already have put a placeholder for the in-flight
+  turn into the list (a reload mid-run), and a blind append would then leave
+  two messages sharing an id — a duplicate DOM id, which LiveView raises on.
+  """
+  @spec upsert_message([map()], map()) :: [map()]
+  def upsert_message(messages, %{id: id} = msg) do
+    if Enum.any?(messages, &(&1.id == id)) do
+      Enum.map(messages, fn m -> if m.id == id, do: msg, else: m end)
+    else
+      messages ++ [msg]
+    end
+  end
+
+  @doc """
+  Reopen an assistant turn whose run never finished.
+
+  Details are stamped with the assistant message's id from the first event
+  onward, but the message itself was only appended when the run COMPLETED. A
+  run that was killed, crashed, or is still in flight therefore leaves its
+  details parented to a message that does not exist — and `message_items/2`
+  matches on `message_id`, so every one of them renders nowhere. A session
+  holding 118 saved entries opened as a blank screen.
+
+  This synthesises the missing message from the details themselves, so an
+  interrupted run shows the work it did instead of nothing.
+  """
+  @spec restore_open_turn(map()) :: map()
+  def restore_open_turn(%{display_messages: messages, details_stream: details} = data)
+      when is_list(messages) and is_list(details) do
+    known = MapSet.new(messages, & &1.id)
+
+    # details_stream is newest-first; reverse so orphans are appended in the
+    # order their turns actually occurred.
+    orphans =
+      details
+      |> Enum.reverse()
+      |> Enum.map(& &1.message_id)
+      |> Enum.uniq()
+      |> Enum.reject(&(is_nil(&1) or MapSet.member?(known, &1)))
+
+    %{data | display_messages: messages ++ Enum.map(orphans, &open_turn(&1, details))}
+  end
+
+  def restore_open_turn(data), do: data
+
+  defp open_turn(msg_id, details) do
+    text =
+      details
+      |> Enum.reverse()
+      |> Enum.filter(&(&1.message_id == msg_id and &1.type == :assistant_text))
+      |> Enum.map_join("", &(&1.payload[:text] || ""))
+
+    %{id: msg_id, role: :assistant, text: text, tool_events: [], status: nil}
+  end
+
+  @doc """
+  Populate the sidebar's session list for the current working directory.
+
+  The list used to be built ONLY by `open_cwd` and `toggle_sessions`, so
+  opening a session by URL (or reloading the page on one) left `sessions` at
+  its mount default of `[]` — an empty sidebar that had simply never been
+  asked to build itself.
+
+  `visibility` is `:auto` on a first load (open the panel when there is
+  something to show) or `:keep` on a refresh, which must never open a panel
+  the user closed nor close one they opened. `lister` takes the cwd and
+  returns the headers (injected so this is testable without the filesystem).
+  """
+  @spec assign_session_list(
+          Phoenix.LiveView.Socket.t(),
+          (String.t() | nil -> [map()]),
+          :auto | :keep
+        ) ::
+          Phoenix.LiveView.Socket.t()
+  def assign_session_list(socket, lister, visibility \\ :auto) when is_function(lister, 1) do
+    sessions = lister.(socket.assigns[:cwd])
+
+    case visibility do
+      :keep -> assign(socket, sessions: sessions)
+      :auto -> assign(socket, sessions: sessions, show_sessions: sessions != [])
+    end
+  end
+
+  # Headers for `cwd`, or every session when no directory is set yet.
+  defp session_lister do
+    fn
+      nil -> Sessions.list()
+      cwd -> Sessions.list_for_cwd(cwd)
+    end
+  end
+
+  # Rebuild the part of the run this LiveView was not present for.
+  #
+  # The session restored from disk may already hold entries for the current
+  # run (autosave persisted whatever the *previous* LiveView had received), so
+  # that slice is dropped and rebuilt wholesale from RunServer's authoritative
+  # history. Keying on the run's assistant message id leaves earlier turns
+  # untouched and makes a repeated reattach idempotent — a flapping connection
+  # can reattach many times without duplicating rows.
+  @doc false
+  def replay_run_events(socket, %{events: events, pending_assistant_msg_id: msg_id})
+      when is_list(events) and events != [] do
+    socket
+    |> update(:details_stream, fn stream ->
+      Enum.reject(stream, &(&1.message_id == msg_id))
+    end)
+    # Rebuilt wholesale from the retained history, so every accumulator this
+    # turn owns starts empty — otherwise replayed text lands on top of the
+    # restored copy and the answer appears twice.
+    |> assign(stream_events: [], stream_tool_ui: %{}, stream_text: "")
+    |> then(&Enum.reduce(events, &1, fn event, s -> apply_event(s, event) end))
+  end
+
+  def replay_run_events(socket, _snap), do: socket
 
   defp resubscribe_coordinator(socket, nil), do: socket
 
@@ -458,17 +585,9 @@ defmodule ExAthena.Web.Live.ChatLive do
     show = !socket.assigns.show_sessions
 
     socket =
-      if show do
-        sessions =
-          case socket.assigns.cwd do
-            nil -> Sessions.list()
-            cwd -> Sessions.list_for_cwd(cwd)
-          end
-
-        assign(socket, sessions: sessions)
-      else
-        socket
-      end
+      if show,
+        do: assign_session_list(socket, session_lister(), :keep),
+        else: socket
 
     {:noreply, assign(socket, show_sessions: show)}
   end
@@ -702,123 +821,29 @@ defmodule ExAthena.Web.Live.ChatLive do
     {:noreply, assign(socket, available_models: models, models_loading: false, model: model)}
   end
 
-  def handle_info({:athena, {:content, text}}, socket) do
-    msg_id = socket.assigns.pending_assistant_msg_id
+  def handle_info({:athena, event}, socket), do: {:noreply, apply_event(socket, event)}
 
-    {:noreply,
-     socket
-     |> update(:stream_text, &(&1 <> text))
-     |> update(:details_stream, &extend_or_prepend_text(&1, :assistant_text, msg_id, text))}
+  # Keep the persisted session current while a run is in flight. Stops
+  # rescheduling itself once the run ends — the completion save in
+  # `{:athena_done, _}` writes the final state.
+  def handle_info(:autosave_session, socket) do
+    if socket.assigns.streaming do
+      sig = session_signature(socket.assigns)
+
+      socket =
+        if sig == socket.assigns[:session_sig] do
+          socket
+        else
+          save_session(socket)
+          assign(socket, session_sig: sig)
+        end
+
+      Process.send_after(self(), :autosave_session, @autosave_interval_ms)
+      {:noreply, socket}
+    else
+      {:noreply, assign(socket, autosave_on: false)}
+    end
   end
-
-  def handle_info({:athena, {:thinking, text}}, socket) do
-    msg_id = socket.assigns.pending_assistant_msg_id
-
-    {:noreply,
-     update(socket, :details_stream, &extend_or_prepend_text(&1, :thinking, msg_id, text))}
-  end
-
-  def handle_info({:athena, {:tool_call, tc}}, socket) do
-    event = %{type: :call, id: tc.id, name: tc.name, arguments: tc.arguments}
-    action = action_label(tc.name, tc.arguments)
-    msg_id = socket.assigns.pending_assistant_msg_id
-
-    detail =
-      new_detail(:tool_call, msg_id, %{
-        tool_call_id: tc.id,
-        name: tc.name,
-        arguments: tc.arguments
-      })
-
-    {:noreply,
-     socket
-     |> update(:stream_events, &(&1 ++ [event]))
-     |> update(:details_stream, &[detail | &1])
-     |> assign(current_action: action)}
-  end
-
-  def handle_info({:athena, {:tool_result, tr}}, socket) do
-    content = to_string(tr.content)
-    is_error = tr.is_error || false
-
-    event = %{
-      type: :result,
-      tool_call_id: tr.tool_call_id,
-      content: content,
-      is_error: is_error
-    }
-
-    msg_id = socket.assigns.pending_assistant_msg_id
-
-    detail =
-      new_detail(:tool_result, msg_id, %{
-        tool_call_id: tr.tool_call_id,
-        content: content,
-        is_error: is_error
-      })
-
-    {:noreply,
-     socket
-     |> update(:stream_events, &(&1 ++ [event]))
-     |> update(:details_stream, &[detail | &1])
-     |> assign(current_action: nil)}
-  end
-
-  def handle_info(
-        {:athena, {:tool_ui, %{tool_call_id: id, kind: kind, payload: payload}}},
-        socket
-      ) do
-    ui_entry = build_ui_entry(kind, payload, socket.assigns.cwd)
-    msg_id = socket.assigns.pending_assistant_msg_id
-    detail = new_detail(:tool_ui, msg_id, %{tool_call_id: id, ui: ui_entry})
-
-    {:noreply,
-     socket
-     |> update(:stream_tool_ui, &Map.put(&1, id, ui_entry))
-     |> update(:details_stream, &[detail | &1])}
-  end
-
-  def handle_info({:athena, {:iteration, n}}, socket) do
-    detail = new_detail(:iteration, socket.assigns.pending_assistant_msg_id, %{n: n})
-    {:noreply, update(socket, :details_stream, &[detail | &1])}
-  end
-
-  def handle_info({:athena, {:compaction, data}}, socket) do
-    detail = new_detail(:compaction, socket.assigns.pending_assistant_msg_id, data)
-    {:noreply, update(socket, :details_stream, &[detail | &1])}
-  end
-
-  def handle_info({:athena, {:subagent_spawn, data}}, socket) do
-    detail = new_detail(:subagent_spawn, socket.assigns.pending_assistant_msg_id, data)
-    {:noreply, update(socket, :details_stream, &[detail | &1])}
-  end
-
-  def handle_info({:athena, {:subagent_result, data}}, socket) do
-    detail = new_detail(:subagent_result, socket.assigns.pending_assistant_msg_id, data)
-    {:noreply, update(socket, :details_stream, &[detail | &1])}
-  end
-
-  def handle_info({:athena, {:structured_retry, data}}, socket) do
-    detail = new_detail(:structured_retry, socket.assigns.pending_assistant_msg_id, data)
-    {:noreply, update(socket, :details_stream, &[detail | &1])}
-  end
-
-  def handle_info({:athena, {:usage, usage}}, socket) do
-    detail = new_detail(:usage, socket.assigns.pending_assistant_msg_id, %{usage: usage})
-    {:noreply, update(socket, :details_stream, &[detail | &1])}
-  end
-
-  def handle_info({:athena, {:error, reason}}, socket) do
-    detail =
-      new_detail(:error, socket.assigns.pending_assistant_msg_id, %{reason: inspect(reason)})
-
-    {:noreply,
-     socket
-     |> assign(error: inspect(reason))
-     |> update(:details_stream, &[detail | &1])}
-  end
-
-  def handle_info({:athena, _other}, socket), do: {:noreply, socket}
 
   # Batched orchestration snapshots (≤ ~10/s) from the run's coordinator.
   # Scoped to the current run — late updates from a previous run are dropped.
@@ -894,7 +919,9 @@ defmodule ExAthena.Web.Live.ChatLive do
         result
       )
 
-    messages = socket.assigns.messages ++ [assistant_msg]
+    # Upsert, not append: a reload mid-run may already have reopened this turn
+    # as a placeholder, and two messages sharing an id is a duplicate DOM id.
+    messages = upsert_message(socket.assigns.messages, assistant_msg)
     title = socket.assigns.session_title || derive_title(messages)
 
     socket =
@@ -1301,6 +1328,7 @@ defmodule ExAthena.Web.Live.ChatLive do
               details_stream={@details_stream}
               msg_id={@pending_assistant_msg_id}
               current_action={@current_action}
+              worker_action={active_worker_action(@orchestrator)}
               chat_expanded={@chat_expanded}
             />
           <% end %>
@@ -1645,6 +1673,9 @@ defmodule ExAthena.Web.Live.ChatLive do
             <span class="action-icon">⚡</span> {@current_action}
           </span>
         <% end %>
+        <%!-- While a worker runs, the orchestrator's own action is just
+              "running spawn_agent…"; this says what the worker is doing. --%>
+        <span :if={@worker_action} class="worker-action">↳ {@worker_action}</span>
       </div>
       <.assistant_item
         :for={{item, idx} <- Enum.with_index(@items)}
@@ -2030,9 +2061,17 @@ defmodule ExAthena.Web.Live.ChatLive do
       |> assign(:focused, find_agent(assigns.orchestrator, assigns.focus))
       # parent_id → [child agents], for rendering the nested agent tree.
       |> assign(:by_parent, Enum.group_by(assigns.orchestrator.agents, & &1.parent_id))
+      |> assign(:tokens, token_summary(assigns.orchestrator))
 
     ~H"""
     <div class="ov-panel">
+      <%= if @tokens && @tokens.agent_count > 0 do %>
+        <div class="ov-tokens">
+          orchestrator {fmt_tokens(@tokens.orchestrator)} · {@tokens.agent_count} agents {fmt_tokens(
+            @tokens.workers
+          )}
+        </div>
+      <% end %>
       <%= if @focus do %>
         <.agent_focus info={@focused} focus_id={@focus} />
       <% else %>
@@ -2272,6 +2311,120 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   defp format_args(other), do: inspect(other, pretty: true)
 
+  # Fold ONE run event into the socket. Extracted from `handle_info` so a
+  # LiveView that reconnects mid-run can replay the events it missed through
+  # exactly the same code that renders live ones — two rendering paths would
+  # drift, and a replayed transcript must be indistinguishable from a live one.
+  @spec apply_event(Phoenix.LiveView.Socket.t(), tuple()) :: Phoenix.LiveView.Socket.t()
+  def apply_event(socket, {:content, text}) do
+    msg_id = socket.assigns.pending_assistant_msg_id
+
+    socket
+    |> update(:stream_text, &(&1 <> text))
+    |> update(:details_stream, &extend_or_prepend_text(&1, :assistant_text, msg_id, text))
+  end
+
+  def apply_event(socket, {:thinking, text}) do
+    msg_id = socket.assigns.pending_assistant_msg_id
+
+    update(socket, :details_stream, &extend_or_prepend_text(&1, :thinking, msg_id, text))
+  end
+
+  def apply_event(socket, {:tool_call, tc}) do
+    event = %{type: :call, id: tc.id, name: tc.name, arguments: tc.arguments}
+    action = action_label(tc.name, tc.arguments)
+    msg_id = socket.assigns.pending_assistant_msg_id
+
+    detail =
+      new_detail(:tool_call, msg_id, %{
+        tool_call_id: tc.id,
+        name: tc.name,
+        arguments: tc.arguments
+      })
+
+    socket
+    |> update(:stream_events, &(&1 ++ [event]))
+    |> update(:details_stream, &[detail | &1])
+    |> assign(current_action: action)
+  end
+
+  def apply_event(socket, {:tool_result, tr}) do
+    content = to_string(tr.content)
+    is_error = tr.is_error || false
+
+    event = %{
+      type: :result,
+      tool_call_id: tr.tool_call_id,
+      content: content,
+      is_error: is_error
+    }
+
+    msg_id = socket.assigns.pending_assistant_msg_id
+
+    detail =
+      new_detail(:tool_result, msg_id, %{
+        tool_call_id: tr.tool_call_id,
+        content: content,
+        is_error: is_error
+      })
+
+    socket
+    |> update(:stream_events, &(&1 ++ [event]))
+    |> update(:details_stream, &[detail | &1])
+    |> assign(current_action: nil)
+  end
+
+  def apply_event(socket, {:tool_ui, %{tool_call_id: id, kind: kind, payload: payload}}) do
+    ui_entry = build_ui_entry(kind, payload, socket.assigns.cwd)
+    msg_id = socket.assigns.pending_assistant_msg_id
+    detail = new_detail(:tool_ui, msg_id, %{tool_call_id: id, ui: ui_entry})
+
+    socket
+    |> update(:stream_tool_ui, &Map.put(&1, id, ui_entry))
+    |> update(:details_stream, &[detail | &1])
+  end
+
+  def apply_event(socket, {:iteration, n}) do
+    detail = new_detail(:iteration, socket.assigns.pending_assistant_msg_id, %{n: n})
+    update(socket, :details_stream, &[detail | &1])
+  end
+
+  def apply_event(socket, {:compaction, data}) do
+    detail = new_detail(:compaction, socket.assigns.pending_assistant_msg_id, data)
+    update(socket, :details_stream, &[detail | &1])
+  end
+
+  def apply_event(socket, {:subagent_spawn, data}) do
+    detail = new_detail(:subagent_spawn, socket.assigns.pending_assistant_msg_id, data)
+    update(socket, :details_stream, &[detail | &1])
+  end
+
+  def apply_event(socket, {:subagent_result, data}) do
+    detail = new_detail(:subagent_result, socket.assigns.pending_assistant_msg_id, data)
+    update(socket, :details_stream, &[detail | &1])
+  end
+
+  def apply_event(socket, {:structured_retry, data}) do
+    detail = new_detail(:structured_retry, socket.assigns.pending_assistant_msg_id, data)
+    update(socket, :details_stream, &[detail | &1])
+  end
+
+  def apply_event(socket, {:usage, usage}) do
+    detail = new_detail(:usage, socket.assigns.pending_assistant_msg_id, %{usage: usage})
+    update(socket, :details_stream, &[detail | &1])
+  end
+
+  def apply_event(socket, {:error, reason}) do
+    detail =
+      new_detail(:error, socket.assigns.pending_assistant_msg_id, %{reason: inspect(reason)})
+
+    socket
+    |> assign(error: inspect(reason))
+    |> update(:details_stream, &[detail | &1])
+  end
+
+  def apply_event(socket, _other), do: socket
+
   # ---------------------------------------------------------------------------
   # Private helpers
   # ---------------------------------------------------------------------------
@@ -2375,6 +2528,16 @@ defmodule ExAthena.Web.Live.ChatLive do
     # durably append the answer to, and a reconnect mid-run reopens the turn.
     save_session(socket)
 
+    # …then keep it current for the rest of the run, so the session is
+    # inspectable at any moment rather than only at start and finish.
+    socket =
+      socket
+      |> assign(session_sig: session_signature(socket.assigns))
+      |> schedule_autosave()
+      # A brand-new session only exists on disk as of the save above — refresh
+      # so it appears in the sidebar now rather than after a manual toggle.
+      |> assign_session_list(session_lister(), :keep)
+
     # Hand the run to the stable per-session owner, subscribing this LiveView up
     # front (no early event can race the subscription). The run now outlives a
     # reconnect; a remounting LiveView re-attaches via mount.
@@ -2415,6 +2578,9 @@ defmodule ExAthena.Web.Live.ChatLive do
   # Assign a loaded session's data onto the socket. Shared by the load_session
   # event and the connected-mount restore path so both stay in lockstep.
   defp assign_session_data(socket, data) do
+    # A run that was interrupted (killed server, crash, still in flight) never
+    # got its assistant message appended — reopen it so its details render.
+    data = restore_open_turn(data)
     tool_uis = Map.get(data, :tool_uis, %{})
 
     details_stream =
@@ -2442,8 +2608,15 @@ defmodule ExAthena.Web.Live.ChatLive do
       details_stream: details_stream,
       pending_assistant_msg_id: nil,
       status: nil,
-      error: nil
+      error: nil,
+      # Restored from disk so the Overview survives a reload after the run
+      # ended. A live reattach overwrites this from the Coordinator, which is
+      # authoritative while the run is still going.
+      orchestrator: stored_orchestrator(data)
     )
+    # The cwd is only known once the session is loaded, so the sidebar list is
+    # built here — otherwise opening a session by URL shows an empty sidebar.
+    |> assign_session_list(session_lister())
   end
 
   # Keep the browser URL on `/c/:session_id` so a reconnect re-mounts with the
@@ -2454,10 +2627,70 @@ defmodule ExAthena.Web.Live.ChatLive do
       else: socket
   end
 
-  defp save_session(socket) do
-    a = socket.assigns
+  # ---------------------------------------------------------------------------
+  # Autosave
+  # ---------------------------------------------------------------------------
 
-    Sessions.save(%{
+  # A session was written exactly twice per run — once at run start (with the
+  # user turn) and once at completion. A long local run therefore showed
+  # nothing on disk for its entire duration: reopening it mid-run, or looking
+  # for it in the sidebar, surfaced only the opening question. This tick keeps
+  # the persisted session current while the run is in flight.
+  #
+  # 5 s is far below a local model's 30-90 s turn, so the file is never more
+  # than one turn stale, and `session_signature/1` skips the write entirely
+  # when nothing changed — an idle tick costs no I/O. (The interval itself is
+  # declared at the top of the module: attributes evaluate in source order, so
+  # defining it here would make the handle_info above read `nil`.)
+
+  @doc """
+  Cheap fingerprint of everything `save_session/1` persists that can change
+  mid-run. Compared against the last saved value so the tick only writes when
+  the session actually moved.
+
+  Hashes the whole structure rather than counting entries: content and
+  thinking deltas EXTEND an existing `details_stream` entry instead of
+  prepending a new one, so a length check would miss a streaming answer.
+  """
+  @spec session_signature(map()) :: integer()
+  def session_signature(assigns) do
+    :erlang.phash2({
+      assigns.messages,
+      assigns.details_stream,
+      assigns.tool_uis,
+      assigns.session_title,
+      # The Overview is persisted too, so a turn whose only visible change is
+      # orchestrator state (a todo completing, a worker returning) must still
+      # trigger the write.
+      Map.get(assigns, :orchestrator)
+    })
+  end
+
+  # Idempotent: a reconnect re-attaches to a live run and must not stack a
+  # second timer on top of the one the previous LiveView pid owned.
+  defp schedule_autosave(socket) do
+    if socket.assigns[:autosave_on] do
+      socket
+    else
+      Process.send_after(self(), :autosave_session, @autosave_interval_ms)
+      assign(socket, autosave_on: true)
+    end
+  end
+
+  defp save_session(socket), do: Sessions.save(session_payload(socket.assigns))
+
+  @doc """
+  The map persisted for a session.
+
+  Includes the orchestrator snapshot: the Overview tab is fed by the
+  Coordinator, which lives only in memory and is only re-subscribed while a
+  run is still attachable. Without this, reloading the page after a run ended
+  (or after a server restart) showed a blank Overview even though the whole
+  run was on disk.
+  """
+  @spec session_payload(map()) :: map()
+  def session_payload(a) do
+    %{
       id: a.session_id,
       title: a.session_title,
       cwd: a.cwd,
@@ -2470,9 +2703,91 @@ defmodule ExAthena.Web.Live.ChatLive do
       ex_messages: a.ex_messages,
       provider_session_id: a.provider_session_id,
       tool_uis: a.tool_uis,
-      details_stream: a.details_stream
-    })
+      details_stream: a.details_stream,
+      orchestrator: Map.get(a, :orchestrator)
+    }
   end
+
+  @doc """
+  What the currently-running worker is doing, for the main streaming line.
+
+  While a worker runs — often many minutes — the orchestrator's own action is
+  just "running spawn_agent…", which says nothing. The useful detail lives on
+  `AgentInfo` but was only rendered in the Overview tab, so following a run
+  meant switching tabs or reading the log.
+
+  The DEEPEST running agent is the informative one: a parent that spawned a
+  child is only waiting on it.
+  """
+  @spec active_worker_action(map() | nil) :: String.t() | nil
+  def active_worker_action(%{agents: agents}) when is_list(agents) do
+    agents
+    |> Enum.filter(&(&1.status == :running))
+    |> Enum.max_by(& &1.depth, fn -> nil end)
+    |> case do
+      nil ->
+        nil
+
+      agent ->
+        "#{agent.name || agent.id} · #{agent.current_action || "starting…"} (iter #{agent.iteration})"
+    end
+  end
+
+  def active_worker_action(_), do: nil
+
+  @doc """
+  Split a run's token use between the orchestrator and its workers.
+
+  Per-agent totals are already tracked on `AgentInfo` and shown per row, but
+  nothing aggregated them. The split is the interesting number: the
+  orchestrator's context stays small by design (workers return summaries, not
+  transcripts), so a large worker total against a small orchestrator total is
+  the architecture behaving, not a leak.
+
+  Nested subagents are counted with the workers — the agent list is flat and
+  every depth carries its own usage.
+  """
+  @spec token_summary(map() | nil) :: map() | nil
+  def token_summary(%{main: main, agents: agents}) when is_list(agents) do
+    %{
+      orchestrator: usage_of(main),
+      workers:
+        Enum.reduce(agents, %{input_tokens: 0, output_tokens: 0}, fn a, acc ->
+          u = usage_of(a)
+
+          %{
+            input_tokens: acc.input_tokens + u.input_tokens,
+            output_tokens: acc.output_tokens + u.output_tokens
+          }
+        end),
+      agent_count: length(agents)
+    }
+  end
+
+  def token_summary(_), do: nil
+
+  defp usage_of(%{usage: %{} = u}),
+    do: %{
+      input_tokens: Map.get(u, :input_tokens, 0),
+      output_tokens: Map.get(u, :output_tokens, 0)
+    }
+
+  defp usage_of(_), do: %{input_tokens: 0, output_tokens: 0}
+
+  @doc false
+  @spec fmt_tokens(map()) :: String.t()
+  def fmt_tokens(%{input_tokens: input, output_tokens: output}),
+    do: "#{compact_count(input)}/#{compact_count(output)} tok"
+
+  # Worker totals run to millions on a long run; raw digits are unreadable in
+  # a one-line summary.
+  defp compact_count(n) when n >= 1_000_000, do: "#{Float.round(n / 1_000_000, 1)}M"
+  defp compact_count(n) when n >= 1_000, do: "#{Float.round(n / 1_000, 1)}k"
+  defp compact_count(n), do: to_string(n)
+
+  @doc "The orchestrator snapshot stored with a session, if any."
+  @spec stored_orchestrator(map()) :: map() | nil
+  def stored_orchestrator(data), do: Map.get(data, :orchestrator)
 
   # ---------------------------------------------------------------------------
   # Details-stream helpers

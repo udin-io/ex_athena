@@ -54,7 +54,14 @@ defmodule ExAthena.Tools.SpawnAgent do
   # with tool-output caps + the Completed/Remaining failure handoff, a
   # worker that runs out hands its progress to a narrower retry instead of
   # burning an hour spinning. Smaller explicit args are floored UP.
-  @default_max_iterations 25
+  @default_max_iterations 50
+
+  # Report cap. Was 8_000 chars (~2k tokens), which clipped 15% of live
+  # reports — against an orchestrator whose context peaks around 32k in a
+  # 128k+ window, so the budget this protects was never scarce. 24_000 covers
+  # every report observed except two outliers, at ~6k tokens on the
+  # orchestrator's largest turn.
+  @default_result_chars 24_000
 
   @impl true
   def name, do: "spawn_agent"
@@ -134,12 +141,30 @@ defmodule ExAthena.Tools.SpawnAgent do
   # see the depth rail in execute/2.
   @default_max_agent_depth 5
 
+  # Where the worker's instruction comes from, in order of preference.
+  #
+  # The orchestration protocol asks the model for a four-field brief
+  # (objective / expected_output / tool_guidance / boundaries) plus `todo:`
+  # and never mentions `prompt` — only the JSON schema does. Models therefore
+  # produce complete, well-formed briefs with no `prompt` key, which used to
+  # hard-fail as `:missing_prompt`. That was the single wall in a module whose
+  # stated design is "every missing field gets a runtime default, never a
+  # wall" (see @brief_defaults), and a rejection just makes small models
+  # repeat the identical call. `objective` carries the same instruction;
+  # `todo` is the next best source.
+  @prompt_sources ~w(prompt objective todo)
+
   @impl true
-  def execute(%{"prompt" => prompt} = args, ctx) when is_binary(prompt) do
+  def execute(args, ctx) when is_map(args) do
     assigns = ctx.assigns || %{}
     todo = Map.get(args, "todo")
+    prompt = resolve_prompt(args)
+    args = if is_binary(prompt), do: Map.put(args, "prompt", prompt), else: args
 
     cond do
+      is_nil(prompt) ->
+        {:error, :missing_prompt}
+
       Map.get(assigns, :agent_depth, 0) >= max_agent_depth(assigns) ->
         # Nesting-depth rail: agents may delegate sub-agents up to a
         # configurable max depth (config :ex_athena, max_agent_depth, default
@@ -164,6 +189,15 @@ defmodule ExAthena.Tools.SpawnAgent do
   end
 
   def execute(_, _), do: {:error, :missing_prompt}
+
+  defp resolve_prompt(args) do
+    Enum.find_value(@prompt_sources, fn key ->
+      case Map.get(args, key) do
+        value when is_binary(value) -> if blank?(value), do: nil, else: value
+        _ -> nil
+      end
+    end)
+  end
 
   defp do_execute(args, prompt, ctx) do
     # 30 min wall clock — covers the 25-iteration budget on a local model
@@ -309,7 +343,14 @@ defmodule ExAthena.Tools.SpawnAgent do
               true -> conclusions_digest(sub_result)
             end
 
-          text = truncate_result(text, Map.get(args, "max_result_chars") || 8_000)
+          # Appended AFTER truncation: the report is the worker's own account
+          # of its work, and a verbose worker must never be able to push the
+          # facts about what it actually did out of the orchestrator's view.
+          text =
+            text
+            |> truncate_result(Map.get(args, "max_result_chars") || @default_result_chars)
+            |> append_provenance(sub_result)
+
           emit_event(ctx, {:subagent_result, %{id: sub_id, text: text}})
 
           _ =
@@ -531,12 +572,57 @@ defmodule ExAthena.Tools.SpawnAgent do
     # are relative to it, and the worker must never wander elsewhere.
     brief = append_cwd_line(brief, cwd)
 
-    if brief == "" do
-      prompt
+    composed =
+      if brief == "" do
+        prompt
+      else
+        prompt <> "\n\n## Task brief\n" <> brief
+      end
+
+    composed <> dictated_code_note(prompt)
+  end
+
+  # An orchestrator holds no read tools by design, yet it can still dictate a
+  # full implementation into the brief — and a worker that types it in verbatim
+  # means nobody with eyes on the file ever evaluated the code. Rather than
+  # forbid it (sometimes the parent genuinely knows the change), turn the
+  # typist into a reviewer.
+  @dictated_code_lines 8
+
+  @doc """
+  Whether a brief carries a dictated implementation rather than an outcome.
+
+  The orchestrator holds no read tools, so code it writes into a brief was
+  composed without seeing the target file. Used both here (to tell the worker
+  to reconcile it) and by the orchestrate mode (to steer the orchestrator back
+  to describing outcomes).
+  """
+  @spec dictated_code?(String.t() | nil) :: boolean()
+  def dictated_code?(prompt), do: fenced_code_lines(prompt) >= @dictated_code_lines
+
+  defp dictated_code_note(prompt) do
+    if dictated_code?(prompt) do
+      "\n\n## About the code in this brief\n" <>
+        "The code above was written by an orchestrator that has NOT read the " <>
+        "target files. Treat it as a PROPOSAL, not a patch: read the real file " <>
+        "first, reconcile the suggestion against what is actually there, and " <>
+        "implement what is correct. Report every place the suggestion did not " <>
+        "fit — a mismatch is a finding the orchestrator needs, not a detail to " <>
+        "smooth over."
     else
-      prompt <> "\n\n## Task brief\n" <> brief
+      ""
     end
   end
+
+  defp fenced_code_lines(prompt) when is_binary(prompt) do
+    ~r/```[^\n]*\n(.*?)```/s
+    |> Regex.scan(prompt, capture: :all_but_first)
+    |> List.flatten()
+    |> Enum.map(&(&1 |> String.split("\n", trim: true) |> length()))
+    |> Enum.sum()
+  end
+
+  defp fenced_code_lines(_), do: 0
 
   # Orchestrating parents (see Loop's :subagent_prompt_suffix opt) append a
   # worker contract to every sub-agent's system prompt.
@@ -663,11 +749,41 @@ defmodule ExAthena.Tools.SpawnAgent do
     "#{label}: #{items}"
   end
 
-  defp truncate_result(text, max) when is_integer(max) and max > 0 do
-    if String.length(text) > max, do: String.slice(text, 0, max) <> "…", else: text
+  @doc """
+  Cap a worker's report, saying so when it cuts.
+
+  A bare "…" told the orchestrator nothing: 15% of live reports were being
+  silently clipped, and it responded by re-requesting whole files (one run
+  spent 6 of 28 spawns on "report the FULL contents of…"). Naming the loss
+  lets it ask for the missing part instead of the whole thing again.
+  """
+  @spec truncate_result(String.t(), pos_integer() | any()) :: String.t()
+  def truncate_result(text, max) when is_integer(max) and max > 0 do
+    len = String.length(text)
+
+    if len > max do
+      String.slice(text, 0, max) <>
+        "\n\n[report truncated — #{max} of #{len} characters shown. " <>
+        "Ask for the specific part you still need; do not re-request the whole thing.]"
+    else
+      text
+    end
   end
 
-  defp truncate_result(text, _), do: text
+  def truncate_result(text, _), do: text
+
+  # The worker's report is prose it wrote about itself, so it can claim work it
+  # never did ("the app compiles cleanly" for a run that never built anything).
+  # This appends what the worker's own tool calls prove — nothing for a purely
+  # read-only worker, so explorers stay noise-free.
+  defp append_provenance(text, %ExAthena.Result{messages: messages}) when is_list(messages) do
+    case messages |> ExAthena.Provenance.events() |> ExAthena.Provenance.footer() do
+      nil -> text
+      footer -> String.trim_trailing(text) <> "\n\n" <> footer
+    end
+  end
+
+  defp append_provenance(text, _sub_result), do: text
 
   # Worker iteration caps chosen by the model are floored at the default —
   # live testing showed an orchestrator starving its worker with
