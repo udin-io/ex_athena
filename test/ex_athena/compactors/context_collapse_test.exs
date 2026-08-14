@@ -49,6 +49,29 @@ defmodule ExAthena.Compactors.ContextCollapseTest do
     assert new_state.meta[:compact_view]
   end
 
+  test "recomputed estimate includes the system-prompt cost (issue #148)" do
+    sys = String.duplicate("S", 4_000)
+    call = %ToolCall{id: "c1", name: "glob", arguments: %{"pattern" => "**/*.ex"}}
+
+    msgs = [
+      %Message{role: :assistant, tool_calls: [call]},
+      %Message{role: :tool, tool_results: [%ToolResult{tool_call_id: "c1", content: "x"}]},
+      %Message{role: :assistant, tool_calls: [%{call | id: "c2"}]},
+      %Message{role: :tool, tool_results: [%ToolResult{tool_call_id: "c2", content: "y"}]}
+    ]
+
+    state = %{
+      state_with(msgs, [])
+      | request_template: %ExAthena.Request{messages: msgs, system_prompt: sys}
+    }
+
+    assert {:ok, new_state, est} =
+             ContextCollapse.compact_stage(state, %{tokens: 100, max_tokens: 1_000})
+
+    view = new_state.meta[:compact_view]
+    assert est.tokens == ExAthena.Compactor.estimate_tokens(view, sys)
+  end
+
   test "does not rewrite a pinned repeated assistant tool-call (ADR-0027)" do
     call = %ToolCall{id: "c1", name: "glob", arguments: %{"pattern" => "**/*.ex"}}
 

@@ -76,6 +76,25 @@ defmodule ExAthena.Compactors.BudgetReductionTest do
     assert hd(fourth.tool_results).content == small
   end
 
+  test "recomputed estimate includes the system-prompt cost (issue #148)" do
+    sys = String.duplicate("S", 4_000)
+    big = String.duplicate("X", 20_000)
+    msgs = [Messages.user("hi"), tool_result_msg("c1", big)]
+
+    state = %{
+      state_with(msgs, per_tool_result_max_chars: 16_000)
+      | request_template: %ExAthena.Request{messages: msgs, system_prompt: sys}
+    }
+
+    initial = ExAthena.Compactor.estimate_tokens(msgs, sys)
+
+    assert {:ok, new_state, est} =
+             BudgetReduction.compact_stage(state, %{tokens: initial, max_tokens: 100_000})
+
+    assert est.tokens == ExAthena.Compactor.estimate_tokens(new_state.messages, sys)
+    assert est.tokens < initial
+  end
+
   test "leaves a pinned oversized tool result untouched (ADR-0027)" do
     big = String.duplicate("P", 20_000)
     msgs = [Messages.user("hi"), %{tool_result_msg("pin1", big) | pin: true}]

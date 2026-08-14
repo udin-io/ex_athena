@@ -375,8 +375,9 @@ defmodule ExAthena.Loop do
 
   # The system prompt is part of every request (it carries tool descriptions
   # and the skill catalog), so the compaction estimate must include it.
-  defp system_prompt(%State{request_template: %{system_prompt: sp}}), do: sp
-  defp system_prompt(_), do: nil
+  # Extraction lives in ExAthena.Compactor.system_prompt/1, shared with
+  # the pipeline stages' mid-run re-estimates.
+  defp system_prompt(%State{} = state), do: ExAthena.Compactor.system_prompt(state)
 
   defp set_finish_reason(%State{} = state, reason) do
     put_in(state.meta[:finish_reason], reason)

@@ -56,6 +56,24 @@ defmodule ExAthena.Compactors.ObservationMaskTest do
     end
   end
 
+  test "recomputed estimate includes the system-prompt cost (issue #148)" do
+    sys = String.duplicate("S", 4_000)
+
+    messages =
+      [Messages.user("go")] ++ Enum.flat_map(1..10, fn n -> turn(n, "read", big()) end)
+
+    state = %State{
+      messages: messages,
+      request_template: %ExAthena.Request{messages: messages, system_prompt: sys},
+      meta: %{}
+    }
+
+    assert {:ok, %State{messages: masked}, est} =
+             ObservationMask.compact_stage(state, %{tokens: 50_000, max_tokens: 64_000})
+
+    assert est.tokens == ExAthena.Compactor.estimate_tokens(masked, sys)
+  end
+
   test "never masks errors or todo_write results" do
     messages =
       [Messages.user("go")] ++

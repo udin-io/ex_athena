@@ -27,6 +27,7 @@ defmodule ExAthena.Compactors.Summary do
   @behaviour ExAthena.Compactor.Stage
 
   alias ExAthena.{Budget, Compactor, Messages, Request}
+  alias ExAthena.Compactor.Config
   alias ExAthena.Loop.State
   alias ExAthena.Messages.Message
 
@@ -115,7 +116,7 @@ defmodule ExAthena.Compactors.Summary do
 
             metadata = %{
               before: estimate.tokens,
-              after: ExAthena.Compactor.estimate_tokens(new_messages),
+              after: Compactor.estimate_tokens(new_messages, Compactor.system_prompt(state)),
               dropped_count: length(summarisable),
               reason: :token_budget,
               budget: new_budget
@@ -229,32 +230,22 @@ defmodule ExAthena.Compactors.Summary do
       Map.get(meta, :preloaded_skill_count, 0)
   end
 
-  defp pinned_prefix_count(%State{meta: meta}),
-    do:
-      Map.get(meta, :pinned_prefix_count) ||
-        config(:pinned_prefix_count, @default_pinned_prefix_count)
+  defp pinned_prefix_count(%State{} = state),
+    do: Config.get(state, :pinned_prefix_count, @default_pinned_prefix_count)
 
-  defp live_suffix_count(%State{meta: meta}),
-    do:
-      Map.get(meta, :live_suffix_count) || config(:live_suffix_count, @default_live_suffix_count)
+  defp live_suffix_count(%State{} = state),
+    do: Config.get(state, :live_suffix_count, @default_live_suffix_count)
 
-  defp compact_at(%State{meta: meta}),
-    do: Map.get(meta, :compact_at) || config(:compact_at, @default_compact_at)
+  defp compact_at(%State{} = state), do: Config.get(state, :compact_at, @default_compact_at)
 
+  # Deliberately app-env only (no per-run meta override existed before the
+  # Config extraction, and none is introduced by it).
   defp summary_system_prompt do
-    config(
+    Config.app_env(
       :summary_system_prompt,
       "You are a compaction assistant. Your only job is to summarise a portion of a " <>
         "conversation between an engineer and an AI agent so the agent can continue " <>
         "without the full transcript."
     )
-  end
-
-  defp config(key, default) do
-    case Application.get_env(:ex_athena, :compactor) do
-      nil -> default
-      kw when is_list(kw) -> Keyword.get(kw, key, default)
-      map when is_map(map) -> Map.get(map, key, default)
-    end
   end
 end

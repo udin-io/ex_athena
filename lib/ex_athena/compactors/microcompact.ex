@@ -24,6 +24,7 @@ defmodule ExAthena.Compactors.Microcompact do
   @behaviour ExAthena.Compactor.Stage
 
   alias ExAthena.Compactor
+  alias ExAthena.Compactor.Config
   alias ExAthena.Loop.State
   alias ExAthena.Messages.Message
 
@@ -50,7 +51,7 @@ defmodule ExAthena.Compactors.Microcompact do
 
       _ ->
         new_state = %{state | messages: compacted}
-        {:ok, new_state, %{estimate | tokens: Compactor.estimate_tokens(compacted)}}
+        {:ok, new_state, Compactor.re_estimate(estimate, compacted, state)}
     end
   end
 
@@ -146,33 +147,11 @@ defmodule ExAthena.Compactors.Microcompact do
 
   # ── Config ───────────────────────────────────────────────────────
 
-  defp run_threshold(%State{meta: meta}) do
-    Map.get(meta, :microcompact_run_threshold) ||
-      case Application.get_env(:ex_athena, :compactor) do
-        kw when is_list(kw) ->
-          Keyword.get(kw, :microcompact_run_threshold, @default_run_threshold)
+  defp run_threshold(%State{} = state),
+    do: Config.get(state, :microcompact_run_threshold, @default_run_threshold)
 
-        m when is_map(m) ->
-          Map.get(m, :microcompact_run_threshold, @default_run_threshold)
-
-        _ ->
-          @default_run_threshold
-      end
-  end
-
-  defp excerpt_chars(%State{meta: meta}) do
-    Map.get(meta, :microcompact_excerpt_chars) ||
-      case Application.get_env(:ex_athena, :compactor) do
-        kw when is_list(kw) ->
-          Keyword.get(kw, :microcompact_excerpt_chars, @default_excerpt_chars)
-
-        m when is_map(m) ->
-          Map.get(m, :microcompact_excerpt_chars, @default_excerpt_chars)
-
-        _ ->
-          @default_excerpt_chars
-      end
-  end
+  defp excerpt_chars(%State{} = state),
+    do: Config.get(state, :microcompact_excerpt_chars, @default_excerpt_chars)
 
   defp pin_floor(%State{meta: meta}) do
     Map.get(meta, :memory_count, 0) +

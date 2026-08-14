@@ -36,6 +36,36 @@ defmodule ExAthena.Compactors.MicrocompactTest do
     assert :skip = Microcompact.compact_stage(state, %{tokens: 10, max_tokens: 1_000})
   end
 
+  test "recomputed estimate includes the system-prompt cost (issue #148)" do
+    sys = String.duplicate("S", 4_000)
+    long = fn tag -> tag <> "-" <> String.duplicate("x", 500) end
+
+    messages = [
+      %Message{role: :user, content: "go"},
+      tool_msg("c1", long.("alpha")),
+      tool_msg("c2", long.("beta")),
+      tool_msg("c3", long.("gamma")),
+      tool_msg("c4", long.("delta")),
+      %Message{role: :assistant, content: "ok"},
+      %Message{role: :user, content: "more"},
+      %Message{role: :assistant, content: "yep"}
+    ]
+
+    state = %{
+      state_with(messages,
+        microcompact_run_threshold: 3,
+        microcompact_excerpt_chars: 20,
+        pinned_prefix_count: 1
+      )
+      | request_template: %ExAthena.Request{messages: messages, system_prompt: sys}
+    }
+
+    assert {:ok, new_state, est} =
+             Microcompact.compact_stage(state, %{tokens: 5_000, max_tokens: 10_000})
+
+    assert est.tokens == ExAthena.Compactor.estimate_tokens(new_state.messages, sys)
+  end
+
   test "excerpts a run of 3+ adjacent tool messages IN PLACE (pairing preserved)" do
     long = fn tag -> tag <> "-" <> String.duplicate("x", 500) end
 
