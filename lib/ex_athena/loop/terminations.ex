@@ -35,6 +35,13 @@ defmodule ExAthena.Loop.Terminations do
       structured failure payload.
     * `:error_provider_auth` — provider returned HTTP 401 or 403. Category
       `:fatal`; blind retry will not help — operator must fix credentials.
+    * `:error_thinking_starved` — a hybrid thinking model burned the
+      per-turn completion budget on reasoning and produced no visible
+      output, and the kernel's single escalated-budget retry was also
+      starved (or there was no context-window headroom to escalate into).
+      Category `:capacity`; raise `:max_tokens`, reduce prompt size, or use
+      a non-thinking model. The `Result.halted_reason` message names the
+      token counts; `Result.error_diagnostic` carries them structured.
   """
 
   @type subtype ::
@@ -51,6 +58,7 @@ defmodule ExAthena.Loop.Terminations do
           | :error_no_progress
           | :error_schema_validation
           | :error_provider_auth
+          | :error_thinking_starved
 
   @all_subtypes [
     :stop,
@@ -65,7 +73,8 @@ defmodule ExAthena.Loop.Terminations do
     :error_prompt_too_long,
     :error_no_progress,
     :error_schema_validation,
-    :error_provider_auth
+    :error_provider_auth,
+    :error_thinking_starved
   ]
 
   @doc "All known termination subtypes."
@@ -104,6 +113,7 @@ defmodule ExAthena.Loop.Terminations do
   def category(:error_schema_validation), do: :retryable
   def category(:error_prompt_too_long), do: :capacity
   def category(:error_no_progress), do: :capacity
+  def category(:error_thinking_starved), do: :capacity
   def category(:error_halted), do: :fatal
   def category(:error_compaction_failed), do: :fatal
   def category(:error_provider_auth), do: :fatal

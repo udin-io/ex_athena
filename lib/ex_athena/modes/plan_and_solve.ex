@@ -83,6 +83,13 @@ defmodule ExAthena.Modes.PlanAndSolve do
     end
 
     case queued_query.() do
+      # Output-starved planning turn: no visible plan text was produced
+      # because the whole completion budget went to reasoning. Surface the
+      # kernel's typed capacity signal so it retries planning once with an
+      # escalated max_tokens. Mirrors ReAct.
+      {:ok, %{starvation: %{} = starvation} = response} ->
+        {:error, {:error_thinking_starved, starvation, fold_usage(state, response)}}
+
       {:ok, response} ->
         streamed_text? = counters != nil and :counters.get(counters, 1) > 0
         streamed_thinking? = counters != nil and :counters.get(counters, 2) > 0

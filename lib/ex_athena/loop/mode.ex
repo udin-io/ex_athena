@@ -44,7 +44,13 @@ defmodule ExAthena.Loop.Mode do
       from the terminal state's `finish_reason` (which the mode should set
       via `ExAthena.Loop.set_finish_reason/2` before returning).
     * `{:error, reason}` — abort with an unrecoverable error. The kernel
-      wraps this in `:error_during_execution`.
+      wraps this in `:error_during_execution`, except for the typed
+      capacity signals it can recover from: `{:error, :error_prompt_too_long}`
+      (force-compact the context, retry the iteration once) and
+      `{:error, {:error_thinking_starved, info, state}}` (retry the
+      iteration once with an escalated `max_tokens`; the usage-folded state
+      rides on the tuple so the starved attempt's token burn stays on the
+      run's budget).
   """
   @callback iterate(State.t()) :: {:continue, State.t()} | {:halt, State.t()} | {:error, term()}
 

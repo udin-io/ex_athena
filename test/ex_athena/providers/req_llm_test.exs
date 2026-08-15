@@ -639,4 +639,124 @@ defmodule ExAthena.Providers.ReqLLMTest do
       assert [%ReqLLM.Message.ContentPart{type: :text, text: "plain text"}] = result.content
     end
   end
+
+  describe "detect_starvation/5" do
+    test "blank text + :length + no tool calls is starved, carrying token counts" do
+      usage = %{input_tokens: 50, output_tokens: 8_192, reasoning_tokens: 8_192}
+
+      assert Adapter.detect_starvation("", [], :length, usage, 8_192) ==
+               %{completion_cap: 8_192, output_tokens: 8_192, reasoning_tokens: 8_192}
+    end
+
+    test "whitespace-only text still counts as blank" do
+      assert %{completion_cap: 100} =
+               Adapter.detect_starvation("  \n ", [], :length, nil, 100)
+    end
+
+    test "nil usage leaves token counts nil but still detects via :length" do
+      assert Adapter.detect_starvation(nil, [], :length, nil, 8_192) ==
+               %{completion_cap: 8_192, output_tokens: nil, reasoning_tokens: nil}
+    end
+
+    test "blank text with output_tokens at the cap is starved even when finish_reason is nil" do
+      # Some providers/templates report no finish_reason; an at-cap blank turn
+      # is still starvation (a legitimately empty answer never burns the cap).
+      usage = %{output_tokens: 8_192}
+
+      assert %{output_tokens: 8_192} =
+               Adapter.detect_starvation("", [], nil, usage, 8_192)
+    end
+
+    test "a legitimate empty final answer with :stop and small output is NOT starved" do
+      usage = %{output_tokens: 3}
+      assert Adapter.detect_starvation("", [], :stop, usage, 8_192) == nil
+    end
+
+    test "blank text with :stop and no usage is NOT starved" do
+      assert Adapter.detect_starvation("", [], :stop, nil, 8_192) == nil
+    end
+
+    test "non-blank text truncated by :length is NOT starved (partial answer exists)" do
+      assert Adapter.detect_starvation("partial answer", [], :length, nil, 8_192) == nil
+    end
+
+    test "tool calls present means NOT starved even at :length" do
+      call = %ExAthena.Messages.ToolCall{id: "1", name: "read", arguments: %{}}
+      assert Adapter.detect_starvation("", [call], :length, nil, 8_192) == nil
+    end
+  end
+
+  describe "consume_stream/3 starvation detection" do
+    alias ExAthena.Request
+
+    defp starved_stream_response(chunks) do
+      %ReqLLM.StreamResponse{
+        stream: chunks,
+        metadata_handle: self(),
+        cancel: fn -> :ok end,
+        model: nil,
+        context: nil
+      }
+    end
+
+    test "a thinking-only :length turn surfaces a starvation signal with counts" do
+      chunks = [
+        %{type: :thinking, text: "hmm, let me reason about this..."},
+        %{
+          type: :meta,
+          metadata: %{
+            finish_reason: :length,
+            usage: %{input_tokens: 20, output_tokens: 100, reasoning_tokens: 100}
+          }
+        }
+      ]
+
+      request = %Request{messages: [], model: "test-model", max_tokens: 100}
+
+      assert {:ok, resp} =
+               Adapter.consume_stream(starved_stream_response(chunks), fn _ -> :ok end, request)
+
+      assert resp.finish_reason == :length
+      assert resp.text == ""
+
+      assert resp.starvation ==
+               %{completion_cap: 100, output_tokens: 100, reasoning_tokens: 100}
+    end
+
+    test "the runaway-guard :length truncation with visible text is NOT starved" do
+      chunks = for _ <- 1..50_000, do: %{type: :content, text: "blah "}
+      request = %Request{messages: [], model: "test-model", max_tokens: 100}
+
+      assert {:ok, resp} =
+               Adapter.consume_stream(starved_stream_response(chunks), fn _ -> :ok end, request)
+
+      assert resp.finish_reason == :length
+      assert resp.starvation == nil
+    end
+
+    test "a normal :stop turn carries no starvation signal" do
+      chunks = [
+        %{type: :content, text: "hello"},
+        %{type: :meta, metadata: %{finish_reason: :stop}}
+      ]
+
+      request = %Request{messages: [], model: "test-model", max_tokens: 100}
+
+      assert {:ok, resp} =
+               Adapter.consume_stream(starved_stream_response(chunks), fn _ -> :ok end, request)
+
+      assert resp.starvation == nil
+    end
+
+    test "a stream with no finish_reason and no usage defaults to :stop, not starved" do
+      chunks = [%{type: :content, text: ""}]
+      request = %Request{messages: [], model: "test-model", max_tokens: 100}
+
+      assert {:ok, resp} =
+               Adapter.consume_stream(starved_stream_response(chunks), fn _ -> :ok end, request)
+
+      assert resp.finish_reason == :stop
+      assert resp.starvation == nil
+    end
+  end
 end

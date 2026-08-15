@@ -174,6 +174,12 @@ defmodule ExAthena.Loop do
                   {:error, :error_prompt_too_long} ->
                     handle_prompt_too_long(state)
 
+                  {:error, {:error_thinking_starved, info, %State{} = folded_state}} ->
+                    # The folded state (usage already accumulated) rides on the
+                    # signal so the starved attempt's token burn stays on the
+                    # budget across the retry/termination.
+                    terminate_thinking_starved(folded_state, info)
+
                   {:error, reason} ->
                     state
                     |> Map.put(:halted_reason, reason)
@@ -218,6 +224,28 @@ defmodule ExAthena.Loop do
     else
       state |> set_finish_reason(:error_prompt_too_long)
     end
+  end
+
+  # Terminal `:error_thinking_starved`: the message NAMES the token counts
+  # (output vs reasoning vs cap) so operators can size the budget instead of
+  # guessing at a bare empty-response error. The structured payload also
+  # lands on `Result.error_diagnostic`.
+  defp terminate_thinking_starved(%State{} = state, info) do
+    message =
+      "thinking starved: the model spent the completion budget on reasoning and " <>
+        "produced no visible output (output_tokens=#{info[:output_tokens] || "unknown"}, " <>
+        "reasoning_tokens=#{info[:reasoning_tokens] || "unknown"}, " <>
+        "completion_cap=#{info[:completion_cap] || "unknown"}" <>
+        case info[:escalated_cap] do
+          nil -> ")"
+          cap -> ", escalated_cap=#{cap})"
+        end
+
+    state = put_in(state.meta[:error_diagnostic], info)
+
+    state
+    |> Map.put(:halted_reason, {:thinking_starved, message})
+    |> set_finish_reason(:error_thinking_starved)
   end
 
   defp force_compact(%State{} = state) do
