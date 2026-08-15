@@ -178,7 +178,7 @@ defmodule ExAthena.Loop do
                     # The folded state (usage already accumulated) rides on the
                     # signal so the starved attempt's token burn stays on the
                     # budget across the retry/termination.
-                    terminate_thinking_starved(folded_state, info)
+                    handle_thinking_starved(folded_state, info)
 
                   {:error, reason} ->
                     state
@@ -223,6 +223,81 @@ defmodule ExAthena.Loop do
       end
     else
       state |> set_finish_reason(:error_prompt_too_long)
+    end
+  end
+
+  # Reactive recovery on a starved thinking turn, mirroring
+  # `handle_prompt_too_long`: adapt exactly ONE parameter — the per-turn
+  # completion cap — and retry the same iteration once. Downstream evidence
+  # (issue #194): blind same-budget retries fail identically, while a raised
+  # budget succeeds AND finishes faster — a model that can finish stops when
+  # done, so the escalated cap is a ceiling, not a spend target. The raised
+  # cap persists on the request template for the rest of the run (later
+  # turns of the same task face the same reasoning load).
+  #
+  # If the escalated attempt is still starved — or there is no headroom to
+  # escalate into — terminate with the typed `:error_thinking_starved`.
+  defp handle_thinking_starved(%State{} = state, info) do
+    case escalated_completion_cap(state, info) do
+      {:ok, from_cap, new_cap} ->
+        Events.emit(
+          state.on_event,
+          {:max_tokens_escalation,
+           %{
+             from: from_cap,
+             to: new_cap,
+             output_tokens: info[:output_tokens],
+             reasoning_tokens: info[:reasoning_tokens]
+           }}
+        )
+
+        state = %{state | request_template: %{state.request_template | max_tokens: new_cap}}
+
+        case state.mode.iterate(state) do
+          {:continue, new_state} ->
+            new_state = update_progress_tracking(state, new_state)
+            loop(%{new_state | iterations: new_state.iterations + 1})
+
+          {:halt, new_state} ->
+            new_state
+
+          {:error, {:error_thinking_starved, info2, %State{} = folded_state}} ->
+            terminate_thinking_starved(folded_state, Map.put(info2, :escalated_cap, new_cap))
+
+          {:error, _reason} ->
+            # Mirrors handle_prompt_too_long: a different failure during the
+            # recovery retry still terminates under the root cause's subtype.
+            terminate_thinking_starved(state, Map.put(info, :escalated_cap, new_cap))
+        end
+
+      :no_headroom ->
+        terminate_thinking_starved(state, info)
+    end
+  end
+
+  # 4x the starved cap (adapter default 8_192 -> 32_768, the budget the
+  # downstream report validated empirically), bounded by context-window
+  # headroom: `Capabilities.max_tokens` is the CONTEXT WINDOW while
+  # `Request.max_tokens` is the COMPLETION CAP (same key name, opposite
+  # meanings) — the escalated cap must leave room for the estimated prompt.
+  @completion_escalation_factor 4
+
+  defp escalated_completion_cap(%State{} = state, info) do
+    case info[:completion_cap] || state.request_template.max_tokens do
+      cap when is_integer(cap) and cap > 0 ->
+        context_window = state.capabilities[:max_tokens] || 128_000
+
+        prompt_tokens =
+          ExAthena.Compactor.estimate_tokens(state.messages, system_prompt(state))
+
+        target = min(cap * @completion_escalation_factor, context_window - prompt_tokens)
+
+        if target > cap, do: {:ok, cap, target}, else: :no_headroom
+
+      _ ->
+        # No known cap to escalate from (a custom provider signalled
+        # starvation without one) — nothing principled to retry with.
+        :no_headroom
     end
   end
 
