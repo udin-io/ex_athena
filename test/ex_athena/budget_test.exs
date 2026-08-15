@@ -38,6 +38,35 @@ defmodule ExAthena.BudgetTest do
     assert b.usage == %{input_tokens: 4, output_tokens: 2, total_tokens: 6}
   end
 
+  test "add/3 preserves and accumulates reasoning_tokens when the provider reports them" do
+    b =
+      Budget.new()
+      |> Budget.add(%{input_tokens: 10, output_tokens: 100, reasoning_tokens: 90}, nil)
+      |> Budget.add(%{input_tokens: 7, output_tokens: 50, reasoning_tokens: 40}, nil)
+
+    assert b.usage.reasoning_tokens == 130
+    assert b.usage.output_tokens == 150
+  end
+
+  test "add/3 accepts string-keyed reasoning_tokens" do
+    b = Budget.new() |> Budget.add(%{"reasoning_tokens" => 25}, nil)
+    assert b.usage.reasoning_tokens == 25
+  end
+
+  test "add/3 keeps accumulated reasoning_tokens when a later turn omits them" do
+    b =
+      Budget.new()
+      |> Budget.add(%{output_tokens: 10, reasoning_tokens: 5}, nil)
+      |> Budget.add(%{output_tokens: 3}, nil)
+
+    assert b.usage.reasoning_tokens == 5
+  end
+
+  test "usage has no reasoning_tokens key when no provider ever reported them" do
+    b = Budget.new() |> Budget.add(%{input_tokens: 1, output_tokens: 2, total_tokens: 3}, nil)
+    refute Map.has_key?(b.usage, :reasoning_tokens)
+  end
+
   test "exceeded?/2 returns false when cap is nil or cost not set" do
     b = Budget.new()
     refute Budget.exceeded?(b, nil)

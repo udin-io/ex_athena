@@ -130,6 +130,9 @@ defmodule ExAthena.Loop.ThinkingStarvedTest do
       )
 
     assert result.usage.output_tokens >= 8_192
+    # reasoning_tokens survive Budget.merge_usage so callers can see WHERE
+    # the budget went (the starvation diagnostic) from Result.usage alone.
+    assert result.usage.reasoning_tokens >= 8_192
   end
 
   describe "escalating retry (mirrors the prompt-too-long force-compact template)" do
