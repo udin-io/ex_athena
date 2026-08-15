@@ -23,6 +23,12 @@ defmodule ExAthena.Loop.Events do
       flows through `:tool_result`.
     * `{:iteration, n}` — a new iteration is starting.
     * `{:compaction, %{before:, after:, reason:}}` — context compacted.
+    * `{:max_tokens_escalation, %{from:, to:, output_tokens:,
+      reasoning_tokens:}}` — the previous turn was output-starved (the
+      whole completion budget went to reasoning, no visible output); the
+      kernel is retrying the iteration once with the escalated completion
+      cap. Analogous to `{:compaction, …}` on the prompt-too-long recovery
+      path — hosts can render a "raising thinking budget" state.
     * `{:subagent_spawn, %{id:, prompt:}}` — a sub-agent started.
     * `{:subagent_result, %{id:, text:}}` — sub-agent returned.
     * `{:conclusion, %{iteration:, text:, source:}}` — the iteration's
@@ -70,6 +76,13 @@ defmodule ExAthena.Loop.Events do
                required(:before) => integer(),
                required(:after) => integer(),
                required(:reason) => term()
+             }}
+          | {:max_tokens_escalation,
+             %{
+               required(:from) => pos_integer(),
+               required(:to) => pos_integer(),
+               required(:output_tokens) => non_neg_integer() | nil,
+               required(:reasoning_tokens) => non_neg_integer() | nil
              }}
           | {:subagent_spawn, %{required(:id) => term(), required(:prompt) => String.t()}}
           | {:subagent_result, %{required(:id) => term(), required(:text) => String.t()}}

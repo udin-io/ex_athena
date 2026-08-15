@@ -18,6 +18,7 @@ defmodule ExAthena.Loop.TerminationsTest do
       assert :error_no_progress in Terminations.all()
       assert :error_schema_validation in Terminations.all()
       assert :error_provider_auth in Terminations.all()
+      assert :error_thinking_starved in Terminations.all()
     end
   end
 
@@ -56,6 +57,7 @@ defmodule ExAthena.Loop.TerminationsTest do
       assert Terminations.category(:error_consecutive_mistakes) == :capacity
       assert Terminations.category(:error_prompt_too_long) == :capacity
       assert Terminations.category(:error_no_progress) == :capacity
+      assert Terminations.category(:error_thinking_starved) == :capacity
     end
 
     test "execution errors are :retryable" do

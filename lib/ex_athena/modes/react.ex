@@ -112,97 +112,19 @@ defmodule ExAthena.Modes.ReAct do
         # it for hosts to pass back as `resume:`.
         state = stash_session_id(state, response)
 
-        # When deltas already streamed to the host this turn, suppress the
-        # end-of-turn full-text/full-thinking emission to avoid duplicates.
-        # Counter-based (not static) because providers may export stream/3
-        # yet emit zero deltas — those still need the final emission.
-        streamed_text? = counters != nil and :counters.get(counters, 1) > 0
-        streamed_thinking? = counters != nil and :counters.get(counters, 2) > 0
+        # Output-starved turn (issue #194): the model burned the whole
+        # completion budget on reasoning and produced no visible text and no
+        # tool calls. This is NOT a terminal answer — surface the kernel's
+        # typed capacity signal (mirroring :error_prompt_too_long) so it
+        # retries this iteration once with an escalated max_tokens instead of
+        # mis-reporting success with blank/stale text. The usage-folded state
+        # rides along so the starved attempt's token burn stays on the budget.
+        case response.starvation do
+          %{} = starvation ->
+            {:error, {:error_thinking_starved, starvation, state}}
 
-        case ExAthena.ToolCalls.extract(
-               %{tool_calls: response.tool_calls, text: response.text},
-               state.capabilities
-             ) do
-          {:ok, []} ->
-            # Terminal: model returned plain text with no tool calls.
-            unless streamed_thinking?, do: maybe_emit_thinking(state.on_event, response)
-            unless streamed_text?, do: maybe_emit_content(state.on_event, response)
-
-            state = record_conclusion(state, response, [])
-
-            state =
-              %{
-                state
-                | messages: state.messages ++ [Messages.assistant(response.text)]
-              }
-              |> set_finish_reason(:stop)
-
-            {:halt, state}
-
-          {:ok, tool_calls} ->
-            unless streamed_thinking?, do: maybe_emit_thinking(state.on_event, response)
-            unless streamed_text?, do: maybe_emit_content(state.on_event, response)
-
-            state = record_conclusion(state, response, tool_calls)
-
-            # Reasoning rides on the message (verbatim) so providers can
-            # replay it within the current tool loop — dropping it between
-            # tool calls measurably degrades multi-step tool use on
-            # reasoning models (MiniMax ablation: −36% τ²-bench).
-            assistant_msg = Messages.assistant(response.text, tool_calls, response.thinking)
-            state = %{state | messages: state.messages ++ [assistant_msg]}
-
-            runner = fn call, st -> run_single_tool_call(call, st) end
-            mistakes_before = state.consecutive_mistakes
-
-            case Parallel.run(tool_calls, state, runner) do
-              {:ok, tool_messages, state} ->
-                # Mistakes count at most ONCE per turn — a single turn with
-                # 3 hallucinated calls used to terminate the run before the
-                # model ever saw the redirect errors (turn-boundary
-                # counting; the guard measures consecutive BAD TURNS).
-                state = %{
-                  state
-                  | consecutive_mistakes: min(state.consecutive_mistakes, mistakes_before + 1),
-                    messages: state.messages ++ tool_messages,
-                    tool_calls_made: state.tool_calls_made + length(tool_calls)
-                }
-
-                # Track the run's latest successful todo list (like the
-                # conclusions ledger) — exposed on Result.todos so failed
-                # workers can hand back Completed/Remaining.
-                state = record_todos(state, tool_calls, tool_messages)
-
-                # Turn-boundary reset on any success — see ADR adr-1-reset-consecutive-mistakes-at-turn-boundary.md.
-                state =
-                  if any_tool_success?(tool_messages),
-                    do: reset_mistakes(state),
-                    else: state
-
-                state = maybe_attach_skills(state, response.text)
-
-                {:continue, state}
-
-              {:halt, reason, state} ->
-                state =
-                  %{state | halted_reason: reason}
-                  |> set_finish_reason(:error_halted)
-
-                {:halt, state}
-            end
-
-          {:error, reason} ->
-            diagnostic = %{
-              schema: request.response_format,
-              received: response.text,
-              violations: [%{reason: inspect(reason)}]
-            }
-
-            state = %{state | halted_reason: {:tool_call_parse_failed, reason}}
-            state = put_in(state.meta[:error_diagnostic], diagnostic)
-            state = set_finish_reason(state, :error_schema_validation)
-
-            {:halt, state}
+          _ ->
+            handle_turn(state, request, response, counters)
         end
 
       {:error, %ExAthena.Error{kind: :unauthorized} = reason} ->
@@ -236,6 +158,104 @@ defmodule ExAthena.Modes.ReAct do
 
           {:halt, state}
         end
+    end
+  end
+
+  # Everything after a healthy (non-starved) provider response: emit the
+  # end-of-turn text/thinking, extract tool calls, and either terminate on a
+  # tool-free answer or execute the batch and continue.
+  defp handle_turn(%State{} = state, request, response, counters) do
+    # When deltas already streamed to the host this turn, suppress the
+    # end-of-turn full-text/full-thinking emission to avoid duplicates.
+    # Counter-based (not static) because providers may export stream/3
+    # yet emit zero deltas — those still need the final emission.
+    streamed_text? = counters != nil and :counters.get(counters, 1) > 0
+    streamed_thinking? = counters != nil and :counters.get(counters, 2) > 0
+
+    case ExAthena.ToolCalls.extract(
+           %{tool_calls: response.tool_calls, text: response.text},
+           state.capabilities
+         ) do
+      {:ok, []} ->
+        # Terminal: model returned plain text with no tool calls.
+        unless streamed_thinking?, do: maybe_emit_thinking(state.on_event, response)
+        unless streamed_text?, do: maybe_emit_content(state.on_event, response)
+
+        state = record_conclusion(state, response, [])
+
+        state =
+          %{
+            state
+            | messages: state.messages ++ [Messages.assistant(response.text)]
+          }
+          |> set_finish_reason(:stop)
+
+        {:halt, state}
+
+      {:ok, tool_calls} ->
+        unless streamed_thinking?, do: maybe_emit_thinking(state.on_event, response)
+        unless streamed_text?, do: maybe_emit_content(state.on_event, response)
+
+        state = record_conclusion(state, response, tool_calls)
+
+        # Reasoning rides on the message (verbatim) so providers can
+        # replay it within the current tool loop — dropping it between
+        # tool calls measurably degrades multi-step tool use on
+        # reasoning models (MiniMax ablation: −36% τ²-bench).
+        assistant_msg = Messages.assistant(response.text, tool_calls, response.thinking)
+        state = %{state | messages: state.messages ++ [assistant_msg]}
+
+        runner = fn call, st -> run_single_tool_call(call, st) end
+        mistakes_before = state.consecutive_mistakes
+
+        case Parallel.run(tool_calls, state, runner) do
+          {:ok, tool_messages, state} ->
+            # Mistakes count at most ONCE per turn — a single turn with
+            # 3 hallucinated calls used to terminate the run before the
+            # model ever saw the redirect errors (turn-boundary
+            # counting; the guard measures consecutive BAD TURNS).
+            state = %{
+              state
+              | consecutive_mistakes: min(state.consecutive_mistakes, mistakes_before + 1),
+                messages: state.messages ++ tool_messages,
+                tool_calls_made: state.tool_calls_made + length(tool_calls)
+            }
+
+            # Track the run's latest successful todo list (like the
+            # conclusions ledger) — exposed on Result.todos so failed
+            # workers can hand back Completed/Remaining.
+            state = record_todos(state, tool_calls, tool_messages)
+
+            # Turn-boundary reset on any success — see ADR adr-1-reset-consecutive-mistakes-at-turn-boundary.md.
+            state =
+              if any_tool_success?(tool_messages),
+                do: reset_mistakes(state),
+                else: state
+
+            state = maybe_attach_skills(state, response.text)
+
+            {:continue, state}
+
+          {:halt, reason, state} ->
+            state =
+              %{state | halted_reason: reason}
+              |> set_finish_reason(:error_halted)
+
+            {:halt, state}
+        end
+
+      {:error, reason} ->
+        diagnostic = %{
+          schema: request.response_format,
+          received: response.text,
+          violations: [%{reason: inspect(reason)}]
+        }
+
+        state = %{state | halted_reason: {:tool_call_parse_failed, reason}}
+        state = put_in(state.meta[:error_diagnostic], diagnostic)
+        state = set_finish_reason(state, :error_schema_validation)
+
+        {:halt, state}
     end
   end
 
