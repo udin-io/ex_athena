@@ -37,6 +37,15 @@ defmodule ExAthena.Loop do
       loopback/private/link-local hosts. By default those are refused (SSRF
       guard) even when the run is unconfined; see
       `ExAthena.Tools.WebFetch`.
+    * `:confine`, `:allowed_roots` — workspace confinement (default: off).
+      `confine: true` confines the run to `[cwd]`; `allowed_roots: [...]`
+      names explicit roots (cwd is always added). Confined filesystem tools
+      refuse paths outside the roots and `bash` runs under an OS sandbox
+      (`ExAthena.Sandbox`). When no sandbox helper (`sandbox-exec`/`bwrap`)
+      exists on the host, confined `bash` **fails closed** — it refuses with
+      `{:error, {:sandbox_unavailable, helper}}` rather than silently running
+      unconfined. Pass `confine: :best_effort` to accept degradation: `bash`
+      then runs unconfined with a logged warning and a telemetry event.
     * `:allowed_tools`, `:disallowed_tools`, `:readonly_tools`,
       `:can_use_tool` — see `ExAthena.Permissions`. `:readonly_tools`
       names extra tools the read-only `:plan` phase may run (merged with
@@ -783,6 +792,7 @@ defmodule ExAthena.Loop do
           phase: phase,
           session_id: session_id,
           allowed_roots: allowed_roots,
+          confine_mode: resolve_confine_mode(opts),
           assigns: assigns
         )
 
@@ -987,8 +997,11 @@ defmodule ExAthena.Loop do
 
   # Confinement roots for this run (nil = unconfined, the default). `:allowed_roots`
   # takes an explicit list (cwd is always added); `confine: true` is shorthand for
-  # `[cwd]`. Roots are expanded to absolute, deduped, and cwd-anchored so every
-  # confined run can at least reach its own working directory.
+  # `[cwd]`, and `confine: :best_effort` additionally degrades bash's missing-
+  # sandbox-helper behaviour from fail-closed to warn-and-run (see
+  # `resolve_confine_mode/1`). Roots are expanded to absolute, deduped, and
+  # cwd-anchored so every confined run can at least reach its own working
+  # directory.
   defp resolve_allowed_roots(opts, cwd) do
     cond do
       roots = Keyword.get(opts, :allowed_roots) ->
@@ -1001,6 +1014,17 @@ defmodule ExAthena.Loop do
 
       true ->
         nil
+    end
+  end
+
+  # What bash does when the run is confined but no OS sandbox helper exists:
+  # `:enforced` (default — every `confine:`/`allowed_roots:` form) refuses to
+  # run the command (fail-closed, issue #135); only the explicit
+  # `confine: :best_effort` opt-in degrades to warn-and-run-unconfined.
+  defp resolve_confine_mode(opts) do
+    case Keyword.get(opts, :confine) do
+      :best_effort -> :best_effort
+      _ -> :enforced
     end
   end
 

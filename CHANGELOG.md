@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Security
+
+- **Sandbox fail-closed: confined `bash` refuses to run when no OS sandbox
+  helper exists.** (#135) Previously a confined run (`confine: true` /
+  `allowed_roots: [...]`) whose host lacked `sandbox-exec`/`bwrap` executed
+  shell commands **unconfined** with only a `Logger.warning` — the
+  confinement contract silently degraded. `bash` now fails closed by
+  default: it returns `{:error, {:sandbox_unavailable, helper}}` (naming
+  the missing helper) without running the command. Hosts that accept
+  degradation opt in per run with `confine: :best_effort`, which keeps the
+  old warn-and-run behaviour. Both paths emit an
+  `[:ex_athena, :sandbox, :unavailable]` telemetry event
+  (`meta.outcome` `:denied` / `:ran_unconfined`). Subagents inherit the
+  parent's mode clamped: an `:enforced` parent never spawns a
+  `:best_effort` child. Unconfined runs (the library default) are
+  unaffected.
+
 ## v0.19.0 — Verification rails, starvation-proof turns & compaction integrity
 
 ### Added

@@ -46,6 +46,46 @@ defmodule ExAthena.SandboxTest do
     end
   end
 
+  describe "wrap/4 with an injected finder (helper-availability seam)" do
+    test "no helper found → :unavailable with the bare sh argv" do
+      finder = fn
+        "sh" -> "/bin/sh"
+        _ -> nil
+      end
+
+      assert {:unavailable, {"/bin/sh", ["-c", "echo hi"]}} =
+               Sandbox.wrap("echo hi", ["/work/proj"], "/work/proj", finder: finder)
+    end
+
+    test "helper found → :ok with the sandboxed argv headed by the helper" do
+      finder = fn bin -> "/fake/bin/#{bin}" end
+
+      assert {:ok, {exe, args}} =
+               Sandbox.wrap("echo hi", ["/work/proj"], "/work/proj", finder: finder)
+
+      assert exe in ["/fake/bin/sandbox-exec", "/fake/bin/bwrap"]
+      assert List.starts_with?(Enum.reverse(args), ["echo hi", "-c"])
+    end
+
+    test "available?/1 follows the finder" do
+      refute Sandbox.available?(finder: fn _ -> nil end)
+      assert Sandbox.available?(finder: fn bin -> "/fake/bin/#{bin}" end)
+    end
+  end
+
+  describe "required_helper/0" do
+    test "names the helper this platform needs" do
+      expected =
+        case :os.type() do
+          {:unix, :darwin} -> "sandbox-exec"
+          {:unix, _} -> "bwrap"
+          _ -> "sandbox-exec/bwrap"
+        end
+
+      assert Sandbox.required_helper() == expected
+    end
+  end
+
   # True when `sub` appears as a contiguous run inside `list`.
   defp chunk?(list, sub) do
     list
