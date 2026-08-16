@@ -5,6 +5,113 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.19.0 — Verification rails, starvation-proof turns & compaction integrity
+
+### Added
+
+- **Deliverable provenance and verification gates (`ExAthena.Provenance`,
+  `ExAthena.Coverage`).** (#193) A run's report now carries a factual footer
+  derived from its own tool calls — files written, commands run, exit status,
+  in order — so an orchestrator can distinguish "I verified it" from "I said I
+  verified it". Four one-shot gates sit between a run and `finish` (ran
+  nothing / no green test run / changed module never executed / requirements
+  audit), each firing at most once so a run cannot deadlock. A
+  repeated-delegation guard breaks orchestrator re-spawn loops that the
+  no-progress guard cannot see. `ExAthena.Coverage` parses `mix test --cover`
+  and gates only on zero coverage — the one claim the table supports
+  unambiguously.
+- **New builtin tool: `read_summary`.** (#193) Summarizes a file through a
+  single one-off LLM call — purpose, key functions with approximate line
+  numbers, types, notable imports — without loading the full content into the
+  main conversation context. Joins the default toolset; intended as the first
+  touch on any unfamiliar file, with `read` (plus `offset`/`limit`) reserved
+  for the sections that need full detail. The summarizer provider comes from
+  `ctx.assigns[:spawn_agent_opts]`, falling back to the configured default.
+- **Orchestrate-mode hardening for local models.** (#193) The orchestrator is
+  now steered to brief *outcomes* rather than dictating code it composed blind
+  (it holds no read tools), with a runtime rail that redirects after the second
+  code-heavy brief. `spawn_agent` no longer hard-fails on a brief without a
+  `prompt` key (falls back to `objective`, then `todo`); unknown-tool errors
+  list the available tools and suggest the closest match; worker report caps
+  rose from 8k to 24k chars with the cut stated instead of a silent `…`. The
+  streaming status line names what the deepest running worker is doing, and
+  each run reports its orchestrator/worker token split.
+- **Opt-in compaction stage: `ExAthena.Compactors.EpisodicArchive`.** (#193)
+  Before `Summary` compresses the middle of history into a paragraph, this
+  stage slices it into discrete episodes kept in a sidecar
+  (`state.meta[:episodic_archive]`) and re-injects episodes that BM25-match the
+  current turn — exact-token recall on file paths, function names and error
+  strings, which embedding-based retrieval models poorly for agent transcripts.
+  Not in `default_pipeline/0`; opt in via `meta[:compaction_pipeline]`.
+- **Web UI: the run record survives a reload.** (#193) RunServer retains
+  structural events in a bounded queue and replays them on reattach (text
+  deltas coalesced); live delivery and replay share one `apply_event/2` path.
+  Interrupted runs reopen their assistant turn instead of rendering a blank
+  screen; the orchestrator snapshot persists so the Overview survives reload;
+  the sidebar session list builds on load and sorts by real DateTime order
+  (it previously sorted `%DateTime{}` structs as raw terms — i.e. by
+  day-of-month).
+- **Thinking-starvation detection and escalating retry.** (#195, closes #194)
+  A hybrid thinking model that spends the entire completion budget reasoning no
+  longer halts the run as a *success* with blank text. The ReqLLM adapter now
+  detects starvation (blank text, zero tool calls, and the budget demonstrably
+  exhausted: `finish_reason: :length` or output tokens at the cap) on both the
+  streaming and non-streaming paths, carried on a new `Response.starvation`
+  field with `{completion_cap, output_tokens, reasoning_tokens}`. The loop
+  retries the same iteration once with `min(cap × 4, context_window −
+  estimated_prompt)` — the 8,192 default escalates to the field-validated
+  32,768 — emitting a `{:max_tokens_escalation, %{from:, to:, ...}}` event
+  (analogous to `{:compaction, _}`); the raised cap persists for the rest of
+  the run. A still-starved retry (or no headroom at all) terminates with
+  `:error_thinking_starved` (category `:capacity`, like `:error_prompt_too_long`)
+  whose message and `Result.error_diagnostic` name every token count.
+  Legitimate empty `:stop` answers and `:length` truncations with partial text
+  are never flagged. `reasoning_tokens` now survives `Budget.merge_usage/2`
+  into `Result.usage` when a provider reports it.
+
+### Fixed
+
+- **Compaction pin protection restored (ADR-0027).** (#188, closes #147)
+  BudgetReduction was the only stage with no pin check — a pinned tool result
+  over the size cap was placeholdered into the archive, losing exactly what
+  pinning protects, and `restore_pinned/2`'s value-equality check then
+  re-inserted the original next to the placeholder, duplicating
+  `tool_call_id`s (a 400 on strict OpenAI-compatible servers). ContextCollapse
+  also rewrote pinned assistant messages. Pinned messages now short-circuit
+  BudgetReduction, restoration is keyed on tool-call identity as a multiset,
+  and ContextCollapse passes pins through untouched.
+- **Mid-pipeline compaction estimates now include the system prompt.** (#190,
+  closes #148) All six stages re-estimated with the messages-only form while
+  the loop's trigger included the system prompt — so after the first stage
+  applied, the pipeline could declare itself under budget while the real
+  request (system prompt carrying tool schemas and the skill catalog) stayed
+  oversized, and later stages were never consulted. `Compactor.re_estimate/3`
+  folds the system prompt into every mid-pipeline estimate. The five
+  copy-pasted config cascades collapsed into `ExAthena.Compactor.Config`
+  (fixing one real drift: Summary raised on malformed `:compactor` app env
+  where the other stages defaulted).
+- **`ExAthena.list_models/2` works out of the box for local daemons again.**
+  (#191, closes #189) PR #183 dropped the per-backend base-URL defaults, so
+  `list_models(:ollama)` with no app config raised `ArgumentError` inside
+  Finch — crashing `mix athena.chat` at startup. A missing/blank base URL now
+  returns a structured `:no_base_url` capability error instead of raising, and
+  `Config.default_base_url/1` restores the stock daemon hosts (ollama `:11434`,
+  llamacpp `:8080`, exo `:52415`) in one place — explicit config or caller URLs
+  always win; cloud providers never inherit localhost.
+- **`read_only?/0` implemented across all builtin tools.** (#193) The callback
+  was declared on `ExAthena.Tool`, read by `Spec.from_module/1`, and demanded
+  by `Permissions` — and no builtin implemented it; the builtins passed
+  read-only checks only via a hardcoded allow-list. The new `read_summary` was
+  the first tool to fall through that gap (denied in the read-only `:plan`
+  phase despite only ever reading a file), and every builtin now declares the
+  callback instead.
+- **Context-window over-detection on Ollama.** (#193) Ollama's `/api/show`
+  reports the GGUF architecture ceiling (e.g. 262144) rather than what the
+  runner actually serves. The detected window is now the minimum of the
+  Modelfile `num_ctx`, the architecture ceiling, and the loaded runner's real
+  context length, so compaction budgets are no longer sized against a window
+  the server never honors.
+
 ## v0.18.0 — Embeddings, model listing, code intelligence & confinement hardening
 
 ### Added

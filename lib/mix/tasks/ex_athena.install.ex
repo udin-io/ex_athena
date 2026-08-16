@@ -5,7 +5,7 @@ if Code.ensure_loaded?(Igniter) do
     @moduledoc """
     Installs ExAthena into your project.
 
-    Run once after adding `{:ex_athena, "~> 0.18"}` to `mix.exs`, or via Igniter:
+    Run once after adding `{:ex_athena, "~> 0.19"}` to `mix.exs`, or via Igniter:
 
         mix igniter.install ex_athena
         mix ex_athena.install
