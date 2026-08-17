@@ -228,22 +228,27 @@ defmodule ExAthena.Permissions do
         :allow
 
       name == "bash" ->
-        if ExAthena.Tools.Bash.read_only_command?(args) do
-          :allow
-        else
-          {:deny,
-           %Denial{
-             code: :phase_gated,
-             reason:
-               "bash command is not recognized as read-only, so plan phase denies it " <>
-                 "(unknown commands and interpreters are treated as mutating; " <>
-                 "use read-only commands like cat/ls/grep/git log)",
-             metadata: %{
-               phase: :plan,
-               requested_tool: "bash",
-               allowed_tools: @readonly_tools ++ ["bash (read-only commands only)"]
-             }
-           }}
+        case ExAthena.Tools.Bash.read_only_violation(args) do
+          nil ->
+            :allow
+
+          %{reason: why, segment: segment} ->
+            {:deny,
+             %Denial{
+               code: :phase_gated,
+               reason:
+                 "plan phase denies this bash command: #{why}. " <>
+                   "Every segment of a chain must be read-only" <>
+                   segment_hint(segment) <>
+                   " (unknown commands and interpreters are treated as mutating; " <>
+                   "use read-only commands like cat/ls/grep/git log).",
+               metadata: %{
+                 phase: :plan,
+                 requested_tool: "bash",
+                 blocked_segment: segment,
+                 allowed_tools: @readonly_tools ++ ["bash (read-only commands only)"]
+               }
+             }}
         end
 
       # Deny-by-default: anything not known read-only (unrecognized builtin,
@@ -265,6 +270,11 @@ defmodule ExAthena.Permissions do
   defp check_phase(_name, _args, :trusted, _opts), do: :allow
   defp check_phase(_name, _args, :accept_edits, _opts), do: :allow
   defp check_phase(_name, _args, _, _opts), do: :allow
+
+  # Point at the offending command so a denied chain can be corrected in one
+  # retry instead of being re-sent verbatim.
+  defp segment_hint(nil), do: ""
+  defp segment_hint(segment), do: "; `#{segment}` is the part that is not"
 
   # Gate the `:plan → :default` self-escalation. Three cases:
   #

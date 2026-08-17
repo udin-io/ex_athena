@@ -61,7 +61,7 @@ defmodule ExAthena.Tools.SpawnAgent do
   # 128k+ window, so the budget this protects was never scarce. 24_000 covers
   # every report observed except two outliers, at ~6k tokens on the
   # orchestrator's largest turn.
-  @default_result_chars 24_000
+  @default_result_chars 64_000
 
   @impl true
   def name, do: "spawn_agent"

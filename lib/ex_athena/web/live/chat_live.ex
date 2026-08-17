@@ -253,6 +253,115 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   def restore_open_turn(data), do: data
 
+  @doc """
+  Recover tool rows that the durable save dropped, using each turn's
+  `ex_snapshot` as the authority for what it actually ran.
+
+  A turn's tool history is persisted twice and inconsistently. The live
+  LiveView writes `tool_events`; `Sessions.persist_run_result/3` — the durable
+  path, which runs whether or not a browser is attached — hardcodes
+  `tool_events: []`. Reloading mid-run resets `details_stream` and rebuilds it
+  from that empty field, so everything before the reload is lost and the
+  truncated stream is written back over the full one. Each reload erodes it
+  further.
+
+  The full transcript survives regardless, because `ex_snapshot` holds the
+  run's `ExAthena.Messages` verbatim. A real 23-iteration run
+  (a3b95452ca35) kept 31 tool calls there while `details_stream` had 3, and
+  its entire second turn had none — 16 delegated workers rendered as one line
+  of prose.
+
+  Only calls absent from the stream are added, so a complete turn is returned
+  untouched and re-running this is a no-op.
+  """
+  @spec restore_details_stream(map()) :: map()
+  def restore_details_stream(%{display_messages: messages, details_stream: details} = data)
+      when is_list(messages) and is_list(details) do
+    tool_uis = Map.get(data, :tool_uis, %{})
+    present = MapSet.new(details, & &1.payload[:tool_call_id])
+
+    # A turn's snapshot is the whole conversation up to that point, so a later
+    # turn's snapshot re-contains every earlier call. Walk the turns
+    # CHRONOLOGICALLY and accumulate what has been claimed, so each call is
+    # attributed to the first turn that ran it rather than to every turn after
+    # it. (Walking newest-first would credit the last turn with the entire run.)
+    {by_message, _claimed} =
+      Enum.map_reduce(messages, present, fn msg, claimed ->
+        rows = snapshot_details(msg, tool_uis, claimed)
+        ids = for r <- rows, r.type == :tool_call, do: r.payload.tool_call_id
+        {{msg.id, rows}, Enum.into(ids, claimed)}
+      end)
+
+    # `details_stream` is newest-first, so emit the turns newest-first and put
+    # each turn's recovered rows at its older end.
+    recovered =
+      by_message
+      |> Enum.reverse()
+      |> Enum.flat_map(fn {msg_id, rows} ->
+        Enum.filter(details, &(&1.message_id == msg_id)) ++ rows
+      end)
+
+    parented = MapSet.new(messages, & &1.id)
+    orphans = Enum.reject(details, &MapSet.member?(parented, &1.message_id))
+
+    %{data | details_stream: recovered ++ orphans}
+  end
+
+  def restore_details_stream(data), do: data
+
+  # Tool rows for `msg` that the stream is missing, newest-first.
+  defp snapshot_details(%{role: :assistant, id: id} = msg, tool_uis, present) do
+    case Map.get(msg, :ex_snapshot) do
+      snapshot when is_list(snapshot) ->
+        results =
+          snapshot
+          |> Enum.flat_map(&(&1.tool_results || []))
+          |> Map.new(&{&1.tool_call_id, &1})
+
+        snapshot
+        |> Enum.flat_map(&(&1.tool_calls || []))
+        |> Enum.reject(&MapSet.member?(present, &1.id))
+        |> Enum.flat_map(&recovered_rows(&1, id, results, tool_uis))
+        |> Enum.reverse()
+
+      _ ->
+        []
+    end
+  end
+
+  defp snapshot_details(_msg, _tool_uis, _present), do: []
+
+  defp recovered_rows(call, msg_id, results, tool_uis) do
+    result_row =
+      case Map.get(results, call.id) do
+        nil ->
+          []
+
+        r ->
+          [
+            new_detail(:tool_result, msg_id, %{
+              tool_call_id: call.id,
+              content: r.content,
+              is_error: r.is_error
+            })
+          ]
+      end
+
+    ui_row =
+      case Map.get(tool_uis, call.id) do
+        nil -> []
+        ui -> [new_detail(:tool_ui, msg_id, %{tool_call_id: call.id, ui: ui})]
+      end
+
+    [
+      new_detail(:tool_call, msg_id, %{
+        tool_call_id: call.id,
+        name: call.name,
+        arguments: call.arguments
+      })
+    ] ++ result_row ++ ui_row
+  end
+
   defp open_turn(msg_id, details) do
     text =
       details
@@ -2583,10 +2692,14 @@ defmodule ExAthena.Web.Live.ChatLive do
     data = restore_open_turn(data)
     tool_uis = Map.get(data, :tool_uis, %{})
 
+    # A stored stream is not evidence that it is complete: the durable save
+    # drops tool_events, so a reload can leave a turn with a few rows (or
+    # none) while its snapshot holds the whole run. Backfill from the
+    # snapshot in both cases — `nil` and merely-incomplete.
     details_stream =
       case Map.get(data, :details_stream) do
         nil -> hydrate_details_stream(data.display_messages, tool_uis)
-        existing -> existing
+        existing -> restore_details_stream(%{data | details_stream: existing}).details_stream
       end
 
     assign(socket,
