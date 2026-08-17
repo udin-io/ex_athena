@@ -18,9 +18,12 @@ defmodule ExAthena.ToolContext do
             session_id: nil,
             tool_call_id: nil,
             allowed_roots: nil,
+            confine_mode: :enforced,
             assigns: %{}
 
   @type phase :: :plan | :default | :accept_edits | :trusted | :bypass_permissions
+
+  @type confine_mode :: :enforced | :best_effort
 
   @type t :: %__MODULE__{
           cwd: Path.t(),
@@ -32,6 +35,13 @@ defmodule ExAthena.ToolContext do
           # paths inside one of them, web tools refuse private/loopback hosts,
           # and bash runs under an OS sandbox restricted to these roots.
           allowed_roots: [Path.t()] | nil,
+          # What bash does when the run is confined but no OS sandbox helper
+          # (sandbox-exec/bwrap) exists on the host. `:enforced` (default)
+          # refuses to run the command — fail-closed, the confinement contract
+          # is kept. `:best_effort` (explicit opt-in via `confine: :best_effort`
+          # on the run) runs the command unconfined with a logged warning and a
+          # telemetry event. Irrelevant when `allowed_roots` is nil.
+          confine_mode: confine_mode(),
           assigns: map()
         }
 

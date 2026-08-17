@@ -437,7 +437,10 @@ defmodule ExAthena.Tools.SpawnAgent do
   #     otherwise the child gets the parent's roots verbatim. (The child
   #     loop still cwd-anchors its roots, so a worktree-isolated child can
   #     reach its own worktree — that is the one deliberate widening, and it
-  #     is host-controlled, never model-controlled.)
+  #     is host-controlled, never model-controlled.) The parent's
+  #     confine_mode is inherited with it: an :enforced parent always spawns
+  #     :enforced children (fail-closed bash on helperless hosts, issue
+  #     #135); only a :best_effort parent propagates :best_effort.
   #   * disallowed_tools — union of parent's and child's (deny always wins).
   #   * allowed_tools — intersection when both exist; parent's when only the
   #     parent has one.
@@ -457,7 +460,7 @@ defmodule ExAthena.Tools.SpawnAgent do
     parent_perms = Map.get(assigns, :run_permissions) || %{}
 
     sub_opts
-    |> inherit_confinement(ctx.allowed_roots)
+    |> inherit_confinement(ctx.allowed_roots, Map.get(ctx, :confine_mode, :enforced))
     |> clamp_phase(ctx.phase)
     |> union_disallowed(parent_perms[:disallowed_tools])
     |> intersect_allowed(parent_perms[:allowed_tools])
@@ -465,9 +468,9 @@ defmodule ExAthena.Tools.SpawnAgent do
     |> inherit_pre_tool_hooks(Map.get(assigns, :hooks) || %{})
   end
 
-  defp inherit_confinement(sub_opts, nil), do: sub_opts
+  defp inherit_confinement(sub_opts, nil, _parent_mode), do: sub_opts
 
-  defp inherit_confinement(sub_opts, parent_roots) do
+  defp inherit_confinement(sub_opts, parent_roots, parent_mode) do
     requested =
       sub_opts
       |> Keyword.get(:allowed_roots)
@@ -477,9 +480,17 @@ defmodule ExAthena.Tools.SpawnAgent do
 
     roots = if requested == [], do: parent_roots, else: requested
 
-    sub_opts
-    |> Keyword.put(:allowed_roots, roots)
-    |> Keyword.delete(:confine)
+    sub_opts = Keyword.put(sub_opts, :allowed_roots, roots)
+
+    # The mode is host policy, clamped: an :enforced parent never spawns a
+    # :best_effort child (that would widen — unconfined bash on helperless
+    # hosts); a :best_effort parent propagates its own opt-in so children
+    # keep working on the same host. `:confine` here only conveys the mode —
+    # roots are already fixed above.
+    case parent_mode do
+      :best_effort -> Keyword.put(sub_opts, :confine, :best_effort)
+      _ -> Keyword.delete(sub_opts, :confine)
+    end
   end
 
   defp clamp_phase(sub_opts, parent_phase) do

@@ -81,7 +81,7 @@ say can **widen** them:
 
 | Setting | Combination rule |
 |---|---|
-| `allowed_roots` / `confine` | A confined parent confines every child. Requested roots survive only if they lie inside a parent root (intersection); otherwise the child gets the parent's roots. The child loop still cwd-anchors its roots, so a worktree-isolated child can reach its own worktree — host-controlled, never model-controlled. |
+| `allowed_roots` / `confine` | A confined parent confines every child. Requested roots survive only if they lie inside a parent root (intersection); otherwise the child gets the parent's roots. The child loop still cwd-anchors its roots, so a worktree-isolated child can reach its own worktree — host-controlled, never model-controlled. The parent's `confine_mode` travels with the roots: an `:enforced` parent always spawns `:enforced` children (fail-closed bash on hosts without a sandbox helper); only a `:best_effort` parent propagates `:best_effort`. |
 | `disallowed_tools` | Union of parent's and child's — a deny anywhere stays a deny. |
 | `allowed_tools` | Intersection when both exist; parent's list when only the parent has one. |
 | `can_use_tool` | Inherited from the parent unless the host already supplied one in `spawn_agent_opts` (the host is trusted; the model cannot set this). |

@@ -15,26 +15,38 @@ defmodule ExAthena.Sandbox do
   (network egress is handled separately by the web tools' SSRF guard). The OS
   temp dir stays writable so ordinary toolchains (compilers, `mktemp`) work.
 
-  Where no sandbox helper is available the command is returned **unwrapped** and
-  the caller is expected to warn: we never fake confinement with a command-string
-  scan (trivially bypassed via subshells/`eval`), so it's real-sandbox-or-nothing.
+  Where no sandbox helper is available the command is returned **unwrapped**
+  as `{:unavailable, argv}` and the caller decides the policy. The Bash tool
+  fails closed by default (`ExAthena.ToolContext.confine_mode` `:enforced`
+  refuses to run) because we never fake confinement with a command-string scan
+  (trivially bypassed via subshells/`eval`) — it's real-sandbox-or-refusal,
+  with `:best_effort` as the explicit degrade-with-warning opt-in.
   """
 
   require Logger
+
+  @type finder :: (String.t() -> String.t() | nil)
 
   @doc """
   Build the argv to run `command` confined to `roots` with working dir `cwd`.
 
   Returns `{:ok, {executable, args}}` when an OS sandbox is available, or
   `{:unavailable, {executable, args}}` (the bare `sh -c command`) otherwise.
+
+  `opts`:
+
+    * `:finder` — executable-lookup function (default
+      `&System.find_executable/1`). A seam so hosts/tests can simulate a
+      machine without the sandbox helper; never model-controlled.
   """
-  @spec wrap(String.t(), [Path.t()], Path.t()) ::
+  @spec wrap(String.t(), [Path.t()], Path.t(), keyword()) ::
           {:ok, {String.t(), [String.t()]}} | {:unavailable, {String.t(), [String.t()]}}
-  def wrap(command, roots, cwd) when is_binary(command) and is_list(roots) do
-    sh = System.find_executable("sh") || "/bin/sh"
+  def wrap(command, roots, cwd, opts \\ []) when is_binary(command) and is_list(roots) do
+    finder = finder(opts)
+    sh = finder.("sh") || "/bin/sh"
     roots = Enum.map(roots, &Path.expand/1)
 
-    case backend() do
+    case backend(finder) do
       {:macos, exe} ->
         {:ok, {exe, ["-p", macos_profile(roots), sh, "-c", command]}}
 
@@ -46,21 +58,45 @@ defmodule ExAthena.Sandbox do
     end
   end
 
-  @doc "Whether an OS sandbox helper is available on this host."
-  @spec available?() :: boolean()
-  def available?, do: backend() != :none
+  @doc """
+  Whether an OS sandbox helper is available on this host.
 
-  # ── platform detection ──
+  Accepts the same `:finder` option as `wrap/4`.
+  """
+  @spec available?(keyword()) :: boolean()
+  def available?(opts \\ []), do: backend(finder(opts)) != :none
 
-  defp backend do
+  @doc """
+  Name of the sandbox helper this platform needs (`"sandbox-exec"` on macOS,
+  `"bwrap"` on other Unixes). Used to build actionable missing-helper errors.
+  """
+  @spec required_helper() :: String.t()
+  def required_helper do
     case :os.type() do
-      {:unix, :darwin} -> with exe when is_binary(exe) <- find("sandbox-exec"), do: {:macos, exe}
-      {:unix, _} -> with exe when is_binary(exe) <- find("bwrap"), do: {:linux, exe}
-      _ -> :none
+      {:unix, :darwin} -> "sandbox-exec"
+      {:unix, _} -> "bwrap"
+      _ -> "sandbox-exec/bwrap"
     end
   end
 
-  defp find(bin), do: System.find_executable(bin) || :none
+  # ── platform detection ──
+
+  defp finder(opts), do: Keyword.get(opts, :finder) || (&System.find_executable/1)
+
+  defp backend(finder) do
+    case :os.type() do
+      {:unix, :darwin} ->
+        with exe when is_binary(exe) <- find(finder, "sandbox-exec"), do: {:macos, exe}
+
+      {:unix, _} ->
+        with exe when is_binary(exe) <- find(finder, "bwrap"), do: {:linux, exe}
+
+      _ ->
+        :none
+    end
+  end
+
+  defp find(finder, bin), do: finder.(bin) || :none
 
   # ── macOS: SBPL profile (pure) ──
 

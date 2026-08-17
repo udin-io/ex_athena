@@ -113,6 +113,46 @@ defmodule ExAthena.Loop.SubagentInheritanceTest do
     end
   end
 
+  describe "confine-mode inheritance (sandbox fail-closed — issue #135)" do
+    # The parent's assigns (inherited wholesale by the child) carry a finder
+    # that reports NO sandbox helper installed, so the child's bash exercises
+    # the missing-helper path regardless of what this machine actually has.
+    defp helperless_spawn_opts(child_fun) do
+      %{
+        sandbox_finder: fn _bin -> nil end,
+        spawn_agent_opts: [
+          provider: :mock,
+          mock: [responder: child_fun],
+          memory: false
+        ]
+      }
+    end
+
+    test "enforced parent (confine: true) → child bash refuses when no helper exists",
+         %{dir: dir} do
+      marker = Path.join(dir, "child_ran.txt")
+      child = child_responder("bash", %{"command" => "echo hi > #{marker}"})
+
+      run_parent(dir, child, confine: true, assigns: helperless_spawn_opts(child))
+
+      refute File.exists?(marker),
+             "child must inherit fail-closed confinement, not run unconfined"
+    end
+
+    test "best-effort parent (confine: :best_effort) → child bash still runs",
+         %{dir: dir} do
+      marker = Path.join(dir, "child_ran.txt")
+      child = child_responder("bash", %{"command" => "echo hi > #{marker}"})
+
+      ExUnit.CaptureLog.capture_log(fn ->
+        run_parent(dir, child, confine: :best_effort, assigns: helperless_spawn_opts(child))
+      end)
+
+      assert File.exists?(marker),
+             "an explicit best-effort opt-out must keep working on helperless hosts"
+    end
+  end
+
   describe "tool blocklist / allowlist inheritance" do
     test "child cannot invoke a tool in the parent's disallowed_tools", %{dir: dir} do
       target = Path.join(dir, "blocked.txt")

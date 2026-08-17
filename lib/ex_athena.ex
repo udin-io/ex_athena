@@ -217,7 +217,10 @@ defmodule ExAthena do
   working directory by default. On unless `EX_ATHENA_CONFINE` is `0`/`false`/`no`.
 
   Library consumers calling `run/2` directly are unaffected — they opt in with
-  `confine: true` or `allowed_roots: [...]`.
+  `confine: true` or `allowed_roots: [...]`. Confinement is fail-closed for
+  `bash`: on hosts without an OS sandbox helper (`sandbox-exec`/`bwrap`) the
+  command is refused instead of silently running unconfined; pass
+  `confine: :best_effort` to accept warn-and-run degradation instead.
   """
   @spec confine_default?() :: boolean()
   def confine_default? do
