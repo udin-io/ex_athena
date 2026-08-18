@@ -30,6 +30,7 @@ defmodule ExAthena.Orchestrator.AgentInfo do
 
   alias ExAthena.Messages.{ToolCall, ToolResult}
   alias ExAthena.Result
+  alias ExAthena.Tuning
 
   @transcript_max_entries 30
   @transcript_entry_max_chars 400
@@ -87,7 +88,10 @@ defmodule ExAthena.Orchestrator.AgentInfo do
     %__MODULE__{
       id: id,
       name: Map.get(attrs, :name),
-      prompt_summary: attrs |> Map.get(:prompt_summary) |> truncate(@summary_max_chars),
+      prompt_summary:
+        attrs
+        |> Map.get(:prompt_summary)
+        |> truncate(Tuning.get(:agents, :prompt_chars, @summary_max_chars)),
       linked_todo: Map.get(attrs, :linked_todo),
       match_text: attrs |> Map.get(:match_text) |> truncate(600),
       parent_id: Map.get(attrs, :parent_id, :main),
@@ -176,7 +180,11 @@ defmodule ExAthena.Orchestrator.AgentInfo do
 
     %{
       info
-      | conclusions: Enum.take(info.conclusions ++ [entry], -@conclusions_cap),
+      | conclusions:
+          Enum.take(
+            info.conclusions ++ [entry],
+            -Tuning.get(:agents, :conclusions_cap, @conclusions_cap)
+          ),
         status: if(repeated?, do: :stalling, else: :running)
     }
   end
@@ -341,21 +349,39 @@ defmodule ExAthena.Orchestrator.AgentInfo do
   defp append_transcript(info, {kind, text}) when kind in [:thinking, :content] do
     case List.last(info.transcript_tail) do
       {^kind, prev} ->
-        merged = truncate(prev <> text, @transcript_text_max_chars)
+        merged =
+          truncate(
+            prev <> text,
+            Tuning.get(:agents, :transcript_text_chars, @transcript_text_max_chars)
+          )
+
         tail = List.replace_at(info.transcript_tail, -1, {kind, merged})
         %{info | transcript_tail: tail}
 
       _ ->
-        push_transcript(info, {kind, truncate(text, @transcript_text_max_chars)})
+        push_transcript(
+          info,
+          {kind,
+           truncate(text, Tuning.get(:agents, :transcript_text_chars, @transcript_text_max_chars))}
+        )
     end
   end
 
   defp append_transcript(info, {kind, text}) do
-    push_transcript(info, {kind, truncate(text, @transcript_entry_max_chars)})
+    push_transcript(
+      info,
+      {kind,
+       truncate(text, Tuning.get(:agents, :transcript_entry_chars, @transcript_entry_max_chars))}
+    )
   end
 
   defp push_transcript(info, entry) do
-    tail = Enum.take(info.transcript_tail ++ [entry], -@transcript_max_entries)
+    tail =
+      Enum.take(
+        info.transcript_tail ++ [entry],
+        -Tuning.get(:agents, :transcript_max_entries, @transcript_max_entries)
+      )
+
     %{info | transcript_tail: tail}
   end
 

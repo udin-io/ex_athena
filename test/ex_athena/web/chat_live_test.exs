@@ -271,6 +271,139 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
     end
   end
 
+  # A session's tool history is persisted twice, inconsistently: the live
+  # LiveView saves `tool_events`, while `Sessions.persist_run_result/3` — the
+  # durable path that runs whether or not a browser is attached — hardcodes
+  # `tool_events: []`. Reloading mid-run then resets `details_stream` and
+  # rebuilds it from that empty field, so everything before the reload is gone
+  # and the truncated stream is saved back over the full one.
+  #
+  # A real 23-iteration run (a3b95452ca35) ended with 31 tool calls in its
+  # `ex_snapshot` but only 3 in `details_stream`; its entire second turn had
+  # zero details and rendered as bare text. The snapshot is the authority for
+  # what a turn ran, so missing tool rows are recovered from it.
+  describe "restore_details_stream/1 — tool history dropped by the durable save" do
+    alias ExAthena.Messages.{Message, ToolCall, ToolResult}
+
+    defp snap_msg(calls) do
+      [
+        %Message{
+          role: :assistant,
+          content: "",
+          tool_calls:
+            Enum.map(calls, fn {id, name} ->
+              %ToolCall{id: id, name: name, arguments: %{"objective" => "do #{id}"}}
+            end)
+        },
+        %Message{
+          role: :tool,
+          content: nil,
+          tool_results:
+            Enum.map(calls, fn {id, _} ->
+              %ToolResult{tool_call_id: id, content: "result of #{id}", is_error: false}
+            end)
+        }
+      ]
+    end
+
+    defp turn(id, calls),
+      do: %{id: id, role: :assistant, text: "done", tool_events: [], ex_snapshot: snap_msg(calls)}
+
+    defp session(messages, details),
+      do: %{display_messages: messages, details_stream: details, tool_uis: %{}}
+
+    defp call_ids(stream) do
+      stream
+      |> Enum.filter(&(&1.type == :tool_call))
+      |> Enum.map(& &1.payload.tool_call_id)
+    end
+
+    test "recovers a turn whose details were never persisted at all" do
+      data = session([turn("a1", [{"c1", "spawn_agent"}, {"c2", "todo_write"}])], [])
+
+      stream = ChatLive.restore_details_stream(data).details_stream
+
+      assert call_ids(stream) == ["c2", "c1"]
+      assert Enum.all?(stream, &(&1.message_id == "a1"))
+    end
+
+    test "recovers the tool result alongside its call, so the row has an outcome" do
+      data = session([turn("a1", [{"c1", "spawn_agent"}])], [])
+
+      stream = ChatLive.restore_details_stream(data).details_stream
+
+      assert result = Enum.find(stream, &(&1.type == :tool_result))
+      assert result.payload.tool_call_id == "c1"
+      assert result.payload.content == "result of c1"
+    end
+
+    test "adds only the missing calls when a reload kept the tail" do
+      kept = %{
+        id: "d-c3",
+        type: :tool_call,
+        message_id: "a1",
+        payload: %{tool_call_id: "c3", name: "finish", arguments: %{}}
+      }
+
+      data =
+        session(
+          [turn("a1", [{"c1", "spawn_agent"}, {"c2", "todo_write"}, {"c3", "finish"}])],
+          [kept]
+        )
+
+      stream = ChatLive.restore_details_stream(data).details_stream
+
+      assert Enum.count(stream, &(&1.type == :tool_call)) == 3
+      assert kept in stream
+      assert "c3" in call_ids(stream)
+    end
+
+    test "leaves a fully-persisted turn untouched" do
+      details =
+        for id <- ["c2", "c1"] do
+          %{id: "d-#{id}", type: :tool_call, message_id: "a1", payload: %{tool_call_id: id}}
+        end
+
+      data = session([turn("a1", [{"c1", "spawn_agent"}, {"c2", "todo_write"}])], details)
+
+      assert ChatLive.restore_details_stream(data).details_stream == details
+    end
+
+    test "keeps each turn's recovered rows under that turn" do
+      data =
+        session(
+          [turn("a1", [{"c1", "spawn_agent"}]), turn("a2", [{"c2", "spawn_agent"}])],
+          []
+        )
+
+      stream = ChatLive.restore_details_stream(data).details_stream
+
+      assert Enum.find(stream, &(&1.payload[:tool_call_id] == "c1")).message_id == "a1"
+      assert Enum.find(stream, &(&1.payload[:tool_call_id] == "c2")).message_id == "a2"
+    end
+
+    test "a turn with no snapshot is left alone" do
+      msg = %{id: "a1", role: :assistant, text: "hi", tool_events: []}
+
+      assert ChatLive.restore_details_stream(session([msg], [])).details_stream == []
+    end
+
+    # Each turn's snapshot is the WHOLE conversation up to that point, not
+    # just that turn — so a later turn's snapshot re-contains every earlier
+    # call. Recovering per turn independently duplicated them: the real
+    # a3b95452ca35 produced 52 rows for 31 actual calls.
+    test "attributes a call to the turn that ran it when snapshots are cumulative" do
+      turn1 = turn("a1", [{"c1", "spawn_agent"}])
+      turn2 = turn("a2", [{"c1", "spawn_agent"}, {"c2", "todo_write"}])
+
+      stream = ChatLive.restore_details_stream(session([turn1, turn2], [])).details_stream
+
+      assert call_ids(stream) |> Enum.sort() == ["c1", "c2"]
+      assert Enum.find(stream, &(&1.payload[:tool_call_id] == "c1")).message_id == "a1"
+      assert Enum.find(stream, &(&1.payload[:tool_call_id] == "c2")).message_id == "a2"
+    end
+  end
+
   # The assistant message was only appended when a run COMPLETED, but its
   # details are stamped with that message's id from the first event onward.
   # A run that was killed, crashed, or is still in flight therefore left its

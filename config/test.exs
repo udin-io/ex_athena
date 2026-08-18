@@ -22,3 +22,9 @@ config :ex_athena, :request_queue, enabled: false
 # Route web_search through the Mox mock (defined in test_helper.exs) so tests
 # never hit the network. The contract lives in ExAthena.Search.
 config :ex_athena, :search, adapter: ExAthena.Search.Mock
+
+# Settings are persisted to the user's home by default. A test that saves must
+# never touch it — one that did wrote a real settings.json and silently capped
+# a live run's report size. Pin the path here so no ordering or setup mistake
+# can reach the real file.
+config :ex_athena, :settings_path, Path.join(System.tmp_dir!(), "ex_athena_test_settings.json")

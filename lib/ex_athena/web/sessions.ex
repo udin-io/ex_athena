@@ -7,6 +7,8 @@ defmodule ExAthena.Web.Sessions do
   opened working directories so users can jump back to a project quickly.
   """
 
+  alias ExAthena.Tuning
+
   @base_dir Path.expand("~/.ex_athena/web")
   @sessions_dir Path.join(@base_dir, "sessions")
   @recent_path Path.join(@base_dir, "recent.json")
@@ -211,7 +213,7 @@ defmodule ExAthena.Web.Sessions do
     _ -> []
   end
 
-  @doc "Record a working directory as recently opened (deduplicates, caps at #{@max_recent})."
+  @doc "Record a working directory as recently opened (deduplicates, capped by `:ui, :max_recent_dirs`)."
   @spec touch_recent(String.t()) :: :ok
   def touch_recent(cwd) do
     existing = list_recent()
@@ -219,7 +221,7 @@ defmodule ExAthena.Web.Sessions do
     updated =
       [%{cwd: cwd, name: Path.basename(cwd), opened_at: DateTime.utc_now()} | existing]
       |> Enum.uniq_by(& &1.cwd)
-      |> Enum.take(@max_recent)
+      |> Enum.take(Tuning.get(:ui, :max_recent_dirs, @max_recent))
 
     payload =
       Enum.map(updated, fn e ->

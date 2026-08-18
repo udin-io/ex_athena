@@ -29,6 +29,8 @@ defmodule ExAthena.Tools.Bash do
 
   require Logger
 
+  alias ExAthena.Tuning
+
   @default_timeout 120_000
   @max_timeout 600_000
 
@@ -37,26 +39,36 @@ defmodule ExAthena.Tools.Bash do
   # error_max_turns). Head + tail survive; the cut is explicit so the model
   # narrows the command instead of assuming it saw everything.
   @max_output_chars 16_000
-  @head_chars 12_000
-  @tail_chars 4_000
+
+  # How much of the cap goes to the head. The tail takes the rest, so the two
+  # always sum to the cap however it is configured — deriving them beats three
+  # independent knobs a host could set into an inconsistent triple (a cap
+  # smaller than head+tail made `binary_part/3` raise on a negative length).
+  @head_share 0.75
 
   # Deny patterns — a first-pass backstop that marks a command as
   # write/destructive regardless of what the allowlist below would say.
   # Retained from the original (blocklist-only) classifier as
   # defense-in-depth; the actual read-only decision is allowlist-based
   # (see `read_only_command?/1`).
+  # Each carries the label used in the denial. "matches a known write
+  # pattern" named nothing the model could act on; saying which construct
+  # tripped turns a blind retry into a corrected one.
   @write_patterns [
-    ~r/\b(mkdir|touch|rm|mv|cp|chmod|chown)\b/,
-    ~r/\bgit\s+(add|commit|push|merge|rebase|checkout|reset|clean|stash|branch\s+-[dD])\b/,
-    ~r/\b(npm|yarn|pnpm|mix|bundle|pip|cargo)\s+(install|add|remove|update|new|init)\b/,
-    ~r/\bmix\s+(ecto\.migrate|ecto\.create|ecto\.rollback|ecto\.gen\.migration|ash\.codegen|phx\.gen)\b/,
-    ~r/[>|]\s*tee\b/,
-    ~r/>>?\s/,
-    ~r/\bsed\s+-i\b/,
-    ~r/\bdd\b/,
-    ~r/\btruncate\b/,
-    ~r/\bcurl\b.*-[oO]\b/,
-    ~r/\bwget\b/
+    {~r/\b(mkdir|touch|rm|mv|cp|chmod|chown)\b/, "a filesystem-modifying command"},
+    {~r/\bgit\s+(add|commit|push|merge|rebase|checkout|reset|clean|stash|branch\s+-[dD])\b/,
+     "a git subcommand that writes to the repository"},
+    {~r/\b(npm|yarn|pnpm|mix|bundle|pip|cargo)\s+(install|add|remove|update|new|init)\b/,
+     "a package-manager command that installs or modifies dependencies"},
+    {~r/\bmix\s+(ecto\.migrate|ecto\.create|ecto\.rollback|ecto\.gen\.migration|ash\.codegen|phx\.gen)\b/,
+     "a mix task that generates or migrates"},
+    {~r/[>|]\s*tee\b/, "a `tee` redirect"},
+    {~r/>>?\s/, "a file redirect (`>`)"},
+    {~r/\bsed\s+-i\b/, "an in-place `sed -i` edit"},
+    {~r/\bdd\b/, "`dd`"},
+    {~r/\btruncate\b/, "`truncate`"},
+    {~r/\bcurl\b.*-[oO]\b/, "a `curl` download that writes a file"},
+    {~r/\bwget\b/, "`wget`"}
   ]
 
   # Commands whose plain invocation is read-only. The head of EVERY shell
@@ -66,7 +78,14 @@ defmodule ExAthena.Tools.Bash do
   # (including interpreters: python/perl/ruby/node/sh/ex/ed/…) is treated
   # as MUTATING: interpreters execute arbitrary code, so a blocklist can
   # never enumerate the write verbs.
+  #
+  # `cd` is here because it moves the shell's own working directory and
+  # nothing else. It grants no reach either: `cat` is already allowed and
+  # takes absolute paths, so anything reachable after a `cd` was reachable
+  # before it. Its absence denied every `cd repo && <read-only cmd>` chain,
+  # which is how models habitually scope a command to a project.
   @readonly_commands ~w(
+    cd
     cat tac ls dir grep egrep fgrep rg ag ack head tail wc file stat pwd
     tree du df basename dirname realpath readlink which type whereis
     whoami id groups date cal uptime uname hostname printenv echo printf
@@ -133,7 +152,23 @@ defmodule ExAthena.Tools.Bash do
   confined runs regardless of phase.
   """
   @spec read_only_command?(map()) :: boolean()
-  def read_only_command?(%{"command" => cmd}) when is_binary(cmd) and cmd != "" do
+  def read_only_command?(args), do: is_nil(read_only_violation(args))
+
+  @doc """
+  Why `args` failed to classify read-only, or `nil` when it is read-only.
+
+  Returns `%{reason: String.t(), segment: String.t() | nil}`. `segment` names
+  the offending command (`"cd"`, `"git commit"`) when a single shell segment
+  is at fault, and is `nil` when the whole invocation is disqualified by a
+  construct — command substitution, a write pattern, a file redirect.
+
+  `read_only_command?/1` answers *whether*; a model that chained four
+  segments also needs *which*. Denying with only "not recognized as
+  read-only" sent a live subagent into a retry loop, re-sending the same
+  shape three times because nothing told it which part lost.
+  """
+  @spec read_only_violation(map()) :: nil | %{reason: String.t(), segment: String.t() | nil}
+  def read_only_violation(%{"command" => cmd}) when is_binary(cmd) and cmd != "" do
     trimmed = String.trim(cmd)
     stripped = strip_quoted(trimmed)
 
@@ -149,26 +184,70 @@ defmodule ExAthena.Tools.Bash do
       # Command substitution can hide arbitrary writes inside a read-only
       # head (`cat $(rm -rf x)`), including inside double quotes.
       String.contains?(trimmed, "$(") or String.contains?(trimmed, "`") ->
-        false
+        violation("command substitution (`$(…)` or backticks) can hide writes")
 
       # Backstop deny patterns (checked against the quote-stripped command so
       # quoted text — e.g. `grep "rm -rf" lib/` — doesn't false-positive).
-      Enum.any?(@write_patterns, fn pattern -> Regex.match?(pattern, stripped) end) ->
-        false
+      label = matched_write_pattern(stripped) ->
+        violation("it contains #{label}")
 
       # Any remaining `>` is a file redirect — a write.
       String.contains?(normalized, ">") ->
-        false
+        violation("it contains a file redirect (`>`)")
 
       true ->
         case segments(normalized) do
-          [] -> false
-          segs -> Enum.all?(segs, &segment_read_only?/1)
+          [] ->
+            violation("the command is empty")
+
+          segs ->
+            case Enum.find(segs, &(not segment_read_only?(&1))) do
+              nil ->
+                nil
+
+              segment ->
+                name = segment_name(segment)
+
+                %{
+                  reason: "`#{name}` is not recognized as read-only",
+                  segment: name
+                }
+            end
         end
     end
   end
 
-  def read_only_command?(_), do: false
+  def read_only_violation(_), do: violation("no command was given")
+
+  defp violation(reason), do: %{reason: reason, segment: nil}
+
+  defp matched_write_pattern(cmd) do
+    Enum.find_value(@write_patterns, fn {pattern, label} ->
+      if Regex.match?(pattern, cmd), do: label
+    end)
+  end
+
+  # The actionable part of a failing segment: the command, plus enough of its
+  # verb to be correctable. `git commit` fails on `commit`, not on `git`, and
+  # saying "git" would send a model in circles. `gh` groups one level deeper
+  # (`gh <group> <verb>`), so it needs both words — reporting "gh pr" would
+  # read as though no `gh pr` command were allowed, when `gh pr view` is.
+  defp segment_name(segment) do
+    case String.split(segment, ~r/\s+/, trim: true) do
+      [] ->
+        segment
+
+      [head | rest] ->
+        base = Path.basename(head)
+        verbs = Enum.reject(rest, &String.starts_with?(&1, "-"))
+
+        case base do
+          "gh" -> Enum.join([base | Enum.take(verbs, 2)], " ")
+          gated when gated in ~w(git mix) -> Enum.join([base | Enum.take(verbs, 1)], " ")
+          _ -> base
+        end
+    end
+  end
 
   # Replace quoted spans with a placeholder so quoted metacharacters
   # (`grep -E "foo|bar"`) neither split segments nor trip deny patterns.
@@ -229,8 +308,8 @@ defmodule ExAthena.Tools.Bash do
   def execute(%{"command" => command} = args, ctx) when is_binary(command) do
     timeout =
       case Map.get(args, "timeout_ms") do
-        t when is_integer(t) and t > 0 -> min(t, @max_timeout)
-        _ -> @default_timeout
+        t when is_integer(t) and t > 0 -> min(t, Tuning.get(:bash, :max_timeout_ms, @max_timeout))
+        _ -> Tuning.get(:bash, :default_timeout_ms, @default_timeout)
       end
 
     run(command, ctx, timeout)
@@ -341,13 +420,19 @@ defmodule ExAthena.Tools.Bash do
     end
   end
 
-  defp cap_output(body) when byte_size(body) <= @max_output_chars, do: body
-
   defp cap_output(body) do
-    cut = byte_size(body) - @head_chars - @tail_chars
+    max = Tuning.get(:bash, :max_output_chars, @max_output_chars)
 
-    head = binary_part(body, 0, @head_chars)
-    tail = binary_part(body, byte_size(body) - @tail_chars, @tail_chars)
+    if byte_size(body) <= max, do: body, else: truncate_middle(body, max)
+  end
+
+  defp truncate_middle(body, max) do
+    head_chars = trunc(max * @head_share)
+    tail_chars = max - head_chars
+    cut = byte_size(body) - head_chars - tail_chars
+
+    head = binary_part(body, 0, head_chars)
+    tail = binary_part(body, byte_size(body) - tail_chars, tail_chars)
 
     head <>
       "\n…[truncated #{cut} chars — narrow the command (use head/grep/max_results)]…\n" <>

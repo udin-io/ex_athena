@@ -47,6 +47,7 @@ defmodule ExAthena.Tools.SpawnAgent do
 
   alias ExAthena.Agents
   alias ExAthena.Agents.{Sidechain, Worktree}
+  alias ExAthena.Tuning
 
   @behaviour ExAthena.Tool
 
@@ -61,7 +62,7 @@ defmodule ExAthena.Tools.SpawnAgent do
   # 128k+ window, so the budget this protects was never scarce. 24_000 covers
   # every report observed except two outliers, at ~6k tokens on the
   # orchestrator's largest turn.
-  @default_result_chars 24_000
+  @default_result_chars 64_000
 
   @impl true
   def name, do: "spawn_agent"
@@ -348,7 +349,10 @@ defmodule ExAthena.Tools.SpawnAgent do
           # facts about what it actually did out of the orchestrator's view.
           text =
             text
-            |> truncate_result(Map.get(args, "max_result_chars") || @default_result_chars)
+            |> truncate_result(
+              Map.get(args, "max_result_chars") ||
+                Tuning.get(:agents, :result_chars, @default_result_chars)
+            )
             |> append_provenance(sub_result)
 
           emit_event(ctx, {:subagent_result, %{id: sub_id, text: text}})
@@ -609,7 +613,9 @@ defmodule ExAthena.Tools.SpawnAgent do
   to describing outcomes).
   """
   @spec dictated_code?(String.t() | nil) :: boolean()
-  def dictated_code?(prompt), do: fenced_code_lines(prompt) >= @dictated_code_lines
+  def dictated_code?(prompt),
+    do:
+      fenced_code_lines(prompt) >= Tuning.get(:agents, :dictated_code_lines, @dictated_code_lines)
 
   defp dictated_code_note(prompt) do
     if dictated_code?(prompt) do
@@ -799,8 +805,10 @@ defmodule ExAthena.Tools.SpawnAgent do
   # Worker iteration caps chosen by the model are floored at the default —
   # live testing showed an orchestrator starving its worker with
   # max_iterations: 5 (the worker died at error_max_turns mid-task).
-  defp worker_iterations(n) when is_integer(n), do: max(n, @default_max_iterations)
-  defp worker_iterations(_), do: @default_max_iterations
+  defp worker_iterations(n) when is_integer(n),
+    do: max(n, Tuning.get(:agents, :max_iterations, @default_max_iterations))
+
+  defp worker_iterations(_), do: Tuning.get(:agents, :max_iterations, @default_max_iterations)
 
   # Pass names through; the loop resolves names → modules. Filter out the
   # meta tools (runaway recursion) AND any name that isn't a known tool —

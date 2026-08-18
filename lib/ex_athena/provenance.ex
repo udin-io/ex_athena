@@ -29,6 +29,7 @@ defmodule ExAthena.Provenance do
   """
 
   alias ExAthena.Messages.{Message, ToolCall, ToolResult}
+  alias ExAthena.Tuning
 
   # Builtin tools that mutate the workspace. `bash` is classified separately —
   # it runs commands, which is the evidence side rather than the change side.
@@ -310,15 +311,15 @@ defmodule ExAthena.Provenance do
   defp render([]), do: "none"
 
   defp render(items) do
-    case Enum.split(items, @max_listed) do
+    case Enum.split(items, Tuning.get(:agents, :provenance_max_listed, @max_listed)) do
       {shown, []} -> Enum.join(shown, ", ")
       {shown, rest} -> Enum.join(shown, ", ") <> " (+#{length(rest)} more)"
     end
   end
 
-  defp truncate(text) when byte_size(text) > @max_command_chars do
-    String.slice(text, 0, @max_command_chars) <> "…"
-  end
+  defp truncate(text) do
+    max = Tuning.get(:agents, :provenance_command_chars, @max_command_chars)
 
-  defp truncate(text), do: text
+    if byte_size(text) > max, do: String.slice(text, 0, max) <> "…", else: text
+  end
 end

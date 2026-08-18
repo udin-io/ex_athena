@@ -16,6 +16,8 @@ defmodule ExAthena.Tools.Grep do
 
   @behaviour ExAthena.Tool
 
+  alias ExAthena.Tuning
+
   @default_max 200
   @hard_cap 2_000
 
@@ -56,7 +58,7 @@ defmodule ExAthena.Tools.Grep do
   @impl true
   def execute(%{"pattern" => pattern} = args, ctx) when is_binary(pattern) do
     cwd = ctx.cwd
-    max = clamp(Map.get(args, "max_results", @default_max))
+    max = clamp(Map.get(args, "max_results", Tuning.get(:tools, :grep_default_max, @default_max)))
     glob = Map.get(args, "path_glob")
     include_artifacts = Map.get(args, "include_artifacts", false) == true
 
@@ -69,8 +71,10 @@ defmodule ExAthena.Tools.Grep do
 
   def execute(_, _), do: {:error, :missing_pattern}
 
-  defp clamp(n) when is_integer(n) and n > 0, do: min(n, @hard_cap)
-  defp clamp(_), do: @default_max
+  defp clamp(n) when is_integer(n) and n > 0,
+    do: min(n, Tuning.get(:tools, :grep_hard_cap, @hard_cap))
+
+  defp clamp(_), do: Tuning.get(:tools, :grep_default_max, @default_max)
 
   defp rg_grep(rg, pattern, glob, cwd, max, include_artifacts) do
     # Pass `.` explicitly — rg hangs on stdin when it can't detect a path arg

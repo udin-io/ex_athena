@@ -124,6 +124,88 @@ defmodule ExAthena.PermissionsTest do
                Permissions.check(call("bash", %{}), ctx(:plan), %{})
     end
 
+    # `cd` was absent from the allowlist, so ANY chain that changed directory
+    # first was denied wholesale — including `cd repo && gh pr view 252`,
+    # whose gh half classifies read-only on its own. A live PR-review subagent
+    # burned three turns re-sending the same `cd … && gh …` shape, since the
+    # denial named neither `cd` nor the segment that failed.
+    test "allows a directory change before a read-only command" do
+      for cmd <- [
+            "cd /home/dev/project",
+            "cd /home/dev/project && gh pr view 252 --json title,files",
+            "cd /home/dev/project && gh repo view --json owner",
+            "cd /home/dev/project && git log --oneline -5",
+            "cd .. && ls -la"
+          ] do
+        assert :allow = Permissions.check(call("bash", %{"command" => cmd}), ctx(:plan), %{}),
+               "expected `#{cmd}` to be allowed in plan phase"
+      end
+    end
+
+    test "a leading cd does not launder a mutating command behind it" do
+      for cmd <- [
+            "cd /tmp && rm -rf foo",
+            "cd /tmp && git commit -m wip",
+            "cd /tmp && python -c \"open('x','w')\"",
+            "cd /tmp && gh pr create --title x"
+          ] do
+        assert {:deny, %Denial{code: :phase_gated}} =
+                 Permissions.check(call("bash", %{"command" => cmd}), ctx(:plan), %{}),
+               "expected `#{cmd}` to stay denied in plan phase"
+      end
+    end
+
+    # The denial said only "bash command is not recognized as read-only", so a
+    # model that chained four segments could not tell which one lost. Naming it
+    # turns a guessing loop into one corrected retry.
+    test "names the segment that failed, not just the whole command" do
+      assert {:deny, %Denial{reason: reason, metadata: meta}} =
+               Permissions.check(
+                 call("bash", %{"command" => "ls -la && python -c 'x' && cat f"}),
+                 ctx(:plan),
+                 %{}
+               )
+
+      assert reason =~ "python"
+      assert meta.blocked_segment =~ "python"
+    end
+
+    # `gh` is `<group> <verb>`, so the verb is what passes or fails — naming
+    # only "gh pr" would read as though no `gh pr` command were allowed, when
+    # `gh pr view` is.
+    test "names the gh verb, since gh is grouped one level deeper than git" do
+      assert {:deny, %Denial{metadata: %{blocked_segment: segment}}} =
+               Permissions.check(
+                 call("bash", %{"command" => "gh pr create --title x"}),
+                 ctx(:plan),
+                 %{}
+               )
+
+      assert segment == "gh pr create"
+    end
+
+    test "reports the disqualifying construct when no single segment is at fault" do
+      assert {:deny, %Denial{reason: reason}} =
+               Permissions.check(
+                 call("bash", %{"command" => "cat $(rm -rf x)"}),
+                 ctx(:plan),
+                 %{}
+               )
+
+      assert reason =~ "substitution"
+    end
+
+    test "reports a file redirect as the reason" do
+      assert {:deny, %Denial{reason: reason}} =
+               Permissions.check(
+                 call("bash", %{"command" => "cat a.ex > b.ex"}),
+                 ctx(:plan),
+                 %{}
+               )
+
+      assert reason =~ "redirect"
+    end
+
     test "denies interpreter one-liners and unknown commands (allowlist, not blocklist)" do
       for cmd <- [
             ~s{python -c "open('x','w').write('pwned')"},

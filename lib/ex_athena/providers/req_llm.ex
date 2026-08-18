@@ -42,6 +42,7 @@ defmodule ExAthena.Providers.ReqLLM do
 
   alias ExAthena.{Embedding, Error, ModelDiscovery, ModelListing, Request, Response}
   alias ExAthena.Messages.{Message, ToolResult}
+  alias ExAthena.Tuning
 
   # Claude Code-style log prefix so callers can filter/tail the adapter
   # boundary independently of other ex_athena components.
@@ -505,7 +506,9 @@ defmodule ExAthena.Providers.ReqLLM do
         openai_compatible_backend: req_llm_backend,
         # Completion cap (NOT the context window): unbounded per-turn output
         # lets a thinking model ramble a whole context away in one turn.
-        max_tokens: request.max_tokens || @default_completion_tokens,
+        max_tokens:
+          request.max_tokens ||
+            Tuning.get(:model, :max_completion_tokens, @default_completion_tokens),
         # Qwen's official thinking/coding profile (0.6/0.95) — never greedy
         # (official guidance: greedy causes "endless repetitions"), never
         # server-default-hot. Explicit request values always win.
@@ -736,7 +739,7 @@ defmodule ExAthena.Providers.ReqLLM do
   end
 
   defp completion_cap(%Request{max_tokens: max_tokens}),
-    do: max_tokens || @default_completion_tokens
+    do: max_tokens || Tuning.get(:model, :max_completion_tokens, @default_completion_tokens)
 
   @doc false
   # Output-starvation detection (issue #194): a hybrid thinking model can burn
@@ -882,7 +885,9 @@ defmodule ExAthena.Providers.ReqLLM do
 
   def consume_stream(%ReqLLM.StreamResponse{stream: stream}, callback, request) do
     max_stream_bytes =
-      (request.max_tokens || @default_completion_tokens) * @stream_bytes_per_token
+      (request.max_tokens ||
+         Tuning.get(:model, :max_completion_tokens, @default_completion_tokens)) *
+        @stream_bytes_per_token
 
     state = %{
       text: [],

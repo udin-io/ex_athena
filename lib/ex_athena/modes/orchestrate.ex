@@ -28,6 +28,7 @@ defmodule ExAthena.Modes.Orchestrate do
   alias ExAthena.Loop.{Parallel, State}
   alias ExAthena.Messages.ToolCall
   alias ExAthena.Permissions.Denial
+  alias ExAthena.Tuning
 
   # ONE byte-stable protocol for both phases — phase-varying system prompts
   # (and toolsets) break prefix caching on local servers at token ~0.
@@ -278,7 +279,7 @@ defmodule ExAthena.Modes.Orchestrate do
           new_state.meta[:todos] != state.meta[:todos] and new_state.meta[:todos] != nil ->
             {:continue, new_state |> put_watch(0) |> to_executing()}
 
-          turns >= @max_planning_turns ->
+          turns >= tuning(:max_planning_turns, @max_planning_turns) ->
             {:continue,
              new_state
              |> redirect(
@@ -480,8 +481,8 @@ defmodule ExAthena.Modes.Orchestrate do
 
   defp audit_note(request) do
     request =
-      if String.length(request) > @audit_request_chars,
-        do: String.slice(request, 0, @audit_request_chars) <> "…",
+      if String.length(request) > tuning(:audit_request_chars, @audit_request_chars),
+        do: String.slice(request, 0, tuning(:audit_request_chars, @audit_request_chars)) <> "…",
         else: request
 
     "[orchestration runtime] Before finishing: nothing has checked the " <>
@@ -603,7 +604,7 @@ defmodule ExAthena.Modes.Orchestrate do
       repeated? ->
         {:continue, put_watch(redirect(state, repeat_note()), turns)}
 
-      fresh_pending != [] and turns >= @max_turns_without_spawn ->
+      fresh_pending != [] and turns >= tuning(:max_turns_without_spawn, @max_turns_without_spawn) ->
         todo = hd(fresh_pending)
         state = auto_delegate(state, todo)
 
@@ -634,7 +635,9 @@ defmodule ExAthena.Modes.Orchestrate do
 
     total = (state.mode_state[:dictated_briefs] || 0) + dictated
 
-    fire? = not (state.mode_state[:dictated_nudged] || false) and total >= @max_dictated_briefs
+    fire? =
+      not (state.mode_state[:dictated_nudged] || false) and
+        total >= tuning(:max_dictated_briefs, @max_dictated_briefs)
 
     mode_state =
       state.mode_state
@@ -680,7 +683,10 @@ defmodule ExAthena.Modes.Orchestrate do
 
     repeated? =
       not (state.mode_state[:repeat_nudged] || false) and
-        Enum.any?(objectives, &(Map.get(counts, &1, 0) >= @max_same_objective))
+        Enum.any?(
+          objectives,
+          &(Map.get(counts, &1, 0) >= tuning(:max_same_objective, @max_same_objective))
+        )
 
     mode_state =
       state.mode_state
@@ -698,14 +704,14 @@ defmodule ExAthena.Modes.Orchestrate do
     |> String.downcase()
     |> String.replace(~r/\s+/, " ")
     |> String.trim()
-    |> String.slice(0, @repeat_key_chars)
+    |> String.slice(0, Tuning.get(:orchestrate, :repeat_key_chars, @repeat_key_chars))
   end
 
   defp repeat_key(_), do: ""
 
   defp repeat_note do
     "[orchestration runtime] You have now delegated the same objective " <>
-      "#{@max_same_objective} times. Repeating it is not progress — the " <>
+      "#{tuning(:max_same_objective, @max_same_objective)} times. Repeating it is not progress — the " <>
       "obstacle is not that the worker misunderstood. Either change the " <>
       "approach (a different angle, a smaller step, or fixing a blocker the " <>
       "reports keep naming), or accept that this step cannot be completed in " <>
@@ -927,14 +933,16 @@ defmodule ExAthena.Modes.Orchestrate do
     spawned? = state.mode_state[:research_spawned] == true
 
     cond do
-      turns >= @research_planning_threshold and not nudged? and current_todos(state) == [] ->
+      turns >= tuning(:research_planning_threshold, @research_planning_threshold) and not nudged? and
+          current_todos(state) == [] ->
         %{
           state
           | mode_state: Map.put(state.mode_state, :research_nudged, true),
             meta: Map.put(state.meta, :phase_note, String.trim(@research_planning_note))
         }
 
-      turns >= @research_escalation_threshold and nudged? and not spawned? and
+      turns >= tuning(:research_escalation_threshold, @research_escalation_threshold) and nudged? and
+        not spawned? and
           current_todos(state) == [] ->
         state
         |> Map.update!(:mode_state, &Map.put(&1, :research_spawned, true))
@@ -1008,4 +1016,8 @@ defmodule ExAthena.Modes.Orchestrate do
         meta: state.meta |> Map.delete(:finish_reason) |> Map.delete(:phase_note)
     }
   end
+
+  # Every rail below is a config key whose default is the attribute it was
+  # first tuned to. See `ExAthena.Tuning`.
+  defp tuning(key, default), do: Tuning.get(:orchestrate, key, default)
 end

@@ -5,6 +5,7 @@ defmodule ExAthena.Web.Live.ChatLive do
   alias ExAthena.Messages.ContentPart
   alias ExAthena.Web.Sessions
   alias Phoenix.LiveView.JS
+  alias ExAthena.Tuning
 
   # Autosave cadence for an in-flight run. Must be declared before its use in
   # `handle_info(:autosave_session, _)` — module attributes are evaluated in
@@ -54,6 +55,11 @@ defmodule ExAthena.Web.Live.ChatLive do
         sessions: [],
         recent_cwds: [],
         show_sessions: false,
+        # Settings (gear) modal
+        show_settings: false,
+        settings_errors: %{},
+        settings_saved: false,
+        settings_values: ExAthena.Web.Settings.values(),
         # New-session modal
         show_modal: false,
         modal_path: "",
@@ -253,6 +259,115 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   def restore_open_turn(data), do: data
 
+  @doc """
+  Recover tool rows that the durable save dropped, using each turn's
+  `ex_snapshot` as the authority for what it actually ran.
+
+  A turn's tool history is persisted twice and inconsistently. The live
+  LiveView writes `tool_events`; `Sessions.persist_run_result/3` — the durable
+  path, which runs whether or not a browser is attached — hardcodes
+  `tool_events: []`. Reloading mid-run resets `details_stream` and rebuilds it
+  from that empty field, so everything before the reload is lost and the
+  truncated stream is written back over the full one. Each reload erodes it
+  further.
+
+  The full transcript survives regardless, because `ex_snapshot` holds the
+  run's `ExAthena.Messages` verbatim. A real 23-iteration run
+  (a3b95452ca35) kept 31 tool calls there while `details_stream` had 3, and
+  its entire second turn had none — 16 delegated workers rendered as one line
+  of prose.
+
+  Only calls absent from the stream are added, so a complete turn is returned
+  untouched and re-running this is a no-op.
+  """
+  @spec restore_details_stream(map()) :: map()
+  def restore_details_stream(%{display_messages: messages, details_stream: details} = data)
+      when is_list(messages) and is_list(details) do
+    tool_uis = Map.get(data, :tool_uis, %{})
+    present = MapSet.new(details, & &1.payload[:tool_call_id])
+
+    # A turn's snapshot is the whole conversation up to that point, so a later
+    # turn's snapshot re-contains every earlier call. Walk the turns
+    # CHRONOLOGICALLY and accumulate what has been claimed, so each call is
+    # attributed to the first turn that ran it rather than to every turn after
+    # it. (Walking newest-first would credit the last turn with the entire run.)
+    {by_message, _claimed} =
+      Enum.map_reduce(messages, present, fn msg, claimed ->
+        rows = snapshot_details(msg, tool_uis, claimed)
+        ids = for r <- rows, r.type == :tool_call, do: r.payload.tool_call_id
+        {{msg.id, rows}, Enum.into(ids, claimed)}
+      end)
+
+    # `details_stream` is newest-first, so emit the turns newest-first and put
+    # each turn's recovered rows at its older end.
+    recovered =
+      by_message
+      |> Enum.reverse()
+      |> Enum.flat_map(fn {msg_id, rows} ->
+        Enum.filter(details, &(&1.message_id == msg_id)) ++ rows
+      end)
+
+    parented = MapSet.new(messages, & &1.id)
+    orphans = Enum.reject(details, &MapSet.member?(parented, &1.message_id))
+
+    %{data | details_stream: recovered ++ orphans}
+  end
+
+  def restore_details_stream(data), do: data
+
+  # Tool rows for `msg` that the stream is missing, newest-first.
+  defp snapshot_details(%{role: :assistant, id: id} = msg, tool_uis, present) do
+    case Map.get(msg, :ex_snapshot) do
+      snapshot when is_list(snapshot) ->
+        results =
+          snapshot
+          |> Enum.flat_map(&(&1.tool_results || []))
+          |> Map.new(&{&1.tool_call_id, &1})
+
+        snapshot
+        |> Enum.flat_map(&(&1.tool_calls || []))
+        |> Enum.reject(&MapSet.member?(present, &1.id))
+        |> Enum.flat_map(&recovered_rows(&1, id, results, tool_uis))
+        |> Enum.reverse()
+
+      _ ->
+        []
+    end
+  end
+
+  defp snapshot_details(_msg, _tool_uis, _present), do: []
+
+  defp recovered_rows(call, msg_id, results, tool_uis) do
+    result_row =
+      case Map.get(results, call.id) do
+        nil ->
+          []
+
+        r ->
+          [
+            new_detail(:tool_result, msg_id, %{
+              tool_call_id: call.id,
+              content: r.content,
+              is_error: r.is_error
+            })
+          ]
+      end
+
+    ui_row =
+      case Map.get(tool_uis, call.id) do
+        nil -> []
+        ui -> [new_detail(:tool_ui, msg_id, %{tool_call_id: call.id, ui: ui})]
+      end
+
+    [
+      new_detail(:tool_call, msg_id, %{
+        tool_call_id: call.id,
+        name: call.name,
+        arguments: call.arguments
+      })
+    ] ++ result_row ++ ui_row
+  end
+
   defp open_turn(msg_id, details) do
     text =
       details
@@ -382,6 +497,59 @@ defmodule ExAthena.Web.Live.ChatLive do
        current_action: nil,
        awaiting_question: nil,
        pending_assistant_msg_id: nil
+     )}
+  end
+
+  # --- Settings (gear) modal ---
+  #
+  # The rails these edit were tuned against one local model; every different
+  # model wanted different numbers, and changing one meant editing source.
+
+  def handle_event("show_settings", _params, socket) do
+    {:noreply,
+     assign(socket,
+       show_settings: true,
+       settings_errors: %{},
+       settings_saved: false,
+       settings_values: ExAthena.Web.Settings.values()
+     )}
+  end
+
+  def handle_event("cancel_settings", _params, socket) do
+    {:noreply, assign(socket, show_settings: false)}
+  end
+
+  def handle_event("save_settings", params, socket) do
+    case ExAthena.Web.Settings.save(Map.delete(params, "_target")) do
+      {:ok, _applied} ->
+        {:noreply,
+         assign(socket,
+           settings_errors: %{},
+           settings_saved: true,
+           settings_values: ExAthena.Web.Settings.values()
+         )}
+
+      {:error, errors} ->
+        # Re-read rather than echoing the submission: the valid fields were
+        # applied, so the form must show what actually took effect, not what
+        # was typed into the box that failed.
+        {:noreply,
+         assign(socket,
+           settings_errors: errors,
+           settings_saved: false,
+           settings_values: ExAthena.Web.Settings.values()
+         )}
+    end
+  end
+
+  def handle_event("reset_settings", _params, socket) do
+    :ok = ExAthena.Web.Settings.reset()
+
+    {:noreply,
+     assign(socket,
+       settings_errors: %{},
+       settings_saved: true,
+       settings_values: ExAthena.Web.Settings.values()
      )}
   end
 
@@ -838,7 +1006,12 @@ defmodule ExAthena.Web.Live.ChatLive do
           assign(socket, session_sig: sig)
         end
 
-      Process.send_after(self(), :autosave_session, @autosave_interval_ms)
+      Process.send_after(
+        self(),
+        :autosave_session,
+        Tuning.get(:ui, :autosave_interval_ms, @autosave_interval_ms)
+      )
+
       {:noreply, socket}
     else
       {:noreply, assign(socket, autosave_on: false)}
@@ -995,7 +1168,7 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   @impl true
   def render(assigns) do
-    assigns = assign(assigns, max_diff_lines: @max_diff_lines)
+    assigns = assign(assigns, max_diff_lines: Tuning.get(:ui, :max_diff_lines, @max_diff_lines))
 
     ~H"""
     <%= if @page_loading do %>
@@ -1005,6 +1178,82 @@ defmodule ExAthena.Web.Live.ChatLive do
       </div>
     <% else %>
     <div class="app">
+      <%!-- Settings modal --%>
+      <%= if @show_settings do %>
+        <div class="modal-overlay" phx-window-keydown="cancel_settings" phx-key="Escape">
+          <div class="modal modal--wide">
+            <div class="modal-header">
+              <span class="modal-title">Settings</span>
+              <button type="button" class="modal-close" phx-click="cancel_settings">×</button>
+            </div>
+            <form phx-submit="save_settings">
+              <div class="modal-body settings-body">
+                <p class="settings-intro">
+                  Defaults were tuned against one local model. Change them per model —
+                  applied immediately, and reloaded next start.
+                </p>
+
+                <%= for group <- ExAthena.Web.Settings.schema() do %>
+                  <div class="settings-group">
+                    <div class="settings-group-title">{group.title}</div>
+                    <div :if={group.blurb} class="settings-group-blurb">{group.blurb}</div>
+
+                    <%= for field <- group.fields do %>
+                      <% id = {group.ns, field.key} %>
+                      <% err = Map.get(@settings_errors, id) %>
+                      <div class="settings-field">
+                        <label class="field-label" for={"set-#{group.ns}-#{field.key}"}>
+                          {field.label}
+                          <span :if={ExAthena.Web.Settings.overridden?(id)} class="settings-badge">
+                            changed
+                          </span>
+                        </label>
+                        <%= if field.type == :select do %>
+                          <select
+                            id={"set-#{group.ns}-#{field.key}"}
+                            class="field-input"
+                            name={"#{group.ns}.#{field.key}"}
+                          >
+                            <option
+                              :for={opt <- field.options}
+                              value={opt}
+                              selected={Map.get(@settings_values, id) == opt}
+                            >
+                              {opt}
+                            </option>
+                          </select>
+                        <% else %>
+                          <input
+                            id={"set-#{group.ns}-#{field.key}"}
+                            class={"field-input#{if err, do: " field-input--error", else: ""}"}
+                            type="number"
+                            name={"#{group.ns}.#{field.key}"}
+                            value={Map.get(@settings_values, id)}
+                            min={Map.get(field, :min, 0)}
+                          />
+                        <% end %>
+                        <div class="field-hint">
+                          <span :if={err} class="hint-err">{err}</span>
+                          <span :if={is_nil(err)}>{field.help}</span>
+                        </div>
+                      </div>
+                    <% end %>
+                  </div>
+                <% end %>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn-secondary" phx-click="reset_settings">
+                  Reset to defaults
+                </button>
+                <span :if={@settings_saved} class="hint-ok settings-saved">✓ Saved</span>
+                <button type="button" class="btn-secondary" phx-click="cancel_settings">Close</button>
+                <button type="submit" class="btn-primary">Save</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      <% end %>
+
       <%!-- New-session modal --%>
       <%= if @show_modal do %>
         <div class="modal-overlay" phx-window-keydown="cancel_modal" phx-key="Escape">
@@ -1059,6 +1308,7 @@ defmodule ExAthena.Web.Live.ChatLive do
             <span class="logo-text">ExAthena</span>
           </div>
           <button class="btn-plus" phx-click="show_modal" title="New session">+</button>
+          <button class="btn-plus" phx-click="show_settings" title="Settings">⚙</button>
         </div>
         <div class="theme-row" id="theme-toggle" phx-hook="ThemeToggle">
           <span class="theme-icon">☀</span>
@@ -1417,7 +1667,7 @@ defmodule ExAthena.Web.Live.ChatLive do
                       mounted across tab switches so xterm state survives). --%>
               <% _ -> %>
                 <div class="details-tab-body" id="details-pane" phx-hook="ScrollToBottom">
-                  <.details_pane stream={@details_stream} max_diff_lines={@max_diff_lines} />
+                  <.details_pane stream={@details_stream} max_diff_lines={Tuning.get(:ui, :max_diff_lines, @max_diff_lines)} />
                 </div>
             <% end %>
 
@@ -2488,6 +2738,11 @@ defmodule ExAthena.Web.Live.ChatLive do
         # `enable_thinking: false`, so the micro-call spends its whole budget
         # inside <think> and returns a fragment the quality gate discards. The
         # quality-gated raw thinking blob is already a good conclusion.
+        #
+        # Newer stacks can turn thinking off properly: Ollama 0.32 forwards
+        # `reasoning_effort` on its OpenAI endpoint (verified with qwen3.8 —
+        # `none` returns no reasoning at all). Set it in the settings modal;
+        # once that is the norm this summarizer can be reconsidered.
         conclusion_summarizer: false,
         timeout_ms: 24 * 60 * 60 * 1000
       ]
@@ -2498,6 +2753,7 @@ defmodule ExAthena.Web.Live.ChatLive do
       # Confine filesystem/bash/web access to the opened project by default
       # (override with EX_ATHENA_CONFINE=0).
       |> Keyword.put(:confine, ExAthena.confine_default?())
+      |> merge_provider_opts(ExAthena.Web.Settings.provider_opts())
 
     user_detail = new_detail(:user_text, user_msg.id, %{text: text})
     messages = socket.assigns.messages ++ [user_msg]
@@ -2583,10 +2839,14 @@ defmodule ExAthena.Web.Live.ChatLive do
     data = restore_open_turn(data)
     tool_uis = Map.get(data, :tool_uis, %{})
 
+    # A stored stream is not evidence that it is complete: the durable save
+    # drops tool_events, so a reload can leave a turn with a few rows (or
+    # none) while its snapshot holds the whole run. Backfill from the
+    # snapshot in both cases — `nil` and merely-incomplete.
     details_stream =
       case Map.get(data, :details_stream) do
         nil -> hydrate_details_stream(data.display_messages, tool_uis)
-        existing -> existing
+        existing -> restore_details_stream(%{data | details_stream: existing}).details_stream
       end
 
     assign(socket,
@@ -2672,7 +2932,12 @@ defmodule ExAthena.Web.Live.ChatLive do
     if socket.assigns[:autosave_on] do
       socket
     else
-      Process.send_after(self(), :autosave_session, @autosave_interval_ms)
+      Process.send_after(
+        self(),
+        :autosave_session,
+        Tuning.get(:ui, :autosave_interval_ms, @autosave_interval_ms)
+      )
+
       assign(socket, autosave_on: true)
     end
   end
@@ -2864,6 +3129,14 @@ defmodule ExAthena.Web.Live.ChatLive do
     end)
   end
 
+  # Merge settings-derived provider options without clobbering any the caller
+  # already set — an explicit opt always wins over a saved setting.
+  defp merge_provider_opts(opts, []), do: opts
+
+  defp merge_provider_opts(opts, extra) do
+    Keyword.update(opts, :provider_opts, extra, &Keyword.merge(extra, &1))
+  end
+
   defp new_detail(type, message_id, payload) do
     %{
       id: unique_id(),
@@ -3001,7 +3274,7 @@ defmodule ExAthena.Web.Live.ChatLive do
         end)
         |> elem(0)
 
-      display = Enum.take(visible, @max_diff_lines)
+      display = Enum.take(visible, Tuning.get(:ui, :max_diff_lines, @max_diff_lines))
 
       %{
         kind: :diff,
@@ -3010,7 +3283,7 @@ defmodule ExAthena.Web.Live.ChatLive do
         total_lines: total,
         changed_lines: changed,
         shown: length(visible),
-        truncated: length(visible) > @max_diff_lines
+        truncated: length(visible) > Tuning.get(:ui, :max_diff_lines, @max_diff_lines)
       }
     end
   end
@@ -3196,7 +3469,7 @@ defmodule ExAthena.Web.Live.ChatLive do
 
     models
     |> Enum.filter(fn m -> q == "" or String.contains?(String.downcase(m), q) end)
-    |> Enum.take(@model_results_cap)
+    |> Enum.take(Tuning.get(:ui, :model_results_cap, @model_results_cap))
   end
 
   defp apply_base_url(opts, "llamacpp") do

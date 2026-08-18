@@ -5,6 +5,11 @@ defmodule ExAthena.Application do
 
   @impl Application
   def start(_type, _args) do
+    # Saved tuning settings are user config that happens to live outside
+    # config.exs — apply them before anything reads a rail. Never fatal: a
+    # corrupt or unreadable file leaves the built-in defaults in place.
+    ExAthena.Web.Settings.load()
+
     children =
       [
         # Subagents spawn under this supervisor so a sub-loop crash can't

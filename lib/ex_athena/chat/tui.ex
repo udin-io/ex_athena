@@ -34,7 +34,7 @@ if Code.ensure_loaded?(ExRatatui.App) do
     alias ExRatatui.Event
     alias ExRatatui.Frame
 
-    @modes [:react, :plan_and_solve, :reflexion]
+    @modes [:react, :plan_and_solve, :reflexion, :orchestrate]
     @tick_interval_ms 60
     # Rows per PgUp/PgDn press. Roughly a half-page on a typical terminal —
     # comfortable for skimming without overshooting.
