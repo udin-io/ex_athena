@@ -38,6 +38,31 @@ defmodule ExAthena.Compactors.SnipTest do
     assert :skip = Snip.compact_stage(state, %{tokens: 10, max_tokens: 1_000})
   end
 
+  test "recomputed estimate includes the system-prompt cost (issue #148)" do
+    sys = String.duplicate("S", 4_000)
+
+    messages =
+      [Messages.system("sp")] ++
+        for i <- 1..8 do
+          if rem(i, 2) == 1 do
+            Messages.assistant("turn #{i}")
+          else
+            tool_msg("c#{i}", "stale tool body #{i}")
+          end
+        end ++
+        [Messages.assistant("final")]
+
+    state = %{
+      state_with(messages, snip_age_iterations: 2, pinned_prefix_count: 1)
+      | request_template: %ExAthena.Request{messages: messages, system_prompt: sys}
+    }
+
+    assert {:ok, new_state, est} =
+             Snip.compact_stage(state, %{tokens: 5_000, max_tokens: 10_000})
+
+    assert est.tokens == ExAthena.Compactor.estimate_tokens(new_state.messages, sys)
+  end
+
   test "replaces stale tool-result bodies with a marker" do
     # Layout: pinned (1) + 8 turns including tool messages + 1 final assistant.
     # The early tool messages should be 4+ turns from the last assistant.

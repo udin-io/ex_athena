@@ -87,6 +87,30 @@ defmodule ExAthena.Compactor do
   defp system_prompt_tokens(prompt) when is_binary(prompt), do: div(byte_size(prompt), 4)
   defp system_prompt_tokens(_), do: 0
 
+  @doc """
+  Recompute an estimate's `:tokens` for a new message list, keeping the
+  system-prompt cost included.
+
+  Pipeline stages MUST use this (not `estimate_tokens/1`) when they
+  re-estimate after shrinking the conversation: the system prompt rides on
+  every request, so an estimate recomputed from messages alone lets the
+  pipeline declare itself under target while the real request is still
+  oversized — the same failure mode that got `ContextCollapse` removed
+  from the default pipeline.
+  """
+  @spec re_estimate(estimate(), [Message.t()], State.t()) :: estimate()
+  def re_estimate(estimate, messages, %State{} = state) do
+    %{estimate | tokens: estimate_tokens(messages, system_prompt(state))}
+  end
+
+  @doc """
+  The system prompt the loop sends with every request, read from the
+  state's request template. `nil` when the state carries none.
+  """
+  @spec system_prompt(State.t()) :: String.t() | nil
+  def system_prompt(%State{request_template: %{system_prompt: sp}}), do: sp
+  def system_prompt(_), do: nil
+
   defp tokens_for(%Message{content: nil, tool_calls: calls}) when is_list(calls) do
     Enum.reduce(calls, 0, fn tc, acc ->
       acc + 64 + div(byte_size(Jason.encode!(tc.arguments || %{})), 4)

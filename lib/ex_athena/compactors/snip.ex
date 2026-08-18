@@ -25,6 +25,7 @@ defmodule ExAthena.Compactors.Snip do
   @behaviour ExAthena.Compactor.Stage
 
   alias ExAthena.Compactor
+  alias ExAthena.Compactor.Config
   alias ExAthena.Loop.State
   alias ExAthena.Messages.Message
 
@@ -48,7 +49,7 @@ defmodule ExAthena.Compactors.Snip do
 
       _ ->
         new_state = %{state | messages: snipped}
-        {:ok, new_state, %{estimate | tokens: Compactor.estimate_tokens(snipped)}}
+        {:ok, new_state, Compactor.re_estimate(estimate, snipped, state)}
     end
   end
 
@@ -127,14 +128,8 @@ defmodule ExAthena.Compactors.Snip do
 
   defp snip_marker(msg), do: msg
 
-  defp age_threshold(%State{meta: meta}) do
-    Map.get(meta, :snip_age_iterations) ||
-      case Application.get_env(:ex_athena, :compactor) do
-        kw when is_list(kw) -> Keyword.get(kw, :snip_age_iterations, @default_age)
-        m when is_map(m) -> Map.get(m, :snip_age_iterations, @default_age)
-        _ -> @default_age
-      end
-  end
+  defp age_threshold(%State{} = state),
+    do: Config.get(state, :snip_age_iterations, @default_age)
 
   defp pin_floor(%State{meta: meta}) do
     Map.get(meta, :memory_count, 0) +

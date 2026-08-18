@@ -146,6 +146,39 @@ defmodule ExAthena.ModelListingTest do
     end
   end
 
+  describe "missing base_url" do
+    # Regression for #189: `Req.get("/api/tags")` raises ArgumentError inside
+    # Finch when the base_url is absent, crashing the caller instead of
+    # returning the structured error every other failure mode gets.
+    test "the ollama path reports a structured error instead of raising" do
+      assert {:error, %Error{kind: :capability, provider: :ollama, raw: :no_base_url}} =
+               ModelListing.list(openai_compatible_backend: :ollama)
+    end
+
+    test "a blank base_url is treated as missing" do
+      assert {:error, %Error{kind: :capability, provider: :ollama}} =
+               ModelListing.list(openai_compatible_backend: :ollama, base_url: "")
+    end
+
+    test "the llamacpp path reports a structured error instead of raising" do
+      assert {:error, %Error{kind: :capability, provider: :llamacpp, raw: :no_base_url}} =
+               ModelListing.list(openai_compatible_backend: :llamacpp)
+    end
+
+    test "the exo path reports a structured error instead of raising" do
+      assert {:error, %Error{kind: :capability, provider: :exo, raw: :no_base_url}} =
+               ModelListing.list(openai_compatible_backend: :exo, base_url: "")
+    end
+
+    test "a catalog-known tag with a blank base_url falls back to the catalog" do
+      assert {:ok, models} =
+               ModelListing.list(req_llm_provider_tag: "anthropic", base_url: "")
+
+      assert models != []
+      assert Enum.all?(models, &(&1.source == :catalog))
+    end
+  end
+
   describe "errors" do
     test "surfaces an HTTP status as a canonical error", ctx do
       Bypass.expect_once(ctx.bypass, "GET", "/api/tags", fn conn ->

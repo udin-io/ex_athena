@@ -37,7 +37,10 @@ defmodule ExAthena.Compactor.Pipeline do
 
   require Logger
 
+  @default_compact_at 0.6
+
   alias ExAthena.Compactor
+  alias ExAthena.Compactor.Config
   alias ExAthena.Compactor.Stage
   alias ExAthena.Loop.State
   alias ExAthena.Messages.Message
@@ -232,12 +235,5 @@ defmodule ExAthena.Compactor.Pipeline do
     Map.get(meta, :compaction_pipeline) || Stage.default_pipeline()
   end
 
-  defp compact_at(%State{meta: meta}) do
-    Map.get(meta, :compact_at) ||
-      case Application.get_env(:ex_athena, :compactor) do
-        kw when is_list(kw) -> Keyword.get(kw, :compact_at, 0.6)
-        m when is_map(m) -> Map.get(m, :compact_at, 0.6)
-        _ -> 0.6
-      end
-  end
+  defp compact_at(%State{} = state), do: Config.get(state, :compact_at, @default_compact_at)
 end

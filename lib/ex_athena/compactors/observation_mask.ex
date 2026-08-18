@@ -59,7 +59,7 @@ defmodule ExAthena.Compactors.ObservationMask do
           if idx in maskable, do: mask(msg, call_index), else: msg
         end)
 
-      {:ok, %{state | messages: masked}, %{estimate | tokens: Compactor.estimate_tokens(masked)}}
+      {:ok, %{state | messages: masked}, Compactor.re_estimate(estimate, masked, state)}
     end
   end
 

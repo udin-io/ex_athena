@@ -1,6 +1,24 @@
 defmodule ExAthena.Compactors.ContextCollapse do
   @moduledoc """
-  Fourth pipeline stage — non-destructive view-time projection.
+  Opt-in stage — non-destructive view-time projection.
+
+  > #### Not in the default pipeline {: .warning}
+  >
+  > This stage is **not** part of
+  > `ExAthena.Compactor.Stage.default_pipeline/0`. Its output is a
+  > projection stored at `state.meta[:compact_view]`, which no builtin
+  > request builder consumes yet — running it in the default pipeline
+  > lowered the token estimate without shrinking the real request,
+  > short-circuiting the Summary stage while the prompt stayed
+  > oversized. Opt in only if your host reads `meta[:compact_view]`
+  > when building requests:
+  >
+  >     Loop.run("hi",
+  >       provider: ...,
+  >       compaction_pipeline:
+  >         ExAthena.Compactor.Stage.default_pipeline() ++
+  >           [ExAthena.Compactors.ContextCollapse]
+  >     )
 
   Claude Code's `CONTEXT_COLLAPSE` doesn't drop messages from
   `state.messages`; it builds a *projected view* used only for the
@@ -46,7 +64,7 @@ defmodule ExAthena.Compactors.ContextCollapse do
       :skip
     else
       new_state = put_compact_view(state, final)
-      {:ok, new_state, %{estimate | tokens: Compactor.estimate_tokens(final)}}
+      {:ok, new_state, Compactor.re_estimate(estimate, final, state)}
     end
   end
 

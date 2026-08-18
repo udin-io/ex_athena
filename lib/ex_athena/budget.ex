@@ -23,7 +23,8 @@ defmodule ExAthena.Budget do
   @type usage_map :: %{
           optional(:input_tokens) => non_neg_integer(),
           optional(:output_tokens) => non_neg_integer(),
-          optional(:total_tokens) => non_neg_integer()
+          optional(:total_tokens) => non_neg_integer(),
+          optional(:reasoning_tokens) => non_neg_integer()
         }
 
   @type t :: %__MODULE__{
@@ -86,11 +87,29 @@ defmodule ExAthena.Budget do
   # ── Private ────────────────────────────────────────────────────────
 
   defp merge_usage(a, b) do
-    %{
+    merged = %{
       input_tokens: fetch_int(a, :input_tokens) + fetch_int(b, :input_tokens),
       output_tokens: fetch_int(a, :output_tokens) + fetch_int(b, :output_tokens),
       total_tokens: fetch_int(a, :total_tokens) + fetch_int(b, :total_tokens)
     }
+
+    # Reasoning tokens are preserved (not dropped) so `Result.usage` can
+    # support starvation diagnostics (#194) — but the key only appears once
+    # a provider actually reported it, keeping non-reasoning providers'
+    # usage maps unchanged.
+    if has_int?(a, :reasoning_tokens) or has_int?(b, :reasoning_tokens) do
+      Map.put(
+        merged,
+        :reasoning_tokens,
+        fetch_int(a, :reasoning_tokens) + fetch_int(b, :reasoning_tokens)
+      )
+    else
+      merged
+    end
+  end
+
+  defp has_int?(map, key) when is_map(map) do
+    is_integer(Map.get(map, key) || Map.get(map, to_string(key)))
   end
 
   defp fetch_int(map, key) when is_map(map) do

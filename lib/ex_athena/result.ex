@@ -20,15 +20,21 @@ defmodule ExAthena.Result do
     * `:iterations` — number of completed loop iterations.
     * `:tool_calls_made` — total tool calls executed across all iterations.
     * `:usage` — aggregated token usage `%{input_tokens:, output_tokens:,
-      total_tokens:}` or nil if the provider didn't report.
+      total_tokens:}` or nil if the provider didn't report. Providers that
+      report hidden-reasoning spend add `reasoning_tokens:` (a subset of
+      `output_tokens` on OpenAI-style accounting), which supports
+      diagnosing `:error_thinking_starved` terminations.
     * `:cost_usd` — aggregated cost in USD, nil if unknown.
     * `:duration_ms` — wall-clock time from `ExAthena.run/2` entry to
       termination.
     * `:model` — the model identifier as reported by the provider.
     * `:provider` — the provider atom / module that served the run.
-    * `:error_diagnostic` — structured validation failure payload when
-      `finish_reason` is `:error_schema_validation`; `nil` otherwise. Shape:
-      `%{schema: term(), received: String.t() | nil, violations: [%{reason: String.t()}]}`.
+    * `:error_diagnostic` — structured failure payload; `nil` unless set.
+      For `:error_schema_validation` the shape is `%{schema: term(),
+      received: String.t() | nil, violations: [%{reason: String.t()}]}`;
+      for `:error_thinking_starved` it carries the token counts
+      (`completion_cap`, `output_tokens`, `reasoning_tokens`, and
+      `escalated_cap` when a retry was attempted).
     * `:deliverable` — the payload passed to the `finish` tool when
       `finish_reason` is `:submitted`; `nil` for all other terminations.
       Carries the model's declared output (summary, plan text, or any
@@ -50,7 +56,8 @@ defmodule ExAthena.Result do
   @type usage :: %{
           optional(:input_tokens) => non_neg_integer(),
           optional(:output_tokens) => non_neg_integer(),
-          optional(:total_tokens) => non_neg_integer()
+          optional(:total_tokens) => non_neg_integer(),
+          optional(:reasoning_tokens) => non_neg_integer()
         }
 
   @type error_diagnostic :: %{

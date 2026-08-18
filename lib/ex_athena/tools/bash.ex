@@ -13,9 +13,16 @@ defmodule ExAthena.Tools.Bash do
   Runs with `cd: ctx.cwd`, `stderr_to_stdout: true`. No input redirection.
 
   When the run is confined (`ctx.allowed_roots` is set), the command is wrapped
-  in an OS sandbox (`ExAthena.Sandbox`) that blocks writes outside the roots. If
-  no sandbox helper is available the command runs unconfined with a logged
-  warning — never a fake command-string scan.
+  in an OS sandbox (`ExAthena.Sandbox`) that blocks writes outside the roots.
+  If no sandbox helper (`sandbox-exec`/`bwrap`) is available the tool **fails
+  closed**: it refuses to run and returns
+  `{:error, {:sandbox_unavailable, helper}}` naming the missing helper —
+  running unconfined would silently break the confinement contract, and a
+  command-string scan is never a substitute (trivially bypassed). Hosts that
+  accept degradation opt in with `confine: :best_effort` on the run
+  (`ctx.confine_mode == :best_effort`), which runs the command unconfined with
+  a logged warning. Either way an `[:ex_athena, :sandbox, :unavailable]`
+  telemetry event is emitted.
   """
 
   @behaviour ExAthena.Tool
@@ -299,48 +306,75 @@ defmodule ExAthena.Tools.Bash do
         _ -> @default_timeout
       end
 
-    run(command, ctx.cwd, timeout, Map.get(ctx, :allowed_roots))
+    run(command, ctx, timeout)
   end
 
   def execute(_, _), do: {:error, :missing_command}
 
   # Unconfined: bare `sh -c`. Confined: wrap in an OS sandbox restricted to the
-  # roots; if no sandbox helper exists, warn and run unconfined rather than fake
-  # confinement with a bypassable command-string scan.
-  defp run(command, cwd, timeout, roots) do
-    {exe, args} = sandboxed_argv(command, cwd, roots)
+  # roots; if no sandbox helper exists, fail closed (`:enforced`, the default)
+  # or — only on an explicit `confine: :best_effort` opt-in — warn and run
+  # unconfined. Never a bypassable command-string scan.
+  defp run(command, ctx, timeout) do
+    with {:ok, {exe, args}} <- sandboxed_argv(command, ctx) do
+      port =
+        Port.open({:spawn_executable, exe}, [
+          :binary,
+          :exit_status,
+          :stderr_to_stdout,
+          args: args,
+          cd: ctx.cwd
+        ])
 
-    port =
-      Port.open({:spawn_executable, exe}, [
-        :binary,
-        :exit_status,
-        :stderr_to_stdout,
-        args: args,
-        cd: cwd
-      ])
-
-    started_at = System.monotonic_time(:millisecond)
-    deadline = started_at + timeout
-    collect(port, [], deadline, command, started_at)
+      started_at = System.monotonic_time(:millisecond)
+      deadline = started_at + timeout
+      collect(port, [], deadline, command, started_at)
+    end
   end
 
-  defp sandboxed_argv(command, _cwd, nil) do
-    {System.find_executable("sh") || "/bin/sh", ["-c", command]}
+  defp sandboxed_argv(command, %{allowed_roots: nil}) do
+    {:ok, {System.find_executable("sh") || "/bin/sh", ["-c", command]}}
   end
 
-  defp sandboxed_argv(command, cwd, roots) do
-    case ExAthena.Sandbox.wrap(command, roots, cwd) do
+  defp sandboxed_argv(command, %{allowed_roots: roots} = ctx) do
+    # `:sandbox_finder` in assigns is a host/test seam for executable lookup
+    # (simulate a helperless machine); never model-controlled.
+    wrap_opts =
+      case Map.get(ctx.assigns || %{}, :sandbox_finder) do
+        finder when is_function(finder, 1) -> [finder: finder]
+        _ -> []
+      end
+
+    case ExAthena.Sandbox.wrap(command, roots, ctx.cwd, wrap_opts) do
       {:ok, argv} ->
-        argv
+        {:ok, argv}
 
       {:unavailable, argv} ->
-        Logger.warning(
-          "[ExAthena.Bash] confinement requested but no OS sandbox " <>
-            "(sandbox-exec/bwrap) is available — running the command UNCONFINED"
-        )
+        helper = ExAthena.Sandbox.required_helper()
 
-        argv
+        if Map.get(ctx, :confine_mode) == :best_effort do
+          emit_sandbox_unavailable(ctx, helper, :ran_unconfined)
+
+          Logger.warning(
+            "[ExAthena.Bash] confinement requested but no OS sandbox helper " <>
+              "(#{helper}) is available — running the command UNCONFINED " <>
+              "(confine: :best_effort)"
+          )
+
+          {:ok, argv}
+        else
+          emit_sandbox_unavailable(ctx, helper, :denied)
+          {:error, {:sandbox_unavailable, helper}}
+        end
     end
+  end
+
+  defp emit_sandbox_unavailable(ctx, helper, outcome) do
+    ExAthena.Telemetry.event([:ex_athena, :sandbox, :unavailable], %{}, %{
+      helper: helper,
+      outcome: outcome,
+      session_id: ctx.session_id
+    })
   end
 
   defp collect(port, acc, deadline, command, started_at) do

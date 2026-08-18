@@ -78,7 +78,10 @@ Unknown commands — including interpreter one-liners (`python -c`, `perl -e`,
 `ruby -e`, `node -e`, `ex`/`ed`), command substitution, and file redirects —
 are treated as mutating and denied. The classifier gates the `:plan` phase
 only; the OS sandbox (`ExAthena.Sandbox`) independently enforces write
-confinement for confined runs.
+confinement for confined runs — and when the sandbox helper is missing on the
+host, confined `bash` **fails closed** (refuses with
+`{:sandbox_unavailable, helper}`) unless the run opted into
+`confine: :best_effort`.
 
 ### Everything else (denied in `:plan` by default)
 

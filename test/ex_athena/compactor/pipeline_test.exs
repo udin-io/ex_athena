@@ -302,6 +302,62 @@ defmodule ExAthena.Compactor.PipelineTest do
     assert occurrences == 1
   end
 
+  # A stage that applies without changing anything — used to observe
+  # whether the pipeline still consults later stages (vs. short-circuiting
+  # on an under-target estimate).
+  defmodule PassStage do
+    @behaviour ExAthena.Compactor.Stage
+
+    @impl true
+    def name, do: :pass_stage
+
+    @impl true
+    def compact_stage(state, estimate), do: {:ok, state, estimate}
+  end
+
+  test "mid-pipeline estimates keep the system-prompt cost so later stages still run" do
+    # ~10_000 tokens of system prompt (tool schemas + skill catalog ride
+    # on EVERY request) and ~6_000 tokens of messages. Target is
+    # 0.5 * 12_000 = 6_000 tokens.
+    sys = String.duplicate("S", 40_000)
+    big = String.duplicate("Z", 24_000)
+
+    messages = [
+      Messages.user("hi"),
+      %Message{
+        role: :tool,
+        tool_results: [%ToolResult{tool_call_id: "c1", content: big, is_error: false}]
+      }
+    ]
+
+    state = %State{
+      messages: messages,
+      provider_mod: ExAthena.Providers.Mock,
+      provider_opts: [],
+      request_template: %ExAthena.Request{messages: messages, system_prompt: sys},
+      meta: %{
+        compaction_pipeline: [ExAthena.Compactors.BudgetReduction, PassStage],
+        per_tool_result_max_chars: 16_000,
+        compact_at: 0.5
+      }
+    }
+
+    tokens = ExAthena.Compactor.estimate_tokens(messages, sys)
+
+    assert {:compact, _msgs, metadata} =
+             Pipeline.compact(state, %{tokens: tokens, max_tokens: 12_000})
+
+    # BudgetReduction shrinks the MESSAGES below target, but the system
+    # prompt alone (~10k tokens) keeps the real request over the 6k
+    # target — the pipeline must still consult the next stage instead of
+    # declaring itself done.
+    assert :pass_stage in metadata.stages_applied
+
+    # And the reported post-compaction estimate must include the
+    # system-prompt cost, not just the message list.
+    assert metadata.after >= div(byte_size(sys), 4)
+  end
+
   test "tool-result archive entries from BudgetReduction land in state.meta after pipeline runs" do
     big = String.duplicate("Z", 25_000)
 

@@ -713,17 +713,85 @@ defmodule ExAthena.Providers.ReqLLM do
         {t, l} -> t <> "\n" <> l
       end
 
+    tool_calls = extract_tool_calls(resp)
+
     %Response{
       text: text,
       thinking: thinking,
-      tool_calls: extract_tool_calls(resp),
+      tool_calls: tool_calls,
       finish_reason: resp.finish_reason,
       model: resp.model || request.model,
       provider: :req_llm,
       usage: resp.usage,
+      starvation:
+        detect_starvation(
+          text,
+          tool_calls,
+          resp.finish_reason,
+          resp.usage,
+          completion_cap(request)
+        ),
       raw: resp
     }
   end
+
+  defp completion_cap(%Request{max_tokens: max_tokens}),
+    do: max_tokens || @default_completion_tokens
+
+  @doc false
+  # Output-starvation detection (issue #194): a hybrid thinking model can burn
+  # the entire per-turn completion budget on reasoning and emit no visible
+  # text. This is the single point where finish_reason + usage + text + the
+  # effective completion cap are all in scope, so the typed signal is
+  # synthesized here and carried on the `Response` for the loop to act on.
+  #
+  # Heuristic — the turn is starved only when it produced NOTHING actionable
+  # (blank text AND no tool calls) and the budget demonstrably ran out:
+  #
+  #   * `finish_reason: :length` — the provider (or the streaming runaway
+  #     guard) reported truncation; or
+  #   * `output_tokens >= completion_cap` — covers providers/templates that
+  #     report no finish_reason (or default to `:stop`): a legitimately empty
+  #     final answer never burns the whole cap, so an at-cap blank turn is
+  #     starvation regardless of the reported reason.
+  #
+  # A `:length`-truncated turn WITH text is a partial answer, not starvation.
+  @spec detect_starvation(
+          String.t() | nil,
+          list(),
+          atom() | nil,
+          map() | nil,
+          pos_integer() | nil
+        ) :: Response.starvation() | nil
+  def detect_starvation(text, tool_calls, finish_reason, usage, completion_cap) do
+    output_tokens = usage_int(usage, :output_tokens)
+
+    starved? =
+      blank_text?(text) and tool_calls == [] and
+        (finish_reason == :length or
+           (is_integer(output_tokens) and is_integer(completion_cap) and
+              output_tokens >= completion_cap))
+
+    if starved? do
+      %{
+        completion_cap: completion_cap,
+        output_tokens: output_tokens,
+        reasoning_tokens: usage_int(usage, :reasoning_tokens)
+      }
+    end
+  end
+
+  defp blank_text?(nil), do: true
+  defp blank_text?(text) when is_binary(text), do: String.trim(text) == ""
+
+  defp usage_int(usage, key) when is_map(usage) do
+    case Map.get(usage, key) || Map.get(usage, to_string(key)) do
+      n when is_integer(n) and n >= 0 -> n
+      _ -> nil
+    end
+  end
+
+  defp usage_int(_usage, _key), do: nil
 
   @doc false
   def split_leaked_thinking(text) when is_binary(text) do
@@ -911,7 +979,18 @@ defmodule ExAthena.Providers.ReqLLM do
            finish_reason: final.finish_reason || :stop,
            model: final.model,
            provider: :req_llm,
-           usage: final.usage
+           usage: final.usage,
+           # Detect on the RAW finish_reason (before the :stop default) so a
+           # provider that reports nothing is only flagged via the at-cap
+           # usage heuristic, never by the synthesized :stop.
+           starvation:
+             detect_starvation(
+               text,
+               tool_calls,
+               final.finish_reason,
+               final.usage,
+               completion_cap(request)
+             )
          }}
     end
   end

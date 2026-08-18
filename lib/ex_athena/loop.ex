@@ -37,6 +37,15 @@ defmodule ExAthena.Loop do
       loopback/private/link-local hosts. By default those are refused (SSRF
       guard) even when the run is unconfined; see
       `ExAthena.Tools.WebFetch`.
+    * `:confine`, `:allowed_roots` — workspace confinement (default: off).
+      `confine: true` confines the run to `[cwd]`; `allowed_roots: [...]`
+      names explicit roots (cwd is always added). Confined filesystem tools
+      refuse paths outside the roots and `bash` runs under an OS sandbox
+      (`ExAthena.Sandbox`). When no sandbox helper (`sandbox-exec`/`bwrap`)
+      exists on the host, confined `bash` **fails closed** — it refuses with
+      `{:error, {:sandbox_unavailable, helper}}` rather than silently running
+      unconfined. Pass `confine: :best_effort` to accept degradation: `bash`
+      then runs unconfined with a logged warning and a telemetry event.
     * `:allowed_tools`, `:disallowed_tools`, `:readonly_tools`,
       `:can_use_tool` — see `ExAthena.Permissions`. `:readonly_tools`
       names extra tools the read-only `:plan` phase may run (merged with
@@ -174,6 +183,12 @@ defmodule ExAthena.Loop do
                   {:error, :error_prompt_too_long} ->
                     handle_prompt_too_long(state)
 
+                  {:error, {:error_thinking_starved, info, %State{} = folded_state}} ->
+                    # The folded state (usage already accumulated) rides on the
+                    # signal so the starved attempt's token burn stays on the
+                    # budget across the retry/termination.
+                    handle_thinking_starved(folded_state, info)
+
                   {:error, reason} ->
                     state
                     |> Map.put(:halted_reason, reason)
@@ -218,6 +233,103 @@ defmodule ExAthena.Loop do
     else
       state |> set_finish_reason(:error_prompt_too_long)
     end
+  end
+
+  # Reactive recovery on a starved thinking turn, mirroring
+  # `handle_prompt_too_long`: adapt exactly ONE parameter — the per-turn
+  # completion cap — and retry the same iteration once. Downstream evidence
+  # (issue #194): blind same-budget retries fail identically, while a raised
+  # budget succeeds AND finishes faster — a model that can finish stops when
+  # done, so the escalated cap is a ceiling, not a spend target. The raised
+  # cap persists on the request template for the rest of the run (later
+  # turns of the same task face the same reasoning load).
+  #
+  # If the escalated attempt is still starved — or there is no headroom to
+  # escalate into — terminate with the typed `:error_thinking_starved`.
+  defp handle_thinking_starved(%State{} = state, info) do
+    case escalated_completion_cap(state, info) do
+      {:ok, from_cap, new_cap} ->
+        Events.emit(
+          state.on_event,
+          {:max_tokens_escalation,
+           %{
+             from: from_cap,
+             to: new_cap,
+             output_tokens: info[:output_tokens],
+             reasoning_tokens: info[:reasoning_tokens]
+           }}
+        )
+
+        state = %{state | request_template: %{state.request_template | max_tokens: new_cap}}
+
+        case state.mode.iterate(state) do
+          {:continue, new_state} ->
+            new_state = update_progress_tracking(state, new_state)
+            loop(%{new_state | iterations: new_state.iterations + 1})
+
+          {:halt, new_state} ->
+            new_state
+
+          {:error, {:error_thinking_starved, info2, %State{} = folded_state}} ->
+            terminate_thinking_starved(folded_state, Map.put(info2, :escalated_cap, new_cap))
+
+          {:error, _reason} ->
+            # Mirrors handle_prompt_too_long: a different failure during the
+            # recovery retry still terminates under the root cause's subtype.
+            terminate_thinking_starved(state, Map.put(info, :escalated_cap, new_cap))
+        end
+
+      :no_headroom ->
+        terminate_thinking_starved(state, info)
+    end
+  end
+
+  # 4x the starved cap (adapter default 8_192 -> 32_768, the budget the
+  # downstream report validated empirically), bounded by context-window
+  # headroom: `Capabilities.max_tokens` is the CONTEXT WINDOW while
+  # `Request.max_tokens` is the COMPLETION CAP (same key name, opposite
+  # meanings) — the escalated cap must leave room for the estimated prompt.
+  @completion_escalation_factor 4
+
+  defp escalated_completion_cap(%State{} = state, info) do
+    case info[:completion_cap] || state.request_template.max_tokens do
+      cap when is_integer(cap) and cap > 0 ->
+        context_window = state.capabilities[:max_tokens] || 128_000
+
+        prompt_tokens =
+          ExAthena.Compactor.estimate_tokens(state.messages, system_prompt(state))
+
+        target = min(cap * @completion_escalation_factor, context_window - prompt_tokens)
+
+        if target > cap, do: {:ok, cap, target}, else: :no_headroom
+
+      _ ->
+        # No known cap to escalate from (a custom provider signalled
+        # starvation without one) — nothing principled to retry with.
+        :no_headroom
+    end
+  end
+
+  # Terminal `:error_thinking_starved`: the message NAMES the token counts
+  # (output vs reasoning vs cap) so operators can size the budget instead of
+  # guessing at a bare empty-response error. The structured payload also
+  # lands on `Result.error_diagnostic`.
+  defp terminate_thinking_starved(%State{} = state, info) do
+    message =
+      "thinking starved: the model spent the completion budget on reasoning and " <>
+        "produced no visible output (output_tokens=#{info[:output_tokens] || "unknown"}, " <>
+        "reasoning_tokens=#{info[:reasoning_tokens] || "unknown"}, " <>
+        "completion_cap=#{info[:completion_cap] || "unknown"}" <>
+        case info[:escalated_cap] do
+          nil -> ")"
+          cap -> ", escalated_cap=#{cap})"
+        end
+
+    state = put_in(state.meta[:error_diagnostic], info)
+
+    state
+    |> Map.put(:halted_reason, {:thinking_starved, message})
+    |> set_finish_reason(:error_thinking_starved)
   end
 
   defp force_compact(%State{} = state) do
@@ -375,8 +487,9 @@ defmodule ExAthena.Loop do
 
   # The system prompt is part of every request (it carries tool descriptions
   # and the skill catalog), so the compaction estimate must include it.
-  defp system_prompt(%State{request_template: %{system_prompt: sp}}), do: sp
-  defp system_prompt(_), do: nil
+  # Extraction lives in ExAthena.Compactor.system_prompt/1, shared with
+  # the pipeline stages' mid-run re-estimates.
+  defp system_prompt(%State{} = state), do: ExAthena.Compactor.system_prompt(state)
 
   defp set_finish_reason(%State{} = state, reason) do
     put_in(state.meta[:finish_reason], reason)
@@ -679,6 +792,7 @@ defmodule ExAthena.Loop do
           phase: phase,
           session_id: session_id,
           allowed_roots: allowed_roots,
+          confine_mode: resolve_confine_mode(opts),
           assigns: assigns
         )
 
@@ -883,8 +997,11 @@ defmodule ExAthena.Loop do
 
   # Confinement roots for this run (nil = unconfined, the default). `:allowed_roots`
   # takes an explicit list (cwd is always added); `confine: true` is shorthand for
-  # `[cwd]`. Roots are expanded to absolute, deduped, and cwd-anchored so every
-  # confined run can at least reach its own working directory.
+  # `[cwd]`, and `confine: :best_effort` additionally degrades bash's missing-
+  # sandbox-helper behaviour from fail-closed to warn-and-run (see
+  # `resolve_confine_mode/1`). Roots are expanded to absolute, deduped, and
+  # cwd-anchored so every confined run can at least reach its own working
+  # directory.
   defp resolve_allowed_roots(opts, cwd) do
     cond do
       roots = Keyword.get(opts, :allowed_roots) ->
@@ -897,6 +1014,17 @@ defmodule ExAthena.Loop do
 
       true ->
         nil
+    end
+  end
+
+  # What bash does when the run is confined but no OS sandbox helper exists:
+  # `:enforced` (default — every `confine:`/`allowed_roots:` form) refuses to
+  # run the command (fail-closed, issue #135); only the explicit
+  # `confine: :best_effort` opt-in degrades to warn-and-run-unconfined.
+  defp resolve_confine_mode(opts) do
+    case Keyword.get(opts, :confine) do
+      :best_effort -> :best_effort
+      _ -> :enforced
     end
   end
 

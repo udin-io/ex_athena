@@ -74,6 +74,39 @@ defmodule ExAthena.Compactors.SummaryTest do
     assert is_integer(metadata.after) and metadata.after < 800
   end
 
+  test "compact_stage/2 recomputed estimate includes the system-prompt cost (issue #148)" do
+    sys = String.duplicate("S", 4_000)
+
+    messages = [
+      Messages.system("You are a helpful agent."),
+      Messages.user("Q1"),
+      Messages.assistant("A1"),
+      Messages.user("Q2"),
+      Messages.assistant("A2"),
+      Messages.user("Q3"),
+      Messages.assistant("A3 – recent")
+    ]
+
+    responder = fn _req ->
+      %Response{
+        text: "[compacted]",
+        finish_reason: :stop,
+        provider: :mock,
+        usage: %{input_tokens: 50, output_tokens: 10, total_tokens: 60}
+      }
+    end
+
+    state = %{
+      mock_state(messages, responder)
+      | request_template: %ExAthena.Request{messages: messages, system_prompt: sys}
+    }
+
+    assert {:ok, new_state, est} =
+             Summary.compact_stage(state, %{tokens: 800, max_tokens: 1_000})
+
+    assert est.tokens == ExAthena.Compactor.estimate_tokens(new_state.messages, sys)
+  end
+
   test "compact/2 skips when middle is too short to bother" do
     messages = [
       Messages.system("sys"),

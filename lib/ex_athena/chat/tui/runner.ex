@@ -20,6 +20,7 @@ defmodule ExAthena.Chat.Tui.Runner do
   """
 
   alias ExAthena.Chat.Session
+  alias ExAthena.Config
 
   @run_timeout_ms 24 * 60 * 60 * 1000
 
@@ -114,18 +115,18 @@ defmodule ExAthena.Chat.Tui.Runner do
 
   def select_initial_model(_desired, {:error, reason}), do: {:error, reason}
 
+  # The stock URLs live in `Config.default_base_url/1` (shared with the
+  # listing path). The TUI predates multi-provider support, so a provider
+  # without its own local-daemon default historically falls back to the
+  # Ollama key — behavior preserved here; only the URL copy is consolidated.
   defp apply_default_base_url(opts, provider) do
-    {provider_key, default_url} = provider_base_url_defaults(provider)
+    provider_key = if Config.default_base_url(provider), do: provider, else: :ollama
 
     case Application.get_env(:ex_athena, provider_key, [])[:base_url] do
-      nil -> Keyword.put(opts, :base_url, default_url)
+      nil -> Keyword.put(opts, :base_url, Config.default_base_url(provider_key))
       _configured -> opts
     end
   end
-
-  defp provider_base_url_defaults(:llamacpp), do: {:llamacpp, "http://localhost:8080"}
-  defp provider_base_url_defaults(:exo), do: {:exo, "http://localhost:52415"}
-  defp provider_base_url_defaults(_), do: {:ollama, "http://localhost:11434"}
 
   defp apply_provider_spec_extra_headers(opts, provider) when is_atom(provider) do
     case lookup_registry_spec(provider) do

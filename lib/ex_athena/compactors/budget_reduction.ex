@@ -21,6 +21,7 @@ defmodule ExAthena.Compactors.BudgetReduction do
   @behaviour ExAthena.Compactor.Stage
 
   alias ExAthena.Compactor
+  alias ExAthena.Compactor.Config
   alias ExAthena.Loop.State
   alias ExAthena.Messages.{Message, ToolResult}
 
@@ -48,9 +49,7 @@ defmodule ExAthena.Compactors.BudgetReduction do
               meta: Map.put(state.meta, :tool_result_archive, archive)
           }
 
-        new_estimate = %{estimate | tokens: Compactor.estimate_tokens(messages)}
-
-        {:ok, new_state, new_estimate}
+        {:ok, new_state, Compactor.re_estimate(estimate, messages, state)}
     end
   end
 
@@ -114,14 +113,8 @@ defmodule ExAthena.Compactors.BudgetReduction do
 
   defp shrink_result(res, _max_chars, _archive), do: {:kept, res}
 
-  defp max_chars(%State{meta: meta}) do
-    Map.get(meta, :per_tool_result_max_chars) ||
-      case Application.get_env(:ex_athena, :compactor) do
-        kw when is_list(kw) -> Keyword.get(kw, :per_tool_result_max_chars, @default_max_chars)
-        m when is_map(m) -> Map.get(m, :per_tool_result_max_chars, @default_max_chars)
-        _ -> @default_max_chars
-      end
-  end
+  defp max_chars(%State{} = state),
+    do: Config.get(state, :per_tool_result_max_chars, @default_max_chars)
 
   defp generate_ref do
     8
