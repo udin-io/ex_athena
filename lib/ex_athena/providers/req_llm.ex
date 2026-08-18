@@ -1265,37 +1265,109 @@ defmodule ExAthena.Providers.ReqLLM do
     kind =
       if context_overflow?(raw), do: :context_length_exceeded, else: Error.from_status(status)
 
-    Error.new(kind, "req_llm error",
+    Error.new(kind, error_message(raw),
       provider: :req_llm,
       status: status,
       raw: raw
     )
   end
 
+  # Non-HTTP failures (transport errors, stream failures, unexpected terms).
+  # Classify into the existing taxonomy (:timeout / :transport) instead of
+  # collapsing everything to :server_error; the original reason always rides
+  # along structurally in `raw:`.
   def to_error(reason) do
-    kind = if context_overflow?(reason), do: :context_length_exceeded, else: :server_error
-    Error.new(kind, inspect(reason), provider: :req_llm, raw: reason)
+    kind =
+      if context_overflow?(reason), do: :context_length_exceeded, else: transport_kind(reason)
+
+    Error.new(kind, error_message(reason), provider: :req_llm, raw: reason)
   end
+
+  defp error_message(reason) when is_exception(reason), do: Exception.message(reason)
+
+  defp error_message(%{status: status}) when is_integer(status),
+    do: "req_llm error (HTTP #{status})"
+
+  defp error_message(reason), do: inspect(reason)
+
+  # req_llm wraps transport exceptions in API.Request{status: nil, cause: …}
+  # (and mid-stream failures in API.Stream{cause: …}) — unwrap to the root
+  # cause before classifying.
+  defp transport_kind(%ReqLLM.Error.API.Request{cause: cause}) when not is_nil(cause),
+    do: transport_kind(cause)
+
+  defp transport_kind(%ReqLLM.Error.API.Stream{cause: cause}) when not is_nil(cause),
+    do: transport_kind(cause)
+
+  defp transport_kind(%ReqLLM.Error.API.Stream{}), do: :transport
+  defp transport_kind(%Req.TransportError{reason: :timeout}), do: :timeout
+  defp transport_kind(%Req.TransportError{}), do: :transport
+  defp transport_kind(%Mint.TransportError{reason: :timeout}), do: :timeout
+  defp transport_kind(%Mint.TransportError{}), do: :transport
+  defp transport_kind(%Finch.TransportError{reason: :timeout}), do: :timeout
+  defp transport_kind(%Finch.TransportError{}), do: :transport
+
+  defp transport_kind(%Finch.Error{reason: reason})
+       when reason in [:request_timeout, :pool_timeout],
+       do: :timeout
+
+  defp transport_kind(%Finch.Error{}), do: :transport
+  # Bare atoms appear as the `cause:` of API.Stream errors.
+  defp transport_kind(:timeout), do: :timeout
+
+  defp transport_kind(reason) when reason in [:closed, :econnrefused, :nxdomain, :disconnected],
+    do: :transport
+
+  # Conservative fallback: :server_error keeps unclassified provider failures
+  # on the loop's transient-retry path (Modes.React.transient_error?/1).
+  defp transport_kind(_), do: :server_error
 
   # OpenAI-compatible local servers (exo/llama.cpp/vLLM/ollama) signal
   # context overflow with 400/500 + a message body, never a clean 413 —
   # without sniffing, the loop's compact-and-retry path is dead code and
   # runs die :error_during_execution instead of compacting.
+  @overflow_phrases [
+    "context length",
+    "context_length",
+    "maximum context",
+    "too many tokens",
+    "exceeds the context",
+    "exceeds the available context",
+    "prompt is too long",
+    "context window"
+  ]
+
   @doc false
   def context_overflow?(raw) do
     raw
-    |> inspect(limit: 2_000)
+    |> sniff_text()
     |> String.downcase()
-    |> then(fn text ->
-      String.contains?(text, "context length") or
-        String.contains?(text, "context_length") or
-        String.contains?(text, "maximum context") or
-        String.contains?(text, "too many tokens") or
-        String.contains?(text, "exceeds the context") or
-        String.contains?(text, "prompt is too long") or
-        String.contains?(text, "context window")
-    end)
+    |> String.contains?(@overflow_phrases)
   end
+
+  # Sniff only provider-produced text (error reason/message, response body,
+  # cause chain) — never `request_body`, which contains the prompt itself and
+  # would false-positive (prompts legitimately mention "context window"). The
+  # extracted parts are sniffed in full, unlike the previous truncated
+  # `inspect(raw, limit: 2_000)` which could drop the matching phrase on
+  # large payloads.
+  defp sniff_text(raw) when is_struct(raw) do
+    parts =
+      [Map.get(raw, :reason), Map.get(raw, :response_body), Map.get(raw, :cause)]
+      |> Enum.reject(&is_nil/1)
+
+    case parts do
+      [] -> full_inspect(raw)
+      parts -> Enum.map_join(parts, " ", &to_sniff_string/1)
+    end
+  end
+
+  defp sniff_text(raw), do: full_inspect(raw)
+
+  defp to_sniff_string(term) when is_binary(term), do: term
+  defp to_sniff_string(term), do: full_inspect(term)
+
+  defp full_inspect(term), do: inspect(term, limit: :infinity, printable_limit: :infinity)
 
   # ── llm_db context resolution ─────────────────────────────────────
 
