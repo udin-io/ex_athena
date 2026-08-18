@@ -1258,7 +1258,10 @@ defmodule ExAthena.Providers.ReqLLM do
 
   # ── Error mapping ─────────────────────────────────────────────────
 
-  defp to_error(%{status: status} = raw) when is_integer(status) do
+  # Public (@doc false) so the classification contract is directly testable,
+  # mirroring `context_overflow?/1` below.
+  @doc false
+  def to_error(%{status: status} = raw) when is_integer(status) do
     kind =
       if context_overflow?(raw), do: :context_length_exceeded, else: Error.from_status(status)
 
@@ -1269,7 +1272,7 @@ defmodule ExAthena.Providers.ReqLLM do
     )
   end
 
-  defp to_error(reason) do
+  def to_error(reason) do
     kind = if context_overflow?(reason), do: :context_length_exceeded, else: :server_error
     Error.new(kind, inspect(reason), provider: :req_llm, raw: reason)
   end
