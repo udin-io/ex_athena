@@ -29,6 +29,8 @@ defmodule ExAthena.Tools.Bash do
 
   require Logger
 
+  alias ExAthena.Tuning
+
   @default_timeout 120_000
   @max_timeout 600_000
 
@@ -37,8 +39,12 @@ defmodule ExAthena.Tools.Bash do
   # error_max_turns). Head + tail survive; the cut is explicit so the model
   # narrows the command instead of assuming it saw everything.
   @max_output_chars 16_000
-  @head_chars 12_000
-  @tail_chars 4_000
+
+  # How much of the cap goes to the head. The tail takes the rest, so the two
+  # always sum to the cap however it is configured — deriving them beats three
+  # independent knobs a host could set into an inconsistent triple (a cap
+  # smaller than head+tail made `binary_part/3` raise on a negative length).
+  @head_share 0.75
 
   # Deny patterns — a first-pass backstop that marks a command as
   # write/destructive regardless of what the allowlist below would say.
@@ -414,13 +420,19 @@ defmodule ExAthena.Tools.Bash do
     end
   end
 
-  defp cap_output(body) when byte_size(body) <= @max_output_chars, do: body
-
   defp cap_output(body) do
-    cut = byte_size(body) - @head_chars - @tail_chars
+    max = Tuning.get(:bash, :max_output_chars, @max_output_chars)
 
-    head = binary_part(body, 0, @head_chars)
-    tail = binary_part(body, byte_size(body) - @tail_chars, @tail_chars)
+    if byte_size(body) <= max, do: body, else: truncate_middle(body, max)
+  end
+
+  defp truncate_middle(body, max) do
+    head_chars = trunc(max * @head_share)
+    tail_chars = max - head_chars
+    cut = byte_size(body) - head_chars - tail_chars
+
+    head = binary_part(body, 0, head_chars)
+    tail = binary_part(body, byte_size(body) - tail_chars, tail_chars)
 
     head <>
       "\n…[truncated #{cut} chars — narrow the command (use head/grep/max_results)]…\n" <>

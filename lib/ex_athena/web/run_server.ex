@@ -36,6 +36,7 @@ defmodule ExAthena.Web.RunServer do
   use GenServer, restart: :temporary
 
   alias ExAthena.Web.Sessions
+  alias ExAthena.Tuning
 
   @registry ExAthena.Web.RunRegistry
   @supervisor ExAthena.Web.RunSupervisor
@@ -52,7 +53,7 @@ defmodule ExAthena.Web.RunServer do
 
   @doc "How many structural events a run retains for reattaching clients."
   @spec max_retained_events() :: pos_integer()
-  def max_retained_events, do: @max_retained_events
+  def max_retained_events, do: Tuning.get(:web, :max_retained_events, @max_retained_events)
 
   # ---------------------------------------------------------------------------
   # Public API
@@ -370,7 +371,7 @@ defmodule ExAthena.Web.RunServer do
   # `:queue` keeps both ends O(1): this runs on every event of every run, so a
   # list with `++` (O(n) per append) would make long runs quadratic.
   defp append(state, event) do
-    if state.event_count >= @max_retained_events do
+    if state.event_count >= max_retained_events() do
       {_dropped, trimmed} = :queue.out(state.events)
       %{state | events: :queue.in(event, trimmed)}
     else

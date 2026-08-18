@@ -24,6 +24,36 @@ config :ex_athena, :search,
 # spawn_agent_opts / assigns[:max_agent_depth].
 config :ex_athena, max_agent_depth: 5
 
+# Tunable rails. Every key below defaults to the value the rail was first
+# tuned to, so leaving this commented out changes nothing. Raise or lower
+# them when running a model with a different context, planning style, or
+# delegation latency. See `ExAthena.Tuning`.
+#
+# config :ex_athena, :orchestrate,
+#   max_planning_turns: 8,             # planning turns before forcing execution
+#   max_turns_without_spawn: 2,        # spawn-less turns before the runtime delegates for you
+#   research_planning_threshold: 4,    # planning turns before nudging toward research
+#   research_escalation_threshold: 6,  # planning turns before the runtime spawns research itself
+#   max_dictated_briefs: 2,            # briefs containing dictated code before warning
+#   max_same_objective: 3,             # repeats of one objective before it is called out
+#   audit_request_chars: 1_500         # request text quoted into the audit prompt
+#
+# config :ex_athena, :agents,
+#   max_iterations: 50,                # floor on a worker's iteration budget
+#   result_chars: 64_000,              # cap on the report a worker returns to its parent
+#   dictated_code_lines: 8,            # fenced lines before a brief counts as dictated code
+#   prompt_chars: 160,                 # brief shown in the agent overview panel
+#   transcript_max_entries: 30,        # transcript rows kept per agent
+#   transcript_entry_chars: 400,       # cap per non-text transcript row
+#   transcript_text_chars: 4_000,      # cap per text transcript row
+#   conclusions_cap: 50                # conclusions retained per agent
+#
+# config :ex_athena, :web,
+#   max_retained_events: 2_000         # events a run replays to a reattaching browser
+#
+# config :ex_athena, :bash,
+#   max_output_chars: 16_000           # command output cap (head 75% / tail 25%)
+
 import_config "#{config_env()}.exs"
 
 # To use a local llama.cpp server instead:
