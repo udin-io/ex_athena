@@ -66,6 +66,61 @@ defmodule ExAthena.Providers.ReqLLMErrorClassificationTest do
     end
   end
 
+  # ── to_error/1: Retry-After extraction ────────────────────────────
+
+  describe "to_error/1 Retry-After extraction" do
+    test "populates retry_after_ms from a 429's Retry-After header" do
+      raw =
+        ReqLLM.Error.API.Request.exception(
+          reason: "Rate Limited - Too many requests",
+          status: 429,
+          headers: %{"retry-after" => ["30"]}
+        )
+
+      assert %Error{kind: :rate_limited, retry_after_ms: 30_000} = Adapter.to_error(raw)
+    end
+
+    test "populates retry_after_ms from a 503's Retry-After header" do
+      raw =
+        ReqLLM.Error.API.Request.exception(
+          reason: "Service Unavailable",
+          status: 503,
+          headers: %{"retry-after" => ["7"]}
+        )
+
+      assert %Error{kind: :server_error, retry_after_ms: 7_000} = Adapter.to_error(raw)
+    end
+
+    test "parses the HTTP-date Retry-After form" do
+      future = DateTime.add(DateTime.utc_now(), 42, :second)
+      header = Calendar.strftime(future, "%a, %d %b %Y %H:%M:%S GMT")
+
+      raw =
+        ReqLLM.Error.API.Request.exception(
+          reason: "Rate Limited",
+          status: 429,
+          headers: %{"retry-after" => [header]}
+        )
+
+      assert %Error{retry_after_ms: ms} = Adapter.to_error(raw)
+      assert is_integer(ms) and ms > 30_000 and ms <= 42_000
+    end
+
+    test "leaves retry_after_ms nil when the header is absent or the status is not 429/503" do
+      no_header = ReqLLM.Error.API.Request.exception(reason: "Rate Limited", status: 429)
+      assert %Error{retry_after_ms: nil} = Adapter.to_error(no_header)
+
+      other_status =
+        ReqLLM.Error.API.Request.exception(
+          reason: "Server Error",
+          status: 500,
+          headers: %{"retry-after" => ["30"]}
+        )
+
+      assert %Error{retry_after_ms: nil} = Adapter.to_error(other_status)
+    end
+  end
+
   # ── to_error/1: transport-level failures ──────────────────────────
 
   describe "to_error/1 with transport-level failures" do
@@ -301,6 +356,50 @@ defmodule ExAthena.Providers.ReqLLMErrorClassificationTest do
         assert error.provider == :req_llm
         refute is_nil(error.raw)
       end
+    end
+
+    # Known req_llm 1.10 limitation, pinned deliberately: for non-2xx
+    # responses the provider decode step raises API.Response (no headers
+    # field), and Step.Error's re-wrap into API.Request does NOT propagate
+    # response headers — only the direct response->error path does. So on
+    # this wire path Retry-After is dropped before the adapter ever sees it
+    # and retry_after_ms stays nil. The adapter-side extraction (tested
+    # above via API.Request{headers: ...}) picks the hint up automatically
+    # the moment req_llm starts propagating headers here — at which point
+    # these two assertions fail loudly and should be flipped to the real
+    # values (0 and 7_000).
+    test "429 wire path: req_llm 1.10 drops Retry-After before the adapter sees it", %{
+      bypass: bypass,
+      request: request,
+      opts: opts
+    } do
+      # Retry-After: 0 keeps req_llm's internal 429 retries (3x, honoring the
+      # header at the Req.Response level) instant, so the test stays fast.
+      Bypass.expect(bypass, "POST", "/chat/completions", fn conn ->
+        conn
+        |> Plug.Conn.put_resp_header("retry-after", "0")
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(429, ~s({"error":{"message":"rate limited"}}))
+      end)
+
+      assert {:error, %Error{kind: :rate_limited, status: 429, retry_after_ms: nil}} =
+               Adapter.query(request, opts)
+    end
+
+    test "503 wire path: req_llm 1.10 drops Retry-After before the adapter sees it", %{
+      bypass: bypass,
+      request: request,
+      opts: opts
+    } do
+      Bypass.expect_once(bypass, "POST", "/chat/completions", fn conn ->
+        conn
+        |> Plug.Conn.put_resp_header("retry-after", "7")
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(503, ~s({"error":{"message":"overloaded"}}))
+      end)
+
+      assert {:error, %Error{kind: :server_error, status: 503, retry_after_ms: nil}} =
+               Adapter.query(request, opts)
     end
 
     test "a refused connection classifies as :transport", %{

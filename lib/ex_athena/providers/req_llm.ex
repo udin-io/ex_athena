@@ -1268,6 +1268,7 @@ defmodule ExAthena.Providers.ReqLLM do
     Error.new(kind, error_message(raw),
       provider: :req_llm,
       status: status,
+      retry_after_ms: retry_after_hint(raw),
       raw: raw
     )
   end
@@ -1282,6 +1283,14 @@ defmodule ExAthena.Providers.ReqLLM do
 
     Error.new(kind, error_message(reason), provider: :req_llm, raw: reason)
   end
+
+  # Retry-After is only meaningful on 429 (rate limited) and 503 (overloaded);
+  # req_llm's API.Request error carries the response headers for both.
+  defp retry_after_hint(%{status: status, headers: headers})
+       when status in [429, 503] and (is_map(headers) or is_list(headers)),
+       do: Error.retry_after_from_headers(headers)
+
+  defp retry_after_hint(_), do: nil
 
   defp error_message(reason) when is_exception(reason), do: Exception.message(reason)
 

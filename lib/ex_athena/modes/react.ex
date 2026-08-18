@@ -149,7 +149,9 @@ defmodule ExAthena.Modes.ReAct do
         # the first transient error — `not nil` raises ArgumentError.
         if transient_error?(reason) and state.meta[:retried_transient?] != true do
           state = put_in(state.meta[:retried_transient?], true)
-          Process.sleep(2_000)
+          # Honors the server's Retry-After hint (capped) when the error
+          # carries one; falls back to a 2s default. See Error.retry_delay_ms/2.
+          Process.sleep(ExAthena.Error.retry_delay_ms(reason))
           do_iterate(state, request)
         else
           state =
