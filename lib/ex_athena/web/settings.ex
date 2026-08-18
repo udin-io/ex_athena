@@ -69,6 +69,15 @@ defmodule ExAthena.Web.Settings do
             "Parallel tool calls per turn. One GPU serves one request at a time, so raising this rarely helps locally."
         },
         %{
+          key: :completion_escalation_factor,
+          label: "Completion escalation factor",
+          default: 4,
+          type: :integer,
+          min: 1,
+          help:
+            "Multiplier applied to max_tokens when a turn is retried after starving inside its reasoning."
+        },
+        %{
           key: :tool_timeout_ms,
           label: "Tool timeout (ms)",
           default: 120_000,
@@ -130,6 +139,15 @@ defmodule ExAthena.Web.Settings do
           type: :integer,
           min: 1,
           help: "Times the same objective may be delegated before it is called out."
+        },
+        %{
+          key: :repeat_key_chars,
+          label: "Repeat-detection key length",
+          default: 120,
+          type: :integer,
+          min: 20,
+          help:
+            "Leading characters of an objective compared when detecting a repeated delegation."
         },
         %{
           key: :audit_request_chars,
@@ -204,6 +222,23 @@ defmodule ExAthena.Web.Settings do
           help: "Cap per text transcript row."
         },
         %{
+          key: :provenance_max_listed,
+          label: "Provenance items listed",
+          default: 15,
+          type: :integer,
+          min: 1,
+          help:
+            "Files or commands named in a worker's provenance footer before it says \"+N more\"."
+        },
+        %{
+          key: :provenance_command_chars,
+          label: "Provenance command cap (chars)",
+          default: 120,
+          type: :integer,
+          min: 20,
+          help: "Length a command is truncated to in the provenance footer."
+        },
+        %{
           key: :conclusions_cap,
           label: "Conclusions kept",
           default: 50,
@@ -219,6 +254,15 @@ defmodule ExAthena.Web.Settings do
       blurb: "Sent with every request. Support varies by model and provider.",
       fields: [
         %{
+          key: :max_completion_tokens,
+          label: "Max completion tokens",
+          default: 8_192,
+          type: :integer,
+          min: 256,
+          help:
+            "Sent as max_tokens when the request names none. Thinking models need headroom above their reasoning budget."
+        },
+        %{
           key: :reasoning_effort,
           label: "Reasoning effort",
           default: :default,
@@ -227,6 +271,250 @@ defmodule ExAthena.Web.Settings do
           help:
             "Forwarded as `reasoning_effort`. `default` sends nothing; `none` disables thinking. " <>
               "Verified on Ollama 0.32 with qwen3.8 — `none` returns no reasoning at all."
+        }
+      ]
+    },
+    %{
+      ns: :tools,
+      title: "Tool budgets",
+      blurb: "How much a single tool call may return before it is capped.",
+      fields: [
+        %{
+          key: :read_output_chars,
+          label: "read: output cap (chars)",
+          default: 16_000,
+          type: :integer,
+          min: 1000,
+          help: "Whole-file reads above this become an outline or a head-capped excerpt."
+        },
+        %{
+          key: :read_head_chars,
+          label: "read: head kept when capped",
+          default: 12_000,
+          type: :integer,
+          min: 500,
+          help: "Leading slice retained when a read is truncated."
+        },
+        %{
+          key: :read_max_bytes,
+          label: "read: max file size (bytes)",
+          default: 2_000_000,
+          type: :integer,
+          min: 10000,
+          help: "Files larger than this are refused outright."
+        },
+        %{
+          key: :read_outline_entries,
+          label: "read: outline entries",
+          default: 150,
+          type: :integer,
+          min: 1,
+          help: "Structural anchors listed when a large file is outlined."
+        },
+        %{
+          key: :grep_default_max,
+          label: "grep: default matches",
+          default: 200,
+          type: :integer,
+          min: 1,
+          help: "Matches returned when the call names no limit."
+        },
+        %{
+          key: :grep_hard_cap,
+          label: "grep: hard cap",
+          default: 2_000,
+          type: :integer,
+          min: 1,
+          help: "Ceiling a caller-supplied grep limit is clamped to."
+        },
+        %{
+          key: :glob_default_max,
+          label: "glob: default matches",
+          default: 200,
+          type: :integer,
+          min: 1,
+          help: "Paths returned when the call names no limit."
+        },
+        %{
+          key: :glob_hard_cap,
+          label: "glob: hard cap",
+          default: 5_000,
+          type: :integer,
+          min: 1,
+          help: "Ceiling a caller-supplied glob limit is clamped to."
+        },
+        %{
+          key: :usage_rules_chars,
+          label: "usage_rules: output cap (chars)",
+          default: 20_000,
+          type: :integer,
+          min: 1,
+          help: "Cap on a package's usage-rules document."
+        },
+        %{
+          key: :read_summary_input_bytes,
+          label: "read_summary: input cap (bytes)",
+          default: 12_000,
+          type: :integer,
+          min: 1000,
+          help: "How much of a file is fed to the summarizer."
+        }
+      ]
+    },
+    %{
+      ns: :web_access,
+      title: "Web access",
+      blurb: "Limits on web_fetch and web_search.",
+      fields: [
+        %{
+          key: :fetch_max_chars,
+          label: "fetch: output cap (chars)",
+          default: 20_000,
+          type: :integer,
+          min: 1000,
+          help: "Text returned from a fetched page."
+        },
+        %{
+          key: :fetch_max_bytes,
+          label: "fetch: download cap (bytes)",
+          default: 1_000_000,
+          type: :integer,
+          min: 10000,
+          help: "Bytes read from the response before giving up."
+        },
+        %{
+          key: :fetch_max_redirects,
+          label: "fetch: max redirects",
+          default: 5,
+          type: :integer,
+          min: 1,
+          help: "Redirect hops followed."
+        },
+        %{
+          key: :fetch_timeout_ms,
+          label: "fetch: timeout (ms)",
+          default: 10_000,
+          type: :integer,
+          min: 1000,
+          help: "Per-request deadline."
+        },
+        %{
+          key: :fetch_summary_window,
+          label: "fetch: summarize window (chars)",
+          default: 60_000,
+          type: :integer,
+          min: 1000,
+          help: "Page text eligible for summarization."
+        },
+        %{
+          key: :fetch_summarize_timeout_ms,
+          label: "fetch: summarize timeout (ms)",
+          default: 600_000,
+          type: :integer,
+          min: 1000,
+          help: "Deadline for the summarizing model call."
+        },
+        %{
+          key: :search_max_results,
+          label: "search: default results",
+          default: 5,
+          type: :integer,
+          min: 1,
+          help: "Results returned when the call names no count."
+        },
+        %{
+          key: :search_results_cap,
+          label: "search: hard cap",
+          default: 20,
+          type: :integer,
+          min: 1,
+          help: "Ceiling a caller-supplied result count is clamped to."
+        },
+        %{
+          key: :search_snippet_chars,
+          label: "search: snippet cap (chars)",
+          default: 500,
+          type: :integer,
+          min: 50,
+          help: "Text kept per result."
+        },
+        %{
+          key: :search_timeout_ms,
+          label: "search: timeout (ms)",
+          default: 10_000,
+          type: :integer,
+          min: 1000,
+          help: "Per-request deadline."
+        }
+      ]
+    },
+    %{
+      ns: :modes,
+      title: "Modes",
+      blurb: nil,
+      fields: [
+        %{
+          key: :max_reflections,
+          label: "reflexion: max reflections",
+          default: 3,
+          type: :integer,
+          min: 1,
+          help: "Reflect-and-retry rounds in reflexion mode."
+        },
+        %{
+          key: :reflections_hard_cap,
+          label: "reflexion: hard cap",
+          default: 3,
+          type: :integer,
+          min: 1,
+          help: "Ceiling a caller-supplied reflection count is clamped to."
+        }
+      ]
+    },
+    %{
+      ns: :ui,
+      title: "Interface",
+      blurb: "Cosmetic and housekeeping limits in the web UI.",
+      fields: [
+        %{
+          key: :max_diff_lines,
+          label: "Diff lines shown",
+          default: 300,
+          type: :integer,
+          min: 1,
+          help: "Lines rendered per diff before it is collapsed."
+        },
+        %{
+          key: :model_results_cap,
+          label: "Model picker results",
+          default: 60,
+          type: :integer,
+          min: 1,
+          help: "Models listed in the picker."
+        },
+        %{
+          key: :autosave_interval_ms,
+          label: "Autosave interval (ms)",
+          default: 5_000,
+          type: :integer,
+          min: 500,
+          help: "How often an active session is written to disk."
+        },
+        %{
+          key: :run_grace_ms,
+          label: "Run server grace (ms)",
+          default: 60_000,
+          type: :integer,
+          min: 1000,
+          help: "How long a finished run lingers so a reconnecting browser can attach."
+        },
+        %{
+          key: :max_recent_dirs,
+          label: "Recent directories kept",
+          default: 20,
+          type: :integer,
+          min: 1,
+          help: "Entries in the recent-projects list."
         }
       ]
     },
@@ -250,6 +538,22 @@ defmodule ExAthena.Web.Settings do
       title: "Shell",
       blurb: nil,
       fields: [
+        %{
+          key: :default_timeout_ms,
+          label: "Default timeout (ms)",
+          default: 120_000,
+          type: :integer,
+          min: 1_000,
+          help: "Deadline when a bash call names none."
+        },
+        %{
+          key: :max_timeout_ms,
+          label: "Max timeout (ms)",
+          default: 600_000,
+          type: :integer,
+          min: 1_000,
+          help: "Ceiling a caller-supplied bash timeout is clamped to."
+        },
         %{
           key: :max_output_chars,
           label: "Command output cap (chars)",

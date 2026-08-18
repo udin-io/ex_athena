@@ -113,6 +113,7 @@ defmodule ExAthena.Loop do
   alias ExAthena.Loop.{Events, Mode, State}
   alias ExAthena.Lsp.ImplicitDiagnostics
   alias ExAthena.Messages.Message
+  alias ExAthena.Tuning
 
   @default_max_iterations 55
   @default_max_mistakes 3
@@ -311,7 +312,11 @@ defmodule ExAthena.Loop do
         prompt_tokens =
           ExAthena.Compactor.estimate_tokens(state.messages, system_prompt(state))
 
-        target = min(cap * @completion_escalation_factor, context_window - prompt_tokens)
+        target =
+          min(
+            cap * Tuning.get(:loop, :completion_escalation_factor, @completion_escalation_factor),
+            context_window - prompt_tokens
+          )
 
         if target > cap, do: {:ok, cap, target}, else: :no_headroom
 

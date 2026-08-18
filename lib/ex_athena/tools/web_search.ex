@@ -20,6 +20,7 @@ defmodule ExAthena.Tools.WebSearch do
   @behaviour ExAthena.Tool
 
   alias ExAthena.Search
+  alias ExAthena.Tuning
 
   @default_max_results 5
   @max_results_cap 20
@@ -47,7 +48,8 @@ defmodule ExAthena.Tools.WebSearch do
         query: %{type: "string", description: "The search query."},
         max_results: %{
           type: "integer",
-          description: "Max results (default #{@default_max_results}, cap #{@max_results_cap})."
+          description:
+            "Max results (default #{Tuning.get(:web_access, :search_max_results, @default_max_results)}, cap #{Tuning.get(:web_access, :search_results_cap, @max_results_cap)})."
         },
         topic: %{type: "string", enum: ["general", "news"], description: "Optional search topic."},
         recency: %{
@@ -56,7 +58,8 @@ defmodule ExAthena.Tools.WebSearch do
         },
         timeout_ms: %{
           type: "integer",
-          description: "Request timeout (default #{@default_timeout})."
+          description:
+            "Request timeout (default #{Tuning.get(:web_access, :search_timeout_ms, @default_timeout)})."
         }
       },
       required: ["query"]
@@ -71,12 +74,18 @@ defmodule ExAthena.Tools.WebSearch do
 
   @impl true
   def execute(%{"query" => query} = args, _ctx) when is_binary(query) and query != "" do
-    timeout = Map.get(args, "timeout_ms", @default_timeout)
+    timeout =
+      Map.get(args, "timeout_ms", Tuning.get(:web_access, :search_timeout_ms, @default_timeout))
 
     opts =
       [
         max_results:
-          args |> Map.get("max_results", @default_max_results) |> min(@max_results_cap),
+          args
+          |> Map.get(
+            "max_results",
+            Tuning.get(:web_access, :search_max_results, @default_max_results)
+          )
+          |> min(Tuning.get(:web_access, :search_results_cap, @max_results_cap)),
         timeout_ms: timeout
       ]
       |> maybe_put(:topic, Map.get(args, "topic"))
@@ -133,7 +142,11 @@ defmodule ExAthena.Tools.WebSearch do
     results
     |> Enum.with_index(1)
     |> Enum.map_join("\n\n", fn {r, i} ->
-      snippet = r.snippet |> to_string() |> String.slice(0, @max_snippet_chars)
+      snippet =
+        r.snippet
+        |> to_string()
+        |> String.slice(0, Tuning.get(:web_access, :search_snippet_chars, @max_snippet_chars))
+
       "#{i}. #{r.title}\n   #{r.url}\n   #{snippet}"
     end)
   end

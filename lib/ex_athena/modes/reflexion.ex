@@ -35,6 +35,7 @@ defmodule ExAthena.Modes.Reflexion do
 
   alias ExAthena.{Budget, Messages}
   alias ExAthena.Loop.State
+  alias ExAthena.Tuning
 
   @default_max_reflections 3
   @hard_cap 3
@@ -53,8 +54,8 @@ defmodule ExAthena.Modes.Reflexion do
   def init(%State{} = state) do
     max_reflections =
       state.meta
-      |> Map.get(:max_reflections, @default_max_reflections)
-      |> min(@hard_cap)
+      |> Map.get(:max_reflections, Tuning.get(:modes, :max_reflections, @default_max_reflections))
+      |> min(Tuning.get(:modes, :reflections_hard_cap, @hard_cap))
 
     mode_state = %{reflections: 0, max_reflections: max_reflections}
     {:ok, %{state | mode_state: mode_state}}

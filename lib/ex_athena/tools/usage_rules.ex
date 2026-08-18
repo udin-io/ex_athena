@@ -18,6 +18,8 @@ defmodule ExAthena.Tools.UsageRules do
 
   @behaviour ExAthena.Tool
 
+  alias ExAthena.Tuning
+
   @max_chars 20_000
 
   @impl true
@@ -128,8 +130,8 @@ defmodule ExAthena.Tools.UsageRules do
   end
 
   defp truncate(content) do
-    if String.length(content) > @max_chars do
-      String.slice(content, 0, @max_chars) <>
+    if String.length(content) > Tuning.get(:tools, :usage_rules_chars, @max_chars) do
+      String.slice(content, 0, Tuning.get(:tools, :usage_rules_chars, @max_chars)) <>
         "\n\n[...truncated — read the full deps/.../usage-rules.md for the rest]"
     else
       content

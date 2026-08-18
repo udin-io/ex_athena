@@ -16,6 +16,7 @@ defmodule ExAthena.Tools.ReadSummary do
   @behaviour ExAthena.Tool
 
   alias ExAthena.ToolContext
+  alias ExAthena.Tuning
 
   @max_input_bytes 12_000
 
@@ -71,7 +72,9 @@ defmodule ExAthena.Tools.ReadSummary do
   def execute(_args, _ctx), do: {:error, "path is required"}
 
   defp summarize(path, content, provider_opts) do
-    truncated = String.slice(content, 0, @max_input_bytes)
+    truncated =
+      String.slice(content, 0, Tuning.get(:tools, :read_summary_input_bytes, @max_input_bytes))
+
     total_lines = content |> String.split("\n") |> length()
 
     prompt = """

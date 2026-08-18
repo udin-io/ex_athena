@@ -308,8 +308,8 @@ defmodule ExAthena.Tools.Bash do
   def execute(%{"command" => command} = args, ctx) when is_binary(command) do
     timeout =
       case Map.get(args, "timeout_ms") do
-        t when is_integer(t) and t > 0 -> min(t, @max_timeout)
-        _ -> @default_timeout
+        t when is_integer(t) and t > 0 -> min(t, Tuning.get(:bash, :max_timeout_ms, @max_timeout))
+        _ -> Tuning.get(:bash, :default_timeout_ms, @default_timeout)
       end
 
     run(command, ctx, timeout)

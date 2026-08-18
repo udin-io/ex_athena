@@ -39,6 +39,8 @@ defmodule ExAthena.Tools.WebFetch do
 
   @behaviour ExAthena.Tool
 
+  alias ExAthena.Tuning
+
   @default_timeout 10_000
   @max_bytes 1_000_000
   @max_redirects 5
@@ -70,7 +72,8 @@ defmodule ExAthena.Tools.WebFetch do
         timeout_ms: %{type: "integer"},
         max_chars: %{
           type: "integer",
-          description: "Cap on returned content (default #{@default_max_chars})."
+          description:
+            "Cap on returned content (default #{Tuning.get(:web_access, :fetch_max_chars, @default_max_chars)})."
         },
         query: %{
           type: "string",
@@ -90,7 +93,8 @@ defmodule ExAthena.Tools.WebFetch do
 
   @impl true
   def execute(%{"url" => url} = args, ctx) when is_binary(url) do
-    timeout = Map.get(args, "timeout_ms", @default_timeout)
+    timeout =
+      Map.get(args, "timeout_ms", Tuning.get(:web_access, :fetch_timeout_ms, @default_timeout))
 
     with {:ok, uri} <- validate_target(URI.parse(url), ctx),
          {:ok, body, status} <- fetch(uri, timeout, ctx) do
@@ -115,7 +119,10 @@ defmodule ExAthena.Tools.WebFetch do
   # Post-fetch overflow handling (public for tests — no network involved).
   # Returns {body, truncated?}.
   def handle_body(body, args, ctx) do
-    max_chars = args |> Map.get("max_chars", @default_max_chars) |> min(@max_bytes)
+    max_chars =
+      args
+      |> Map.get("max_chars", Tuning.get(:web_access, :fetch_max_chars, @default_max_chars))
+      |> min(Tuning.get(:web_access, :fetch_max_bytes, @max_bytes))
 
     cond do
       String.length(body) <= max_chars ->
@@ -140,7 +147,12 @@ defmodule ExAthena.Tools.WebFetch do
   defp summarize(body, query, ctx) do
     case Map.get(ctx.assigns || %{}, :spawn_agent_opts) do
       opts when is_list(opts) and opts != [] ->
-        window = String.slice(body, 0, @summary_window_chars)
+        window =
+          String.slice(
+            body,
+            0,
+            Tuning.get(:web_access, :fetch_summary_window, @summary_window_chars)
+          )
 
         goal =
           if is_binary(query) and query != "",
@@ -159,7 +171,8 @@ defmodule ExAthena.Tools.WebFetch do
             memory: false,
             conclusions: false,
             max_iterations: 1,
-            timeout_ms: @summarize_timeout_ms
+            timeout_ms:
+              Tuning.get(:web_access, :fetch_summarize_timeout_ms, @summarize_timeout_ms)
           )
 
         case ExAthena.Loop.run(prompt, run_opts) do
@@ -201,7 +214,8 @@ defmodule ExAthena.Tools.WebFetch do
     Map.get(ctx.assigns || %{}, :allow_local_hosts, false) == true
   end
 
-  defp fetch(uri, timeout, ctx), do: fetch(uri, timeout, ctx, @max_redirects)
+  defp fetch(uri, timeout, ctx),
+    do: fetch(uri, timeout, ctx, Tuning.get(:web_access, :fetch_max_redirects, @max_redirects))
 
   # Redirects are followed manually (`redirect: false`) so every Location
   # target is re-validated — Req's auto-redirect would happily follow a
@@ -220,8 +234,9 @@ defmodule ExAthena.Tools.WebFetch do
         body = to_binary(body)
 
         body =
-          if byte_size(body) > @max_bytes do
-            binary_part(body, 0, @max_bytes) <> "\n\n[...truncated...]"
+          if byte_size(body) > Tuning.get(:web_access, :fetch_max_bytes, @max_bytes) do
+            binary_part(body, 0, Tuning.get(:web_access, :fetch_max_bytes, @max_bytes)) <>
+              "\n\n[...truncated...]"
           else
             body
           end

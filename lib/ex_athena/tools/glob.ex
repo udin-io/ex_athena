@@ -14,6 +14,8 @@ defmodule ExAthena.Tools.Glob do
 
   @behaviour ExAthena.Tool
 
+  alias ExAthena.Tuning
+
   @default_max 200
   @hard_cap 5_000
 
@@ -52,7 +54,7 @@ defmodule ExAthena.Tools.Glob do
   @impl true
   def execute(%{"pattern" => pattern} = args, ctx) when is_binary(pattern) do
     cwd = ctx.cwd
-    max = clamp(Map.get(args, "max_results", @default_max))
+    max = clamp(Map.get(args, "max_results", Tuning.get(:tools, :glob_default_max, @default_max)))
     include_artifacts = Map.get(args, "include_artifacts", false) == true
 
     results =
@@ -78,8 +80,10 @@ defmodule ExAthena.Tools.Glob do
 
   def execute(_, _), do: {:error, :missing_pattern}
 
-  defp clamp(n) when is_integer(n) and n > 0, do: min(n, @hard_cap)
-  defp clamp(_), do: @default_max
+  defp clamp(n) when is_integer(n) and n > 0,
+    do: min(n, Tuning.get(:tools, :glob_hard_cap, @hard_cap))
+
+  defp clamp(_), do: Tuning.get(:tools, :glob_default_max, @default_max)
 
   # When confined, drop matches that a `..` pattern resolved outside the roots.
   defp confine(paths, nil), do: paths

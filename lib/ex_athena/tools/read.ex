@@ -20,6 +20,7 @@ defmodule ExAthena.Tools.Read do
   @behaviour ExAthena.Tool
 
   alias ExAthena.ToolContext
+  alias ExAthena.Tuning
 
   @max_bytes 2_000_000
   # Same context-protection budget as bash output.
@@ -85,22 +86,28 @@ defmodule ExAthena.Tools.Read do
   # Keep oversized reads from flooding the context. Whole-file reads of
   # structured files become a line-ranged outline; everything else is
   # head-capped with an explicit re-read hint.
-  defp guard_output(formatted, body, args) when byte_size(formatted) > @max_output_chars do
+  defp guard_output(formatted, body, args) do
+    if byte_size(formatted) > Tuning.get(:tools, :read_output_chars, @max_output_chars) do
+      cap_output(formatted, body, args)
+    else
+      formatted
+    end
+  end
+
+  defp cap_output(formatted, body, args) do
     explicit_window? = Map.get(args, "offset") != nil or Map.get(args, "limit") != nil
 
     case if(explicit_window?, do: nil, else: outline(body)) do
       nil ->
         total = body |> String.split("\n") |> length()
 
-        String.slice(formatted, 0, @head_chars) <>
+        String.slice(formatted, 0, Tuning.get(:tools, :read_head_chars, @head_chars)) <>
           "\n…[truncated — file has #{total} lines; re-read with offset/limit for the rest]…"
 
       outline ->
         outline
     end
   end
-
-  defp guard_output(formatted, _body, _args), do: formatted
 
   # Line-ranged structural outline: "lines 12–80: def foo(bar)". Returns
   # nil when the file has too little structure to outline usefully.
@@ -116,7 +123,8 @@ defmodule ExAthena.Tools.Read do
     if length(anchors) < 3 do
       nil
     else
-      anchors = Enum.take(anchors, @max_outline_entries)
+      anchors =
+        Enum.take(anchors, Tuning.get(:tools, :read_outline_entries, @max_outline_entries))
 
       entries =
         anchors
@@ -127,8 +135,9 @@ defmodule ExAthena.Tools.Read do
         end)
 
       capped_note =
-        if length(anchors) == @max_outline_entries,
-          do: "\n…[outline capped at #{@max_outline_entries} entries]…",
+        if length(anchors) == Tuning.get(:tools, :read_outline_entries, @max_outline_entries),
+          do:
+            "\n…[outline capped at #{Tuning.get(:tools, :read_outline_entries, @max_outline_entries)} entries]…",
           else: ""
 
       "[file too large to return whole: #{total} lines — outline below; " <>
@@ -164,8 +173,11 @@ defmodule ExAthena.Tools.Read do
 
   defp fetch_path(_, _), do: {:error, :missing_path}
 
-  defp check_size(%File.Stat{size: size}) when size > @max_bytes,
-    do: {:error, {:file_too_large, size}}
+  defp check_size(%File.Stat{size: size}) do
+    if size > Tuning.get(:tools, :read_max_bytes, @max_bytes),
+      do: {:error, {:file_too_large, size}},
+      else: :ok
+  end
 
   defp check_size(_), do: :ok
 

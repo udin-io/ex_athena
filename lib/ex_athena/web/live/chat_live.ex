@@ -5,6 +5,7 @@ defmodule ExAthena.Web.Live.ChatLive do
   alias ExAthena.Messages.ContentPart
   alias ExAthena.Web.Sessions
   alias Phoenix.LiveView.JS
+  alias ExAthena.Tuning
 
   # Autosave cadence for an in-flight run. Must be declared before its use in
   # `handle_info(:autosave_session, _)` — module attributes are evaluated in
@@ -1005,7 +1006,12 @@ defmodule ExAthena.Web.Live.ChatLive do
           assign(socket, session_sig: sig)
         end
 
-      Process.send_after(self(), :autosave_session, @autosave_interval_ms)
+      Process.send_after(
+        self(),
+        :autosave_session,
+        Tuning.get(:ui, :autosave_interval_ms, @autosave_interval_ms)
+      )
+
       {:noreply, socket}
     else
       {:noreply, assign(socket, autosave_on: false)}
@@ -1162,7 +1168,7 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   @impl true
   def render(assigns) do
-    assigns = assign(assigns, max_diff_lines: @max_diff_lines)
+    assigns = assign(assigns, max_diff_lines: Tuning.get(:ui, :max_diff_lines, @max_diff_lines))
 
     ~H"""
     <%= if @page_loading do %>
@@ -1661,7 +1667,7 @@ defmodule ExAthena.Web.Live.ChatLive do
                       mounted across tab switches so xterm state survives). --%>
               <% _ -> %>
                 <div class="details-tab-body" id="details-pane" phx-hook="ScrollToBottom">
-                  <.details_pane stream={@details_stream} max_diff_lines={@max_diff_lines} />
+                  <.details_pane stream={@details_stream} max_diff_lines={Tuning.get(:ui, :max_diff_lines, @max_diff_lines)} />
                 </div>
             <% end %>
 
@@ -2926,7 +2932,12 @@ defmodule ExAthena.Web.Live.ChatLive do
     if socket.assigns[:autosave_on] do
       socket
     else
-      Process.send_after(self(), :autosave_session, @autosave_interval_ms)
+      Process.send_after(
+        self(),
+        :autosave_session,
+        Tuning.get(:ui, :autosave_interval_ms, @autosave_interval_ms)
+      )
+
       assign(socket, autosave_on: true)
     end
   end
@@ -3263,7 +3274,7 @@ defmodule ExAthena.Web.Live.ChatLive do
         end)
         |> elem(0)
 
-      display = Enum.take(visible, @max_diff_lines)
+      display = Enum.take(visible, Tuning.get(:ui, :max_diff_lines, @max_diff_lines))
 
       %{
         kind: :diff,
@@ -3272,7 +3283,7 @@ defmodule ExAthena.Web.Live.ChatLive do
         total_lines: total,
         changed_lines: changed,
         shown: length(visible),
-        truncated: length(visible) > @max_diff_lines
+        truncated: length(visible) > Tuning.get(:ui, :max_diff_lines, @max_diff_lines)
       }
     end
   end
@@ -3458,7 +3469,7 @@ defmodule ExAthena.Web.Live.ChatLive do
 
     models
     |> Enum.filter(fn m -> q == "" or String.contains?(String.downcase(m), q) end)
-    |> Enum.take(@model_results_cap)
+    |> Enum.take(Tuning.get(:ui, :model_results_cap, @model_results_cap))
   end
 
   defp apply_base_url(opts, "llamacpp") do

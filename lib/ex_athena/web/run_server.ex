@@ -333,7 +333,7 @@ defmodule ExAthena.Web.RunServer do
   end
 
   defp finish(state) do
-    Process.send_after(self(), :retire, @grace_ms)
+    Process.send_after(self(), :retire, Tuning.get(:ui, :run_grace_ms, @grace_ms))
     %{state | streaming: false, current_action: nil, awaiting_question: nil}
   end
 

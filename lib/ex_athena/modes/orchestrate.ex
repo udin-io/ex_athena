@@ -704,7 +704,7 @@ defmodule ExAthena.Modes.Orchestrate do
     |> String.downcase()
     |> String.replace(~r/\s+/, " ")
     |> String.trim()
-    |> String.slice(0, @repeat_key_chars)
+    |> String.slice(0, Tuning.get(:orchestrate, :repeat_key_chars, @repeat_key_chars))
   end
 
   defp repeat_key(_), do: ""

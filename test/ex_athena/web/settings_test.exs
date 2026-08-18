@@ -159,4 +159,47 @@ defmodule ExAthena.Web.SettingsTest do
       assert Settings.provider_opts() == [reasoning_effort: :none]
     end
   end
+
+  # The gap a user found by hand: a rail was wired to Tuning but never given a
+  # schema entry, so it was configurable in principle and invisible in the UI.
+  # This scans the source for literal Tuning.get(:ns, :key, …) calls and holds
+  # the schema to them. (Modules resolving through a local helper — the
+  # `tuning/2` in orchestrate, `budget_opt/3` in loop — are covered by their
+  # own tests instead.)
+  describe "schema coverage" do
+    test "every key wired to Tuning has a field in the modal" do
+      wired =
+        Path.wildcard("lib/**/*.ex")
+        |> Enum.flat_map(fn file ->
+          Regex.scan(~r/Tuning\.get\(:([a-z_]+),\s*:([a-z_]+)/, File.read!(file))
+        end)
+        |> Enum.map(fn [_, ns, key] -> {ns, key} end)
+        |> Enum.uniq()
+
+      declared =
+        for group <- Settings.schema(), field <- group.fields, into: MapSet.new() do
+          {to_string(group.ns), to_string(field.key)}
+        end
+
+      missing = Enum.reject(wired, &MapSet.member?(declared, &1))
+
+      assert missing == [],
+             "wired to Tuning but absent from the settings schema: #{inspect(missing)}"
+    end
+
+    test "no field is declared twice" do
+      ids = for g <- Settings.schema(), f <- g.fields, do: {g.ns, f.key}
+      assert length(ids) == length(Enum.uniq(ids))
+    end
+
+    test "every field carries what the form needs to render and validate it" do
+      for group <- Settings.schema(), field <- group.fields do
+        assert is_binary(field.label) and field.label != ""
+        assert is_binary(field.help) and field.help != ""
+        assert field.type in [:integer, :select]
+        if field.type == :select, do: assert(field.default in field.options)
+        if field.type == :integer, do: assert(field.default >= Map.get(field, :min, 0))
+      end
+    end
+  end
 end
