@@ -24,8 +24,8 @@ defmodule ExAthena.Modes.ReAct do
 
   @behaviour ExAthena.Loop.Mode
 
-  alias ExAthena.{Budget, Messages, Permissions, Skills, Telemetry}
-  alias ExAthena.Loop.{Events, Parallel, State}
+  alias ExAthena.{Messages, Permissions, Skills, Telemetry}
+  alias ExAthena.Loop.{Events, Inference, Parallel, State}
   alias ExAthena.Messages.ToolCall
   alias ExAthena.Tools
 
@@ -73,8 +73,10 @@ defmodule ExAthena.Modes.ReAct do
     # ChatParams hooks fire just before the provider call so callers can
     # adjust temperature / tools / system_prompt per turn without
     # subclassing the mode. `{:inject, msg}` returns appended to the
-    # request's messages; `{:halt, _}` short-circuits.
-    case apply_chat_params(state, request) do
+    # request's messages; `{:halt, _}` short-circuits. Fired here — once
+    # per iteration, outside `do_iterate` — so the transient-error retry
+    # cannot double-fire hooks or double-append injected messages.
+    case Inference.apply_chat_params(state, request) do
       {:halt, reason} ->
         state =
           %{state | halted_reason: reason}
@@ -88,22 +90,22 @@ defmodule ExAthena.Modes.ReAct do
   end
 
   defp do_iterate(%State{} = state, request) do
-    chat_meta =
-      Telemetry.genai_meta(
-        operation: "chat",
-        provider: state.provider_mod,
-        request_model: request.model,
-        conversation_id: Map.get(state.meta, :conversation_id)
-      )
-
     {stream_cb, counters} = stream_callback(state)
 
-    case Telemetry.span([:ex_athena, :chat], chat_meta, fn ->
-           query_or_stream(state, request, stream_cb)
-         end) do
-      {:ok, response} ->
-        # Accumulate usage + cost before considering termination.
-        state = fold_usage(state, response)
+    # The main turn is a full, turn-shaped call: a starved response
+    # (issue #194 — the model burned the whole completion budget on
+    # reasoning, producing no text and no tool calls) surfaces the kernel's
+    # typed capacity signal so it retries this iteration once with an
+    # escalated max_tokens instead of mis-reporting success. The
+    # usage-folded state rides along so the starved attempt's token burn
+    # stays on the budget.
+    case Inference.call(state, request,
+           purpose: :turn,
+           starvation: :surface,
+           chat_params: false,
+           stream_cb: stream_cb
+         ) do
+      {:ok, response, state} ->
         # A successful call re-arms the transient-error retry budget.
         state = put_in(state.meta[:retried_transient?], false)
 
@@ -112,20 +114,10 @@ defmodule ExAthena.Modes.ReAct do
         # it for hosts to pass back as `resume:`.
         state = stash_session_id(state, response)
 
-        # Output-starved turn (issue #194): the model burned the whole
-        # completion budget on reasoning and produced no visible text and no
-        # tool calls. This is NOT a terminal answer — surface the kernel's
-        # typed capacity signal (mirroring :error_prompt_too_long) so it
-        # retries this iteration once with an escalated max_tokens instead of
-        # mis-reporting success with blank/stale text. The usage-folded state
-        # rides along so the starved attempt's token burn stays on the budget.
-        case response.starvation do
-          %{} = starvation ->
-            {:error, {:error_thinking_starved, starvation, state}}
+        handle_turn(state, request, response, counters)
 
-          _ ->
-            handle_turn(state, request, response, counters)
-        end
+      {:error, {:error_thinking_starved, _info, %State{}}} = starved ->
+        starved
 
       {:error, %ExAthena.Error{kind: :unauthorized} = reason} ->
         state =
@@ -264,38 +256,6 @@ defmodule ExAthena.Modes.ReAct do
 
   defp transient_error?(:timeout), do: true
   defp transient_error?(_), do: false
-
-  # Fire ChatParams hooks. Returns {:ok, request, state} (possibly with
-  # injected messages appended) or {:halt, reason} when a hook bailed.
-  defp apply_chat_params(state, request) do
-    payload = %{
-      request: request,
-      session_id: state.session_id,
-      messages: request.messages
-    }
-
-    outputs = ExAthena.Hooks.run_lifecycle_with_outputs(state.hooks, :ChatParams, payload)
-
-    case outputs.halt do
-      {:halt, reason} ->
-        {:halt, reason}
-
-      _ ->
-        request_with_injects =
-          case outputs.injects do
-            [] -> request
-            list -> %{request | messages: request.messages ++ list}
-          end
-
-        state =
-          case outputs.injects do
-            [] -> state
-            list -> %{state | messages: state.messages ++ list}
-          end
-
-        {:ok, request_with_injects, state}
-    end
-  end
 
   # ── Tool execution for one call ───────────────────────────────────
 
@@ -483,21 +443,6 @@ defmodule ExAthena.Modes.ReAct do
     do: put_in(state.meta[:provider_session_id], sid)
 
   defp stash_session_id(state, _response), do: state
-
-  defp fold_usage(state, response) do
-    budget = state.budget || Budget.new()
-    # Providers that report cost (req_llm via models.dev) include a
-    # `:total_cost` key on usage. Fall back to nil when absent; the budget
-    # accumulator treats nil as "no cost data this turn".
-    cost = extract_cost(response.usage)
-    new_budget = Budget.add(budget, response.usage, cost)
-
-    if response.usage do
-      Events.emit(state.on_event, {:usage, response.usage})
-    end
-
-    %{state | budget: new_budget}
-  end
 
   # ── Conclusions (see ExAthena.Conclusions) ────────────────────────
 
@@ -899,28 +844,6 @@ defmodule ExAthena.Modes.ReAct do
 
   def stream_callback(_state), do: {nil, nil}
 
-  # Every provider call goes through the request queue (per-call granularity)
-  # so concurrent loops — especially subagents — serialize on the provider's
-  # scarce slots (local GPUs serve 1-3 concurrent requests). The slot is held
-  # for the full call/stream lifetime and released on every exit path; the
-  # provider's own timeout_ms only starts once the slot is acquired.
-  defp query_or_stream(state, request, stream_cb) do
-    ExAthena.RequestQueue.with_slot(
-      state.meta[:provider_atom],
-      fn -> provider_call(state, request, stream_cb) end,
-      Keyword.merge(
-        state.meta[:queue_opts] || [],
-        on_wait: Events.queue_wait_emitter(state.on_event, state.meta[:provider_atom])
-      )
-    )
-  end
-
-  defp provider_call(state, request, nil),
-    do: state.provider_mod.query(request, state.provider_opts)
-
-  defp provider_call(state, request, stream_cb),
-    do: state.provider_mod.stream(request, stream_cb, state.provider_opts)
-
   defp stringify(value) when is_binary(value), do: value
   defp stringify(value), do: inspect(value, pretty: true, limit: :infinity)
 
@@ -1027,27 +950,4 @@ defmodule ExAthena.Modes.ReAct do
   end
 
   defp maybe_emit_content(_on_event, _response), do: :ok
-
-  defp extract_cost(nil), do: nil
-
-  defp extract_cost(usage) when is_map(usage) do
-    # req_llm uses :total_cost (in USD). Some providers may emit
-    # input_cost/output_cost split with no total — sum them on the fly.
-    cond do
-      cost = Map.get(usage, :total_cost) ->
-        cost
-
-      cost = Map.get(usage, "total_cost") ->
-        cost
-
-      ic = Map.get(usage, :input_cost) || Map.get(usage, "input_cost") ->
-        oc = Map.get(usage, :output_cost) || Map.get(usage, "output_cost") || 0
-        ic + oc
-
-      true ->
-        nil
-    end
-  end
-
-  defp extract_cost(_), do: nil
 end
