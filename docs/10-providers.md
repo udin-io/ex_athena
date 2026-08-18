@@ -225,12 +225,17 @@ Providers should surface errors as `{:error, %ExAthena.Error{kind: …, message:
 
 | Provider HTTP / SDK status | Suggested `Error.kind` | Loop finish_reason |
 |---|---|---|
-| 401, 403 | `:provider_auth` | `:error_provider_auth` (`:fatal`) |
-| 429 with retry-after | `:rate_limit` | `:error_during_execution` (`:retryable`); caller can retry |
-| 400 with "context length exceeded" pattern | `:prompt_too_long` (Mode returns `{:error, :error_prompt_too_long}`) | Reactive compact, then `:error_prompt_too_long` if still too big |
-| 5xx | `:network` | `:error_during_execution` |
+| 401, 403 | `:unauthorized` | `:error_provider_auth` (`:fatal`) |
+| 429 with retry-after | `:rate_limited`, with `retry_after_ms` set from the header | `:error_during_execution` (`:retryable`); the loop's one transient retry honors `retry_after_ms` (capped at 30s), else waits 2s |
+| 400 with "context length exceeded" pattern | `:context_length_exceeded` (Mode returns `{:error, :error_prompt_too_long}`) | Reactive compact, then `:error_prompt_too_long` if still too big |
+| Timeouts (408, transport receive timeout) | `:timeout` | `:error_during_execution` (`:retryable`) |
+| Connection refused/closed/DNS/TLS | `:transport` | `:error_during_execution` (`:retryable`) |
+| 5xx | `:server_error` | `:error_during_execution` |
 
-See [`lib/ex_athena/error.ex`](../lib/ex_athena/error.ex) for the canonical kinds.
+See [`lib/ex_athena/error.ex`](../lib/ex_athena/error.ex) for the canonical kinds. Custom providers
+should populate `retry_after_ms` (milliseconds) from a 429/503 `Retry-After` header when the server
+sends one — `ExAthena.Error.retry_after_from_headers/1` parses both the delta-seconds and HTTP-date
+forms.
 
 ---
 
