@@ -29,6 +29,56 @@ defmodule ExAthena.Web.Settings do
 
   @schema [
     %{
+      ns: :loop,
+      title: "Run budget",
+      blurb: "Top-level limits on a run. What stops it when it will not stop itself.",
+      fields: [
+        %{
+          key: :max_iterations,
+          label: "Max iterations",
+          default: 55,
+          type: :integer,
+          min: 1,
+          help:
+            "Turns before the run ends as :error_max_turns. The cap most often retuned per model."
+        },
+        %{
+          key: :max_unproductive_iterations,
+          label: "Max unproductive iterations",
+          default: 3,
+          type: :integer,
+          min: 1,
+          help:
+            "Turns with no observable progress before :error_no_progress. Trips before max iterations."
+        },
+        %{
+          key: :max_consecutive_mistakes,
+          label: "Max consecutive mistakes",
+          default: 3,
+          type: :integer,
+          min: 1,
+          help: "Back-to-back tool errors tolerated before the run is stopped."
+        },
+        %{
+          key: :max_concurrency,
+          label: "Max concurrency",
+          default: 4,
+          type: :integer,
+          min: 1,
+          help:
+            "Parallel tool calls per turn. One GPU serves one request at a time, so raising this rarely helps locally."
+        },
+        %{
+          key: :tool_timeout_ms,
+          label: "Tool timeout (ms)",
+          default: 120_000,
+          type: :integer,
+          min: 1_000,
+          help: "Per-tool-call deadline."
+        }
+      ]
+    },
+    %{
       ns: :orchestrate,
       title: "Orchestration",
       blurb: "When the orchestrator stops planning and starts delegating.",

@@ -97,7 +97,19 @@ defmodule ExAthena.Loop do
       (e.g. unknown provider, bad tool module).
   """
 
-  alias ExAthena.{Budget, Config, Error, Memory, Request, Result, Skills, Telemetry, Tools}
+  alias ExAthena.{
+    Budget,
+    Config,
+    Error,
+    Memory,
+    Request,
+    Result,
+    Skills,
+    Telemetry,
+    Tools,
+    Tuning
+  }
+
   alias ExAthena.Loop.{Events, Mode, State}
   alias ExAthena.Lsp.ImplicitDiagnostics
   alias ExAthena.Messages.Message
@@ -761,7 +773,7 @@ defmodule ExAthena.Loop do
         |> Map.put_new(:hooks, hooks_table)
         |> Map.put_new(
           :tool_timeout_ms,
-          Keyword.get(opts, :tool_timeout_ms, @default_tool_timeout_ms)
+          budget_opt(opts, :tool_timeout_ms, @default_tool_timeout_ms)
         )
         |> Map.put_new(:spawn_agent_opts, inherited_provider_opts)
         # THIS run's effective permission guardrails, read by SpawnAgent so a
@@ -827,14 +839,22 @@ defmodule ExAthena.Loop do
         ctx: ctx,
         on_event: on_event,
         budget: Budget.new(),
-        max_iterations: Keyword.get(opts, :max_iterations, @default_max_iterations),
+        # Resolution order is per-call > config > built-in default, matching
+        # ExAthena.Config. These had no config layer at all, so the web UI —
+        # which passes none of them — could never change the run budget that
+        # trips :error_max_turns.
+        max_iterations: budget_opt(opts, :max_iterations, @default_max_iterations),
         max_consecutive_mistakes:
-          Keyword.get(opts, :max_consecutive_mistakes, @default_max_mistakes),
+          budget_opt(opts, :max_consecutive_mistakes, @default_max_mistakes),
         max_unproductive_iterations:
-          Keyword.get(opts, :max_unproductive_iterations, @default_max_unproductive_iterations),
+          budget_opt(
+            opts,
+            :max_unproductive_iterations,
+            @default_max_unproductive_iterations
+          ),
         max_budget_usd: Keyword.get(opts, :max_budget_usd),
-        tool_timeout_ms: Keyword.get(opts, :tool_timeout_ms, @default_tool_timeout_ms),
-        max_concurrency: Keyword.get(opts, :max_concurrency, @default_max_concurrency),
+        tool_timeout_ms: budget_opt(opts, :tool_timeout_ms, @default_tool_timeout_ms),
+        max_concurrency: budget_opt(opts, :max_concurrency, @default_max_concurrency),
         mode: mode,
         mode_state: %{},
         session_id: session_id,
@@ -1066,6 +1086,11 @@ defmodule ExAthena.Loop do
   end
 
   # ── Memory + skills resolution ────────────────────────────────────
+
+  # Per-call opt, else the `:loop` config namespace, else the built-in.
+  defp budget_opt(opts, key, default) do
+    Keyword.get(opts, key, Tuning.get(:loop, key, default))
+  end
 
   defp resolve_memory(_cwd, opts) do
     case Keyword.get(opts, :memory, :auto) do

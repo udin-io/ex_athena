@@ -14,6 +14,11 @@ defmodule ExAthena.Web.SettingsTest do
     path = Path.join(dir, "settings.json")
     Application.put_env(:ex_athena, :settings_path, path)
 
+    # Start clean: app boot applies any persisted settings, and a sibling test
+    # may have left values behind. A test asserting "nothing is saved" has to
+    # guarantee that itself.
+    for ns <- Settings.namespaces(), do: Application.delete_env(:ex_athena, ns)
+
     on_exit(fn ->
       File.rm_rf!(dir)
       Application.delete_env(:ex_athena, :settings_path)
@@ -31,6 +36,28 @@ defmodule ExAthena.Web.SettingsTest do
       assert values[{:orchestrate, :max_planning_turns}] == 8
       assert values[{:agents, :result_chars}] == 64_000
       assert values[{:web, :max_retained_events}] == 2_000
+    end
+
+    # The schema defaults are what the form pre-fills, so a default that has
+    # drifted from the module attribute it mirrors shows the user a number the
+    # run is not actually using.
+    test "every schema default matches the value the code falls back to" do
+      pairs = [
+        {{:loop, :max_iterations}, 55},
+        {{:loop, :max_unproductive_iterations}, 3},
+        {{:loop, :max_consecutive_mistakes}, 3},
+        {{:loop, :max_concurrency}, 4},
+        {{:loop, :tool_timeout_ms}, 120_000},
+        {{:agents, :max_iterations}, 50},
+        {{:agents, :prompt_chars}, 160},
+        {{:bash, :max_output_chars}, 16_000}
+      ]
+
+      values = Settings.values()
+
+      for {id, expected} <- pairs do
+        assert values[id] == expected, "#{inspect(id)} should default to #{expected}"
+      end
     end
 
     test "covers every field the schema declares" do
