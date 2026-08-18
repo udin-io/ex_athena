@@ -28,3 +28,6 @@ ex_athena-*.tar
 .exathena/
 /log/
 .env
+
+# Machine-local config (provider endpoints, model names) — see config/dev.exs.
+/config/*.local.exs
