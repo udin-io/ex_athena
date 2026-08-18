@@ -74,6 +74,41 @@ defmodule ExAthena.Compactors.SummaryTest do
     assert is_integer(metadata.after) and metadata.after < 800
   end
 
+  test "compact/2 counts the summary call's cost on the budget (issue #136)" do
+    messages = [
+      Messages.system("You are a helpful agent."),
+      Messages.user("Q1"),
+      Messages.assistant("A1"),
+      Messages.user("Q2"),
+      Messages.assistant("A2"),
+      Messages.user("Q3"),
+      Messages.assistant("A3 – recent")
+    ]
+
+    responder = fn _req ->
+      %Response{
+        text: "[compacted]",
+        finish_reason: :stop,
+        provider: :mock,
+        usage: %{
+          input_tokens: 50,
+          output_tokens: 10,
+          total_tokens: 60,
+          input_cost: 0.3,
+          output_cost: 0.2
+        }
+      }
+    end
+
+    state = mock_state(messages, responder)
+
+    assert {:compact, _new_messages, metadata} =
+             Summary.compact(state, %{tokens: 800, max_tokens: 1_000})
+
+    assert metadata.budget.usage.total_tokens == 60
+    assert_in_delta metadata.budget.cost_usd, 0.5, 0.0001
+  end
+
   test "compact_stage/2 recomputed estimate includes the system-prompt cost (issue #148)" do
     sys = String.duplicate("S", 4_000)
 

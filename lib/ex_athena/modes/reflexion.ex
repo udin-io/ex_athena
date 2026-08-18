@@ -33,8 +33,8 @@ defmodule ExAthena.Modes.Reflexion do
 
   @behaviour ExAthena.Loop.Mode
 
-  alias ExAthena.{Budget, Messages}
-  alias ExAthena.Loop.State
+  alias ExAthena.Messages
+  alias ExAthena.Loop.{Inference, State}
   alias ExAthena.Tuning
 
   @default_max_reflections 3
@@ -103,17 +103,40 @@ defmodule ExAthena.Modes.Reflexion do
         max_tokens: 256
     }
 
-    case state.provider_mod.query(request, state.provider_opts) do
-      {:ok, response} ->
-        new_budget =
-          Budget.add(
-            state.budget || Budget.new(),
-            response.usage,
-            extract_cost(response.usage)
-          )
+    # Through the shared inference path: queue slot, ChatParams hooks, chat
+    # telemetry span, and full usage/cost folding onto the run's budget.
+    # `starvation: :tolerate` — a starved critique (256-token cap fully
+    # burned on reasoning) is just a failed reflection; it must not trigger
+    # the kernel's max_tokens escalation, which would 4x the MAIN turn's
+    # completion cap for the rest of the run and re-run the whole iteration.
+    case Inference.call(state, request,
+           purpose: :reflection,
+           starvation: :tolerate
+         ) do
+      # A ChatParams hook halted the critique call. Reflection is
+      # non-fatal — skip it; the next main turn fires ChatParams again, so
+      # a host that wants the run stopped halts it there.
+      {:halt, reason} ->
+        {:error, {:chat_params_halted, reason}}
 
-        critique = response.text || ""
+      {:ok, response, state} ->
+        accept_critique(state, response)
 
+      {:error, _} = err ->
+        err
+    end
+  end
+
+  defp accept_critique(state, response) do
+    case String.trim(response.text || "") do
+      "" ->
+        # Blank critique (starved or empty turn): keep the folded budget,
+        # but don't append an empty assistant message — and still count
+        # the attempt against the reflection cap so a persistently starved
+        # critique can't retry forever.
+        {:ok, state}
+
+      critique ->
         new_messages =
           state.messages ++
             [
@@ -127,18 +150,7 @@ defmodule ExAthena.Modes.Reflexion do
 
         ExAthena.Loop.Events.emit(state.on_event, {:content, critique})
 
-        {:ok, %{state | messages: new_messages, budget: new_budget}}
-
-      {:error, _} = err ->
-        err
+        {:ok, %{state | messages: new_messages}}
     end
   end
-
-  defp extract_cost(nil), do: nil
-
-  defp extract_cost(usage) when is_map(usage) do
-    Map.get(usage, :total_cost) || Map.get(usage, "total_cost")
-  end
-
-  defp extract_cost(_), do: nil
 end

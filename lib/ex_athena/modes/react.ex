@@ -481,7 +481,7 @@ defmodule ExAthena.Modes.ReAct do
            Enum.map(tool_calls, & &1.name)
          ) do
       {:ok, %{text: text, source: source}} ->
-        {text, source} = maybe_summarize_conclusion(state, text, source)
+        {text, source, state} = maybe_summarize_conclusion(state, text, source)
         entry = %{iteration: state.iterations, text: text, source: source}
         Events.emit(state.on_event, {:conclusion, entry})
 
@@ -520,30 +520,39 @@ defmodule ExAthena.Modes.ReAct do
       timeout_ms: 60_000
     }
 
+    # Through the shared inference path: queue slot, chat telemetry, and
+    # the micro-call's usage/cost folded onto the run's budget.
+    # `chat_params: false` — a fixed 256-token utility call must not be
+    # reshaped by conversational per-turn hooks. `starvation: :tolerate` —
+    # a starved distillation is just a failed distillation (keep the blob);
+    # it must not trigger the kernel's max_tokens escalation.
     result =
-      ExAthena.RequestQueue.with_slot(
-        state.meta[:provider_atom],
-        fn -> state.provider_mod.query(request, state.provider_opts) end,
-        state.meta[:queue_opts] || []
+      Inference.call(state, request,
+        purpose: :conclusion_distillation,
+        starvation: :tolerate,
+        chat_params: false
       )
 
     case result do
-      {:ok, %{text: summary}} when is_binary(summary) ->
+      {:ok, %{text: summary}, state} when is_binary(summary) ->
         s = String.trim(summary)
         # Quality gate: a thinking model that ignored /no_think returns a
         # one-word fragment ("Services", "intention") — WORSE than the raw
         # blob. Keep the summary only when it reads like a sentence;
         # otherwise fall back to the (readable) thinking blob.
-        if sentence_like?(s), do: {s, :stated}, else: {blob, :thinking}
+        if sentence_like?(s), do: {s, :stated, state}, else: {blob, :thinking, state}
+
+      {:ok, _response, state} ->
+        {blob, :thinking, state}
 
       _ ->
-        {blob, :thinking}
+        {blob, :thinking, state}
     end
   rescue
-    _ -> {blob, :thinking}
+    _ -> {blob, :thinking, state}
   end
 
-  defp maybe_summarize_conclusion(_state, text, source), do: {text, source}
+  defp maybe_summarize_conclusion(state, text, source), do: {text, source, state}
 
   defp sentence_like?(s) do
     String.length(s) >= 15 and length(String.split(s, ~r/\s+/, trim: true)) >= 3
