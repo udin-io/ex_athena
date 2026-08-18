@@ -32,7 +32,7 @@ defmodule ExAthena.Modes.PlanAndSolve do
 
   @behaviour ExAthena.Loop.Mode
 
-  alias ExAthena.Loop.State
+  alias ExAthena.Loop.{Inference, State}
 
   @planning_addendum """
 
@@ -66,31 +66,27 @@ defmodule ExAthena.Modes.PlanAndSolve do
     request = build_planning_request(state)
 
     # Stream the planning turn like any ReAct turn (otherwise the first
-    # thinking/content appears as one sudden blob), and go through the
-    # request queue like every other provider call.
+    # thinking/content appears as one sudden blob). The shared inference
+    # path supplies the request-queue slot, ChatParams hooks, the chat
+    # telemetry span, and budget folding. The planning turn is a full,
+    # turn-shaped call, so a starved response surfaces the kernel's typed
+    # capacity signal and it retries planning once with an escalated
+    # max_tokens. Mirrors ReAct.
     {stream_cb, counters} = ExAthena.Modes.ReAct.stream_callback(state)
 
-    queued_query = fn ->
-      ExAthena.RequestQueue.with_slot(
-        state.meta[:provider_atom],
-        fn -> planning_call(state, request, stream_cb) end,
-        Keyword.merge(
-          state.meta[:queue_opts] || [],
-          on_wait:
-            ExAthena.Loop.Events.queue_wait_emitter(state.on_event, state.meta[:provider_atom])
-        )
-      )
-    end
+    case Inference.call(state, request,
+           purpose: :planning,
+           starvation: :surface,
+           stream_cb: stream_cb
+         ) do
+      {:halt, reason} ->
+        state =
+          %{state | halted_reason: reason}
+          |> put_finish_reason(:error_halted)
 
-    case queued_query.() do
-      # Output-starved planning turn: no visible plan text was produced
-      # because the whole completion budget went to reasoning. Surface the
-      # kernel's typed capacity signal so it retries planning once with an
-      # escalated max_tokens. Mirrors ReAct.
-      {:ok, %{starvation: %{} = starvation} = response} ->
-        {:error, {:error_thinking_starved, starvation, fold_usage(state, response)}}
+        {:halt, state}
 
-      {:ok, response} ->
+      {:ok, response, state} ->
         streamed_text? = counters != nil and :counters.get(counters, 1) > 0
         streamed_thinking? = counters != nil and :counters.get(counters, 2) > 0
 
@@ -102,12 +98,17 @@ defmodule ExAthena.Modes.PlanAndSolve do
           ExAthena.Loop.Events.emit(state.on_event, {:content, response.text})
         end
 
-        state = fold_usage(state, response)
-
         new_messages =
           state.messages ++ [ExAthena.Messages.assistant(response.text || "")]
 
         {:continue, %{state | messages: new_messages, mode_state: %{phase: :executing}}}
+
+      # Output-starved planning turn: no visible plan text was produced
+      # because the whole completion budget went to reasoning. Surface the
+      # kernel's typed capacity signal so it retries planning once with an
+      # escalated max_tokens. Mirrors ReAct.
+      {:error, {:error_thinking_starved, _info, %State{}}} = starved ->
+        starved
 
       # Context overflow during planning: surface the kernel's typed capacity
       # signal so it force-compacts the existing context and retries planning,
@@ -149,23 +150,7 @@ defmodule ExAthena.Modes.PlanAndSolve do
     }
   end
 
-  defp planning_call(state, request, nil),
-    do: state.provider_mod.query(request, state.provider_opts)
-
-  defp planning_call(state, request, stream_cb),
-    do: state.provider_mod.stream(request, stream_cb, state.provider_opts)
-
-  defp fold_usage(state, response) do
-    budget = state.budget || ExAthena.Budget.new()
-    cost = extract_cost(response.usage)
-    %{state | budget: ExAthena.Budget.add(budget, response.usage, cost)}
+  defp put_finish_reason(state, reason) do
+    put_in(state.meta[:finish_reason], reason)
   end
-
-  defp extract_cost(nil), do: nil
-
-  defp extract_cost(usage) when is_map(usage) do
-    Map.get(usage, :total_cost) || Map.get(usage, "total_cost")
-  end
-
-  defp extract_cost(_), do: nil
 end
