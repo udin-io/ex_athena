@@ -2535,3 +2535,70 @@ button.msg-thinking-summary {
 .term-bg-magenta { background: #3a1a4a; }
 .term-bg-cyan    { background: #133b42; }
 .term-bg-white   { background: #2a2a44; }
+
+/* ── Settings modal ────────────────────────────────────────────────
+   Wider than the new-session modal and scrollable: ~18 fields across
+   five groups do not fit a 420px dialog on a laptop viewport. */
+.modal--wide {
+  width: 620px;
+}
+
+.settings-body {
+  max-height: min(70vh, 640px);
+  overflow-y: auto;
+  gap: 0;
+}
+
+.settings-intro {
+  margin: 0 0 16px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.settings-group + .settings-group {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.settings-group-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-bottom: 2px;
+}
+
+.settings-group-blurb {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+
+.settings-field + .settings-field {
+  margin-top: 12px;
+}
+
+.settings-field .field-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Marks a field that no longer sits at its built-in default, so a user
+   scanning the modal can see what they changed without diffing a file. */
+.settings-badge {
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--accent-dim);
+  color: var(--accent);
+}
+
+.settings-saved {
+  margin-right: auto;
+  font-size: 12px;
+}

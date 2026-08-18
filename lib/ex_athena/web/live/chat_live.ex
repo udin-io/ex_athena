@@ -54,6 +54,11 @@ defmodule ExAthena.Web.Live.ChatLive do
         sessions: [],
         recent_cwds: [],
         show_sessions: false,
+        # Settings (gear) modal
+        show_settings: false,
+        settings_errors: %{},
+        settings_saved: false,
+        settings_values: ExAthena.Web.Settings.values(),
         # New-session modal
         show_modal: false,
         modal_path: "",
@@ -491,6 +496,59 @@ defmodule ExAthena.Web.Live.ChatLive do
        current_action: nil,
        awaiting_question: nil,
        pending_assistant_msg_id: nil
+     )}
+  end
+
+  # --- Settings (gear) modal ---
+  #
+  # The rails these edit were tuned against one local model; every different
+  # model wanted different numbers, and changing one meant editing source.
+
+  def handle_event("show_settings", _params, socket) do
+    {:noreply,
+     assign(socket,
+       show_settings: true,
+       settings_errors: %{},
+       settings_saved: false,
+       settings_values: ExAthena.Web.Settings.values()
+     )}
+  end
+
+  def handle_event("cancel_settings", _params, socket) do
+    {:noreply, assign(socket, show_settings: false)}
+  end
+
+  def handle_event("save_settings", params, socket) do
+    case ExAthena.Web.Settings.save(Map.delete(params, "_target")) do
+      {:ok, _applied} ->
+        {:noreply,
+         assign(socket,
+           settings_errors: %{},
+           settings_saved: true,
+           settings_values: ExAthena.Web.Settings.values()
+         )}
+
+      {:error, errors} ->
+        # Re-read rather than echoing the submission: the valid fields were
+        # applied, so the form must show what actually took effect, not what
+        # was typed into the box that failed.
+        {:noreply,
+         assign(socket,
+           settings_errors: errors,
+           settings_saved: false,
+           settings_values: ExAthena.Web.Settings.values()
+         )}
+    end
+  end
+
+  def handle_event("reset_settings", _params, socket) do
+    :ok = ExAthena.Web.Settings.reset()
+
+    {:noreply,
+     assign(socket,
+       settings_errors: %{},
+       settings_saved: true,
+       settings_values: ExAthena.Web.Settings.values()
      )}
   end
 
@@ -1114,6 +1172,82 @@ defmodule ExAthena.Web.Live.ChatLive do
       </div>
     <% else %>
     <div class="app">
+      <%!-- Settings modal --%>
+      <%= if @show_settings do %>
+        <div class="modal-overlay" phx-window-keydown="cancel_settings" phx-key="Escape">
+          <div class="modal modal--wide">
+            <div class="modal-header">
+              <span class="modal-title">Settings</span>
+              <button type="button" class="modal-close" phx-click="cancel_settings">×</button>
+            </div>
+            <form phx-submit="save_settings">
+              <div class="modal-body settings-body">
+                <p class="settings-intro">
+                  Defaults were tuned against one local model. Change them per model —
+                  applied immediately, and reloaded next start.
+                </p>
+
+                <%= for group <- ExAthena.Web.Settings.schema() do %>
+                  <div class="settings-group">
+                    <div class="settings-group-title">{group.title}</div>
+                    <div :if={group.blurb} class="settings-group-blurb">{group.blurb}</div>
+
+                    <%= for field <- group.fields do %>
+                      <% id = {group.ns, field.key} %>
+                      <% err = Map.get(@settings_errors, id) %>
+                      <div class="settings-field">
+                        <label class="field-label" for={"set-#{group.ns}-#{field.key}"}>
+                          {field.label}
+                          <span :if={ExAthena.Web.Settings.overridden?(id)} class="settings-badge">
+                            changed
+                          </span>
+                        </label>
+                        <%= if field.type == :select do %>
+                          <select
+                            id={"set-#{group.ns}-#{field.key}"}
+                            class="field-input"
+                            name={"#{group.ns}.#{field.key}"}
+                          >
+                            <option
+                              :for={opt <- field.options}
+                              value={opt}
+                              selected={Map.get(@settings_values, id) == opt}
+                            >
+                              {opt}
+                            </option>
+                          </select>
+                        <% else %>
+                          <input
+                            id={"set-#{group.ns}-#{field.key}"}
+                            class={"field-input#{if err, do: " field-input--error", else: ""}"}
+                            type="number"
+                            name={"#{group.ns}.#{field.key}"}
+                            value={Map.get(@settings_values, id)}
+                            min={Map.get(field, :min, 0)}
+                          />
+                        <% end %>
+                        <div class="field-hint">
+                          <span :if={err} class="hint-err">{err}</span>
+                          <span :if={is_nil(err)}>{field.help}</span>
+                        </div>
+                      </div>
+                    <% end %>
+                  </div>
+                <% end %>
+              </div>
+              <div class="modal-footer">
+                <button type="button" class="btn-secondary" phx-click="reset_settings">
+                  Reset to defaults
+                </button>
+                <span :if={@settings_saved} class="hint-ok settings-saved">✓ Saved</span>
+                <button type="button" class="btn-secondary" phx-click="cancel_settings">Close</button>
+                <button type="submit" class="btn-primary">Save</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      <% end %>
+
       <%!-- New-session modal --%>
       <%= if @show_modal do %>
         <div class="modal-overlay" phx-window-keydown="cancel_modal" phx-key="Escape">
@@ -1168,6 +1302,7 @@ defmodule ExAthena.Web.Live.ChatLive do
             <span class="logo-text">ExAthena</span>
           </div>
           <button class="btn-plus" phx-click="show_modal" title="New session">+</button>
+          <button class="btn-plus" phx-click="show_settings" title="Settings">⚙</button>
         </div>
         <div class="theme-row" id="theme-toggle" phx-hook="ThemeToggle">
           <span class="theme-icon">☀</span>
@@ -2597,6 +2732,11 @@ defmodule ExAthena.Web.Live.ChatLive do
         # `enable_thinking: false`, so the micro-call spends its whole budget
         # inside <think> and returns a fragment the quality gate discards. The
         # quality-gated raw thinking blob is already a good conclusion.
+        #
+        # Newer stacks can turn thinking off properly: Ollama 0.32 forwards
+        # `reasoning_effort` on its OpenAI endpoint (verified with qwen3.8 —
+        # `none` returns no reasoning at all). Set it in the settings modal;
+        # once that is the norm this summarizer can be reconsidered.
         conclusion_summarizer: false,
         timeout_ms: 24 * 60 * 60 * 1000
       ]
@@ -2607,6 +2747,7 @@ defmodule ExAthena.Web.Live.ChatLive do
       # Confine filesystem/bash/web access to the opened project by default
       # (override with EX_ATHENA_CONFINE=0).
       |> Keyword.put(:confine, ExAthena.confine_default?())
+      |> merge_provider_opts(ExAthena.Web.Settings.provider_opts())
 
     user_detail = new_detail(:user_text, user_msg.id, %{text: text})
     messages = socket.assigns.messages ++ [user_msg]
@@ -2975,6 +3116,14 @@ defmodule ExAthena.Web.Live.ChatLive do
       _ ->
         false
     end)
+  end
+
+  # Merge settings-derived provider options without clobbering any the caller
+  # already set — an explicit opt always wins over a saved setting.
+  defp merge_provider_opts(opts, []), do: opts
+
+  defp merge_provider_opts(opts, extra) do
+    Keyword.update(opts, :provider_opts, extra, &Keyword.merge(extra, &1))
   end
 
   defp new_detail(type, message_id, payload) do
