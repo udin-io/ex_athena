@@ -149,17 +149,6 @@ defmodule ExAthena.Web.SettingsTest do
     end
   end
 
-  describe "provider_opts/0" do
-    test "sends nothing while reasoning effort is left at default" do
-      assert Settings.provider_opts() == []
-    end
-
-    test "forwards a chosen effort" do
-      {:ok, _} = Settings.save(%{"model.reasoning_effort" => "none"})
-      assert Settings.provider_opts() == [reasoning_effort: :none]
-    end
-  end
-
   # The gap a user found by hand: a rail was wired to Tuning but never given a
   # schema entry, so it was configurable in principle and invisible in the UI.
   # This scans the source for literal Tuning.get(:ns, :key, …) calls and holds

@@ -163,6 +163,49 @@ ExAthena.run(prompt, provider: :claude, model: "claude-sonnet-4-6")
 
 ---
 
+## Reasoning effort
+
+Reasoning models decide for themselves how long to think, and several of them
+decide badly. Qwen3.8 ships pinned at `xhigh` and will spend a whole completion
+budget circling one problem — the behaviour behind
+[#198](https://github.com/udin-io/ex_athena/issues/198) — which in an agent loop
+costs a turn rather than an answer, because the reasoning channel eats the cap
+before the tool call is emitted — the condition the adapter reports as
+`:error_thinking_starved`.
+
+`:reasoning_effort` buys the cap back:
+
+```elixir
+# One run
+ExAthena.run(prompt, provider: :llamacpp, reasoning_effort: :medium)
+
+# Every run
+config :ex_athena, :model, reasoning_effort: :medium
+```
+
+The ladder is `:none`, `:minimal`, `:low`, `:medium`, `:high`, `:xhigh` — req_llm's
+canonical one, so the level means the same thing whichever backend answers. The
+request wins over the config rail; omitting both sends nothing at all, which is
+not the same as sending a level: it leaves the model on its own default. The
+settings modal edits the same rail, so a value set there governs library, TUI and
+browser runs alike.
+
+Three things are worth knowing before pinning a level:
+
+- **The model, not this list, decides what it accepts.** Qwen3.8's chat template
+  understands `low`, `medium` and `xhigh` and raises on the others; llama.cpp
+  passes whatever you send straight into that template. A level a model does not
+  know is a failed request from that server, not a warning from here.
+- **Ollama drops the setting.** It substitutes its own chat template, and the
+  reasoning-effort logic lives in the one it discards, so a level set against an
+  Ollama backend reaches the server and changes nothing. Use `llama-server
+  --jinja` (or vLLM) when the level has to bite.
+- **Providers that have no such concept ignore it.** The Claude Code adapter
+  forwards an explicit allowlist and this is not on it, so setting a level
+  globally never breaks a run against a provider that cannot use it.
+
+---
+
 ## Mock provider (tests)
 
 [`Providers.Mock`](../lib/ex_athena/providers/mock.ex) is a scripted test double:

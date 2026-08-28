@@ -18,6 +18,7 @@ defmodule ExAthena.Request do
     :max_tokens,
     :temperature,
     :top_p,
+    :reasoning_effort,
     :stop,
     :timeout_ms,
     :tools,
@@ -27,6 +28,16 @@ defmodule ExAthena.Request do
     :metadata
   ]
 
+  @typedoc """
+  How hard a reasoning model should think before answering.
+
+  The ladder is req_llm's canonical one, so a value set here means the same
+  thing to every provider that understands the concept. `nil` sends nothing
+  and leaves the model on its own default — which for Qwen3.8 is `xhigh`, the
+  setting that spends whole completion budgets circling (#198).
+  """
+  @type reasoning_effort :: :none | :minimal | :low | :medium | :high | :xhigh
+
   @type t :: %__MODULE__{
           messages: [Message.t()],
           model: String.t() | nil,
@@ -34,6 +45,7 @@ defmodule ExAthena.Request do
           max_tokens: pos_integer() | nil,
           temperature: float() | nil,
           top_p: float() | nil,
+          reasoning_effort: reasoning_effort() | nil,
           stop: [String.t()] | String.t() | nil,
           timeout_ms: pos_integer() | nil,
           tools: [map()] | nil,
@@ -71,6 +83,7 @@ defmodule ExAthena.Request do
       max_tokens: Keyword.get(opts, :max_tokens),
       temperature: Keyword.get(opts, :temperature),
       top_p: Keyword.get(opts, :top_p),
+      reasoning_effort: Keyword.get(opts, :reasoning_effort),
       stop: Keyword.get(opts, :stop),
       # 300s default: local backends prompt-process large agent transcripts
       # for minutes before the first streamed byte — a 60s receive_timeout

@@ -25,6 +25,19 @@ defmodule ExAthena.Providers.ClaudeCodeTest do
     assert ClaudeCode.capabilities(model: "opus") == ClaudeCode.capabilities()
   end
 
+  # A reasoning effort configured globally (`config :ex_athena, :model,
+  # reasoning_effort: …`) applies to whichever provider a run picks. The CLI
+  # has no such knob and rejects options it does not know, so the adapter's
+  # allowlist must swallow it rather than hand it over.
+  test "a request's reasoning effort never reaches the CLI options" do
+    request = %ExAthena.Request{
+      messages: [%ExAthena.Messages.Message{role: :user, content: "hi"}],
+      reasoning_effort: :low
+    }
+
+    refute Keyword.has_key?(ClaudeCode.build_opts(request, []), :reasoning_effort)
+  end
+
   # The model list is sourced from the claude_code SDK's `supported_models`
   # handshake. We wrap that boundary behind a ModelSource behaviour we own so it
   # can be stubbed here without standing up the real CLI.

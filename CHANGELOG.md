@@ -7,6 +7,44 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+### Added
+
+- **`:reasoning_effort` — turn a thinking model down.**
+  ([#198](https://github.com/udin-io/ex_athena/issues/198)) Qwen3.8 ships
+  pinned at `xhigh` and spends whole completion budgets circling one problem,
+  which in an agent loop costs a turn rather than an answer. Runs now take
+  `reasoning_effort:` (`:none` through `:xhigh`, req_llm's canonical ladder)
+  on `ExAthena.query/2`, `stream/3` and `Loop.run/2`, falling back to
+  `config :ex_athena, :model, reasoning_effort: …`. Omitting both sends
+  nothing and leaves the model on its own default, so hosts that configure
+  nothing are unaffected. An unrecognised level degrades to "send nothing"
+  rather than failing the run, and providers with no notion of reasoning
+  effort — the Claude Code CLI — drop it. See
+  [docs/10-providers.md](docs/10-providers.md) for which backends honour it
+  (Ollama does not: it substitutes the chat template the setting lives in).
+
+### Fixed
+
+- **A configured reasoning effort now actually reaches the model.**
+  ([#198](https://github.com/udin-io/ex_athena/issues/198)) req_llm 1.10
+  validated `:reasoning_effort`, translated it, and then encoded the OpenAI
+  chat-completions body without it — the path every local backend uses. The
+  settings-modal knob looked configured and changed nothing. Raises the
+  req_llm floor to 1.15, where upstream fixed it
+  ([agentjido/req_llm#753](https://github.com/agentjido/req_llm/pull/753)),
+  and locks 1.15.0. Three packages move in total — `req_llm` plus the two it
+  pins, `llm_db` and `server_sent_events`. The latter crosses a major
+  (0.2 → 1.1) on the streaming path and is not separable: 1.15.0 requires it.
+
+### Changed
+
+- **The reasoning-effort setting now governs every entry point, not just the
+  browser.** ([#198](https://github.com/udin-io/ex_athena/issues/198)) The
+  chat LiveView was the only caller carrying the `:model` rail into a run, so
+  the TUI ignored it and library callers had to pass
+  `provider_opts: [reasoning_effort: …]` by hand. The ReqLLM adapter resolves
+  the rail itself; `ExAthena.Web.Settings.provider_opts/0` is removed.
+
 ### Security
 
 - **Sandbox fail-closed: confined `bash` refuses to run when no OS sandbox
