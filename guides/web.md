@@ -158,6 +158,7 @@ Every completed turn is auto-saved. The persistence layout under
 ```
 ~/.ex_athena/web/
 ├── secret.key          # stable secret_key_base — generated once
+├── token               # resolved session token — written on every startup
 ├── recent.json         # recently opened project directories (max 20)
 └── sessions/
     ├── <id>.session    # full session binary

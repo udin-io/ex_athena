@@ -95,6 +95,84 @@ defmodule Mix.Tasks.Athena.WebTest do
     end
   end
 
+  describe "persist_token/2" do
+    setup do
+      dir = Path.join(System.tmp_dir!(), "athena_web_tok_#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm_rf!(dir) end)
+      %{dir: dir}
+    end
+
+    test "writes the token exactly as given (no trimming)", %{dir: dir} do
+      path = Path.join(dir, "token")
+      Web.persist_token("  secret  ", path)
+
+      assert File.read!(path) == "  secret  "
+    end
+
+    test "restricts the file mode to 0o600", %{dir: dir} do
+      path = Path.join(dir, "token")
+      Web.persist_token("secret", path)
+
+      assert Bitwise.band(File.stat!(path).mode, 0o777) == 0o600
+    end
+
+    test "creates the parent directory if missing", %{dir: dir} do
+      path = Path.join(dir, "nested/web/token")
+      refute File.dir?(Path.dirname(path))
+
+      Web.persist_token("secret", path)
+
+      assert File.dir?(Path.dirname(path))
+      assert File.read!(path) == "secret"
+    end
+
+    test "defaults to ~/.ex_athena/web/token (expanded for the write)" do
+      default = Path.expand("~/.ex_athena/web/token")
+      on_exit(fn -> File.rm(default) end)
+
+      Web.persist_token("default-token")
+
+      assert File.read!(default) == "default-token"
+      assert Bitwise.band(File.stat!(default).mode, 0o777) == 0o600
+    end
+  end
+
+  describe "announce/2 (end-to-end)" do
+    setup do
+      dir =
+        Path.join(System.tmp_dir!(), "athena_web_announce_#{System.unique_integer([:positive])}")
+
+      on_exit(fn -> File.rm_rf!(dir) end)
+      %{dir: dir}
+    end
+
+    test "token branch: persists the token to the given path", %{dir: dir} do
+      path = Path.join(dir, "token")
+
+      settings = %{
+        ip: {127, 0, 0, 1},
+        host: "127.0.0.1",
+        port: 4000,
+        token: "  sesame  ",
+        log: false
+      }
+
+      Web.announce(settings, path)
+
+      assert File.read!(path) == "  sesame  "
+      assert Bitwise.band(File.stat!(path).mode, 0o777) == 0o600
+    end
+
+    test "nil branch: does not write a token file", %{dir: dir} do
+      path = Path.join(dir, "token")
+      settings = %{ip: {127, 0, 0, 1}, host: "127.0.0.1", port: 4000, token: nil, log: false}
+
+      Web.announce(settings, path)
+
+      refute File.exists?(path)
+    end
+  end
+
   describe "endpoint_config/1" do
     test "propagates bind ip and port, and never disables the origin check" do
       config = Web.settings!([], %{}) |> Web.endpoint_config()

@@ -37,6 +37,11 @@ defmodule Mix.Tasks.Athena.Web do
 
   use Mix.Task
 
+  # Displayed to the user and used as the default token path. Kept in `~` form
+  # so the startup banner reads `Token saved to ~/.ex_athena/web/token`; the
+  # file write itself expands the path.
+  @default_token_path "~/.ex_athena/web/token"
+
   @impl Mix.Task
   def run(argv) do
     Mix.Task.run("app.start", [])
@@ -124,7 +129,18 @@ defmodule Mix.Tasks.Athena.Web do
     ]
   end
 
-  defp announce(settings) do
+  @doc """
+  Prints the startup URL for the resolved settings and, when a token is in
+  play, persists it to `token_path` (so it can be recovered without the
+  console output) and says where.
+
+  Public seam for tests: `token_path` is injectable (defaults to
+  `~/.ex_athena/web/token`) so a test can drive this end-to-end against a
+  temp dir and assert on the side effect that matters — the token branch
+  writes the token file, the nil branch does not.
+  """
+  @spec announce(map(), Path.t()) :: :ok
+  def announce(settings, token_path \\ @default_token_path) do
     url = "http://#{url_host(settings)}:#{settings.port}"
 
     case settings.token do
@@ -133,6 +149,8 @@ defmodule Mix.Tasks.Athena.Web do
 
       token ->
         Mix.shell().info("ExAthena web UI → #{url}/?token=#{token}")
+        persist_token(token, token_path)
+        Mix.shell().info("Token saved to #{token_path}")
 
         unless loopback?(settings.ip) do
           Mix.shell().info(
@@ -182,6 +200,21 @@ defmodule Mix.Tasks.Athena.Web do
 
   defp blank_to_nil(""), do: nil
   defp blank_to_nil(value), do: value
+
+  # Write the resolved token to a file so it can be recovered later without
+  # the console output. The path is injectable so tests can target a temp dir.
+  @doc """
+  Writes the token — exactly as the server uses it, unmodified — to `path`,
+  creating parent directories as needed, and restricts the file mode to
+  `0o600`. Defaults to `~/.ex_athena/web/token`; a `~`-prefixed path is
+  expanded before writing.
+  """
+  def persist_token(token, path \\ @default_token_path) do
+    expanded = Path.expand(path)
+    File.mkdir_p!(Path.dirname(expanded))
+    File.write!(expanded, token)
+    File.chmod!(expanded, 0o600)
+  end
 
   # Persist the secret_key_base so session cookies survive restarts.
   # A fresh random key on every start causes the old session cookie to fail
