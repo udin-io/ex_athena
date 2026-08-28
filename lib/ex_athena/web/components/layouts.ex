@@ -33,93 +33,6 @@ defmodule ExAthena.Web.Layouts do
           import {Socket} from "phoenix"
           import {LiveSocket} from "phoenix_live_view"
 
-          // ── Minimal Markdown renderer ──────────────────────────────────────
-          function escHtml(s) {
-            return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
-          }
-
-          function inlineMd(s) {
-            // inline code first (protect from bold/italic)
-            s = s.replace(/`([^`]+)`/g, (_,c) => `<code class="md-code">${escHtml(c)}</code>`)
-            // bold+italic, bold, italic
-            s = s.replace(/\*\*\*([^*]+)\*\*\*/g, "<strong><em>$1</em></strong>")
-            s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-            s = s.replace(/\*([^*]+)\*/g, "<em>$1</em>")
-            // links
-            s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g,
-              '<a class="md-link" href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
-            return s
-          }
-
-          function renderMarkdown(raw) {
-            // Extract fenced code blocks before line processing
-            const blocks = []
-            let text = raw.replace(/```(\w*)\n?([\s\S]*?)```/gm, (_, lang, code) => {
-              const idx = blocks.length
-              const label = lang ? `<span class="md-fence-lang">${escHtml(lang)}</span>` : ""
-              blocks.push(
-                `<div class="md-fence">${label}<pre><code>${escHtml(code.trim())}</code></pre></div>`
-              )
-              return `\x00BLOCK${idx}\x00`
-            })
-
-            const lines = text.split("\n")
-            let html = ""
-            let listKind = null
-
-            const closeList = () => {
-              if (listKind) { html += `</${listKind}>` ; listKind = null }
-            }
-
-            for (const line of lines) {
-              // Restore code blocks
-              const restored = line.replace(/\x00BLOCK(\d+)\x00/g, (_, i) => blocks[+i])
-
-              // Headings
-              const h = restored.match(/^(#{1,3}) (.+)$/)
-              if (h) {
-                closeList()
-                const n = h[1].length
-                html += `<h${n} class="md-h${n}">${inlineMd(h[2])}</h${n}>`
-                continue
-              }
-              // Unordered list
-              const ul = restored.match(/^[-*] (.+)$/)
-              if (ul) {
-                if (listKind !== "ul") { closeList(); html += `<ul class="md-ul">`; listKind = "ul" }
-                html += `<li>${inlineMd(ul[1])}</li>`
-                continue
-              }
-              // Ordered list
-              const ol = restored.match(/^\d+\. (.+)$/)
-              if (ol) {
-                if (listKind !== "ol") { closeList(); html += `<ol class="md-ol">`; listKind = "ol" }
-                html += `<li>${inlineMd(ol[1])}</li>`
-                continue
-              }
-              // Horizontal rule
-              if (/^---+$/.test(restored.trim())) {
-                closeList(); html += `<hr class="md-hr">` ; continue
-              }
-              // Block restore (fence)
-              if (restored.includes("<div class=\"md-fence\"")) {
-                closeList(); html += restored ; continue
-              }
-              // Empty line
-              if (restored.trim() === "") {
-                closeList(); html += `<br>` ; continue
-              }
-              // Normal line
-              if (listKind) {
-                html += `<li>${inlineMd(restored)}</li>`
-              } else {
-                html += `<span>${inlineMd(restored)}</span><br>`
-              }
-            }
-            closeList()
-            return html
-          }
-
           // ── LiveView hooks ─────────────────────────────────────────────────
           const THEME_KEY = "ex_athena.theme"
           const applyTheme = (light) => {
@@ -201,15 +114,6 @@ defmodule ExAthena.Web.Layouts do
               destroyed() {
                 this.ro && this.ro.disconnect()
                 this.term && this.term.dispose()
-              }
-            },
-
-            MarkdownRender: {
-              mounted()  { this.render() },
-              updated()  { this.render() },
-              render() {
-                const raw = this.el.dataset.raw
-                if (raw !== undefined) this.el.innerHTML = renderMarkdown(raw)
               }
             },
 
