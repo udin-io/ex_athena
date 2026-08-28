@@ -5,9 +5,37 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.20.0 — One instrumented inference path, configurable rails & a settings UI
 
 ### Added
+
+- **The local-model rails are configuration, not module attributes.**
+  ([#199](https://github.com/udin-io/ex_athena/pull/199)) Running the
+  verification rails from #193 against more models showed the rails
+  themselves were the problem: every model wanted different numbers, and
+  changing one meant editing a module attribute and recompiling. Every
+  tunable now reads from `config :ex_athena, :model, …` through
+  `ExAthena.Tuning`, and the web UI edits them in a settings modal —
+  including the top-level run budgets. Malformed config degrades to the
+  built-in default rather than failing a run.
+
+- **Orchestrate rails that catch the three ways a local coordinator drifts.**
+  (#199) A verification audit now runs against the **first user turn
+  verbatim** rather than the orchestrator's own restatement — a paraphrase
+  is where a dropped requirement goes missing, and the live failure that
+  prompted this ran 37 iterations with zero compaction, so the request was
+  in context throughout and simply was never re-read. Two further rails
+  fire on repetition rather than first use, since one instance of either can
+  be a sound choice: dictating an implementation in a brief instead of
+  delegating it (fires on the second), and re-delegating the same objective
+  (fires on the third, matched on a normalised opening-line prefix).
+
+- **A run's structural events survive a LiveView reconnect.** (#199)
+  `RunServer` retains up to 2,000 structural events so a client that
+  reattaches mid-run can rebuild the window it missed, replayed oldest-first
+  in wire order. The cap is a runaway backstop — an orchestrate run is
+  uncapped by design — and drops from the front, where the events are least
+  useful to a reattaching client.
 
 - **`:reasoning_effort` — turn a thinking model down.**
   ([#198](https://github.com/udin-io/ex_athena/issues/198)) Qwen3.8 ships
@@ -25,6 +53,55 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **Provider errors are classified honestly instead of collapsing to
+  `:server_error`.** ([#200](https://github.com/udin-io/ex_athena/pull/200),
+  closes [#155](https://github.com/udin-io/ex_athena/issues/155)) Every
+  non-HTTP failure — a connection refused, a DNS failure, a TLS error, a
+  receive timeout, a stream that died mid-flight — was reported as
+  `:server_error`, so a host could not tell a dead endpoint from an
+  overloaded one. Transport failures now classify as `:timeout` or
+  `:transport` by unwrapping req_llm's wrapped cause, and `ExAthena.Error`
+  carries a new `retry_after_ms` field. The loop's single transient retry
+  honours a server's `Retry-After` header (both the delta-seconds and
+  HTTP-date forms), capped at 30s so a hostile or misconfigured header
+  cannot stall a run, falling back to the previous 2s wait. The
+  context-overflow sniff no longer reads the request body — prompts
+  legitimately mention "context window" — and no longer truncates at 2,000
+  characters, where it could miss the phrase it was looking for.
+
+- **The session sidebar was ordered by day-of-month.** (#199) Session
+  headers were sorted on `%DateTime{}` structs in raw term order, which
+  compares key-by-key in ascending key name — reaching `:day` long before
+  `:month` or `:year`. `~U[2026-05-31]` therefore sorted above
+  `~U[2026-08-10]`. Sorting goes through the `DateTime` module; a header
+  with a missing or malformed timestamp sorts last instead of raising.
+
+- **A run's tool history is recovered rather than eroded on reload.** (#199)
+  Tool history was persisted twice, inconsistently: the live LiveView wrote
+  `tool_events`, while the durable path that runs whether or not a browser is
+  attached hardcoded `tool_events: []`. Reloading mid-run rebuilt the stream
+  from that empty field and wrote the truncated result back over the full
+  one, eroding it further on each reload. The full transcript always survived
+  in `ex_snapshot`, and is now recovered at read time — so **existing
+  sessions become readable with no migration**. A turn's snapshot holds the
+  whole conversation up to that point, so the walk is chronological and
+  attributes each call to the first turn that ran it.
+
+- **Asking whether a run is alive no longer crashes the caller.** (#199)
+  `whereis` followed by `call` is a time-of-check/time-of-use race: a server
+  that retires in between makes the call exit `:noproc`. A gone server is the
+  answer to the question, so it is returned rather than raised.
+
+- **Plan phase names the part of a bash chain that lost.** (#199) A denial
+  that said only "not recognized as read-only" told a model nothing it could
+  act on, and sent a live subagent into a retry loop re-sending the same
+  shape three times. Denials now name the offending segment and the construct
+  that tripped — command substitution, a redirect, a specific write pattern.
+  `cd` also joins the read-only allowlist: it moves the shell's own working
+  directory and grants no reach (`cat` already takes absolute paths), but its
+  absence denied every `cd repo && <read-only cmd>` chain, which is how
+  models habitually scope a command to a project.
+
 - **A configured reasoning effort now actually reaches the model.**
   ([#198](https://github.com/udin-io/ex_athena/issues/198)) req_llm 1.10
   validated `:reasoning_effort`, translated it, and then encoded the OpenAI
@@ -38,6 +115,38 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
+- **Every provider call a run makes now goes through one instrumented path.**
+  ([#201](https://github.com/udin-io/ex_athena/pull/201), closes
+  [#136](https://github.com/udin-io/ex_athena/issues/136)) ReAct's main turn
+  was the only call with the full treatment; PlanAndSolve's planning turn,
+  Reflexion's critique, the conclusion-distillation micro-call and the
+  compaction summary each hand-rolled their own subset and diverged.
+  `ExAthena.Loop.Inference.call/3` applies all of it uniformly: the request
+  queue (so a compaction call cannot oversubscribe a 1-slot local GPU while a
+  sibling worker is mid-call), the `[:ex_athena, :chat]` telemetry span, and
+  budget accounting.
+
+  **Two host-visible consequences.** ChatParams hooks now fire for
+  mode-internal inference, not just the main turn — a host that adjusts
+  params or halts in a `ChatParams` hook will see invocations it did not see
+  before, each tagged with a `:purpose` (`:turn`, `:planning`,
+  `:reflection`, `:conclusion_distillation`, `:compaction_summary`) so it can
+  discriminate. And reported cost goes **up** without spend going up: the
+  reflection, distillation and summary calls were always billed by the
+  provider, but only the main turn's usage reached `state.budget`. Utility
+  calls opt out of the hooks (`chat_params: false`) so a fixed 256-token call
+  is not reshaped by conversational per-turn logic, and out-of-output
+  micro-calls no longer trigger the kernel's `max_tokens` escalation, which
+  would 4x the main turn's completion cap for the rest of the run.
+
+- **BREAKING for cost and latency expectations — two loop defaults moved.**
+  (#199) `:max_iterations` goes 25 → 55 and `:tool_timeout_ms` goes 60s →
+  120s, tuned against local 27B-class models where the old ceilings cut runs
+  off mid-task and killed legitimately slow tool calls. Hosts that relied on
+  the old numbers as a cost ceiling should set them explicitly on
+  `ExAthena.Loop.run/2` — the same run can now take roughly twice as many
+  iterations before it stops itself.
+
 - **The reasoning-effort setting now governs every entry point, not just the
   browser.** ([#198](https://github.com/udin-io/ex_athena/issues/198)) The
   chat LiveView was the only caller carrying the `:model` rail into a run, so
@@ -46,6 +155,29 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   the rail itself; `ExAthena.Web.Settings.provider_opts/0` is removed.
 
 ### Security
+
+- **Stored XSS in the web chat: assistant Markdown was rendered through
+  `innerHTML`.** ([#187](https://github.com/udin-io/ex_athena/pull/187))
+  The client-side Markdown renderer interpolated model text, link labels and
+  link destinations into HTML strings and assigned the result to
+  `innerHTML`. Only code spans and fenced blocks were escaped, so any model
+  output — including output persisted in a session and re-rendered on
+  reload — could create executable DOM. Rendering moved server-side to
+  `ExAthena.Web.Markdown`, which is safe by construction: it emits only a
+  fixed set of hardcoded tags and classes, escapes every dynamic value
+  through `Phoenix.HTML.Safe`, and displays raw HTML as text. Link
+  destinations are restricted to HTTP(S), `mailto:` and same-origin relative
+  targets, with control characters, entity-encoded schemes and
+  quote-breaking destinations rejected before parsing; anything else renders
+  as text with no anchor. Accepted links get fixed `target="_blank"` and
+  `rel="noopener noreferrer"`. The `MarkdownRender` hook and the `data-raw`
+  transport are gone, and no `innerHTML` assignment remains in the web UI.
+  Reported and fixed by [@Ou4y](https://github.com/Ou4y).
+
+- **`EX_ATHENA_SEARCH_BACKEND` no longer creates atoms from an env var.**
+  (#199) The runtime read it with `String.to_atom/1`. An env var is external
+  input and the atom table is never garbage-collected, so this allowed
+  unbounded atom creation; restored to `String.to_existing_atom/1`.
 
 - **Sandbox fail-closed: confined `bash` refuses to run when no OS sandbox
   helper exists.** (#135) Previously a confined run (`confine: true` /
