@@ -83,4 +83,70 @@ defmodule ExAthena.Providers.ReqLLMReasoningEffortTest do
       refute Keyword.has_key?(opts, :reasoning_effort)
     end
   end
+
+  describe "the chosen effort on the wire" do
+    setup do
+      bypass = Bypass.open()
+
+      opts = [
+        openai_compatible_backend: :llamacpp,
+        req_llm_provider_tag: "openai",
+        base_url: "http://localhost:#{bypass.port}"
+      ]
+
+      {:ok, bypass: bypass, opts: opts}
+    end
+
+    # Captures the JSON the adapter actually posts and answers with a minimal
+    # well-formed completion so response decoding stays out of the way.
+    defp capture_body(bypass) do
+      test = self()
+
+      Bypass.expect_once(bypass, "POST", "/v1/chat/completions", fn conn ->
+        {:ok, raw, conn} = Plug.Conn.read_body(conn)
+        send(test, {:wire_body, Jason.decode!(raw)})
+
+        body =
+          Jason.encode!(%{
+            "id" => "chatcmpl-1",
+            "object" => "chat.completion",
+            "created" => 1_700_000_000,
+            "model" => "qwen3.8-27b",
+            "choices" => [
+              %{
+                "index" => 0,
+                "message" => %{"role" => "assistant", "content" => "ok"},
+                "finish_reason" => "stop"
+              }
+            ],
+            "usage" => %{"prompt_tokens" => 1, "completion_tokens" => 1, "total_tokens" => 2}
+          })
+
+        conn
+        |> Plug.Conn.put_resp_content_type("application/json")
+        |> Plug.Conn.resp(200, body)
+      end)
+
+      fn ->
+        assert_receive {:wire_body, wire}, 5_000
+        wire
+      end
+    end
+
+    test "a chosen effort is sent on the chat-completions body",
+         %{bypass: bypass, opts: opts} do
+      wire = capture_body(bypass)
+
+      assert {:ok, _response} = Adapter.query(request(reasoning_effort: :low), opts)
+      assert wire.()["reasoning_effort"] == "low"
+    end
+
+    test "nothing is sent when the caller names no effort",
+         %{bypass: bypass, opts: opts} do
+      wire = capture_body(bypass)
+
+      assert {:ok, _response} = Adapter.query(request([]), opts)
+      refute Map.has_key?(wire.(), "reasoning_effort")
+    end
+  end
 end

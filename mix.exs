@@ -36,7 +36,10 @@ defmodule ExAthena.MixProject do
       {:mox, "~> 1.0", only: :test},
       {:erlexec, "~> 2.0"},
       {:req, "~> 0.5"},
-      {:req_llm, "~> 1.10"},
+      # 1.15 is the floor: earlier versions accept :reasoning_effort and then
+      # drop it before encoding an OpenAI chat-completions body (agentjido/req_llm#753),
+      # which silently disables the knob for every local model we serve.
+      {:req_llm, "~> 1.15"},
       {:jason, "~> 1.4"},
       {:nimble_options, "~> 1.1"},
       {:telemetry, "~> 1.3"},
