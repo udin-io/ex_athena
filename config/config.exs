@@ -53,6 +53,14 @@ config :ex_athena, max_agent_depth: 5
 #
 # config :ex_athena, :bash,
 #   max_output_chars: 16_000           # command output cap (head 75% / tail 25%)
+#
+# config :ex_athena, :model,
+#   max_completion_tokens: 8_192,      # per-turn completion cap when a request names none
+#   reasoning_effort: :medium          # :none | :minimal | :low | :medium | :high | :xhigh
+#
+# Leave reasoning_effort unset to send nothing and let the model keep its own
+# default — which for Qwen3.8 is `xhigh`, high enough to spend a whole
+# completion budget thinking in circles. See docs/10-providers.md.
 
 import_config "#{config_env()}.exs"
 
