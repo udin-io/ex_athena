@@ -26,7 +26,7 @@ defmodule ExAthena.Compactors.Summary do
   @behaviour ExAthena.Compactor
   @behaviour ExAthena.Compactor.Stage
 
-  alias ExAthena.{Budget, Compactor, Messages, Request}
+  alias ExAthena.{Compactor, Messages, Request}
   alias ExAthena.Compactor.Config
   alias ExAthena.Loop.State
   alias ExAthena.Messages.Message
@@ -103,7 +103,7 @@ defmodule ExAthena.Compactors.Summary do
 
       _ ->
         case summarise(summarisable, state) do
-          {:ok, summary_text, summary_usage} ->
+          {:ok, summary_text, new_budget} ->
             summary_msg = %Message{
               role: :assistant,
               content: summary_text,
@@ -111,8 +111,6 @@ defmodule ExAthena.Compactors.Summary do
             }
 
             new_messages = prefix ++ [summary_msg] ++ pinned_in_middle ++ suffix
-
-            new_budget = Budget.add(state.budget || Budget.new(), summary_usage, nil)
 
             metadata = %{
               before: estimate.tokens,
@@ -152,20 +150,26 @@ defmodule ExAthena.Compactors.Summary do
       timeout_ms: 30_000
     }
 
-    # Through the GPU queue: a compaction call must not oversubscribe a
-    # 1-slot local backend while a sibling worker is mid-call.
+    # Through the shared inference path: GPU-queue slot (a compaction call
+    # must not oversubscribe a 1-slot local backend while a sibling worker
+    # is mid-call), chat telemetry, and the summary call's usage/cost
+    # folded onto the run's budget. `chat_params: false` — a fixed
+    # micro-budget utility call must not be reshaped by conversational
+    # per-turn hooks. `starvation: :tolerate` — a starved summary is just
+    # an empty summary (`{:error, :empty_summary}` below); it must not
+    # trigger the kernel's max_tokens escalation.
     result =
-      ExAthena.RequestQueue.with_slot(
-        state.meta[:provider_atom],
-        fn -> state.provider_mod.query(request, state.provider_opts) end,
-        state.meta[:queue_opts] || []
+      ExAthena.Loop.Inference.call(state, request,
+        purpose: :compaction_summary,
+        starvation: :tolerate,
+        chat_params: false
       )
 
     case result do
-      {:ok, %{text: text} = response} when is_binary(text) and text != "" ->
-        {:ok, text, response.usage}
+      {:ok, %{text: text}, folded_state} when is_binary(text) and text != "" ->
+        {:ok, text, folded_state.budget}
 
-      {:ok, _} ->
+      {:ok, _response, _state} ->
         {:error, :empty_summary}
 
       {:error, reason} ->
