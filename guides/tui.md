@@ -1,7 +1,7 @@
 # Terminal chat (mix athena.chat)
 
 `mix athena.chat` drops you into a full-screen TUI powered by
-[ExRatatui](https://github.com/livebook-dev/ex_ratatui). It connects to
+[ExRatatui](https://github.com/mcass19/ex_ratatui). It connects to
 the ExAthena agent loop, streams tokens live, and surfaces tool calls and
 their results inline.
 
