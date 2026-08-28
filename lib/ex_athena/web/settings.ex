@@ -653,24 +653,6 @@ defmodule ExAthena.Web.Settings do
     :ok
   end
 
-  @doc """
-  Provider options implied by the current settings, ready to merge into a
-  run's opts.
-
-  `reasoning_effort: :default` means "send nothing" — the model's own default
-  is not the same as any named level, and forwarding a level the provider
-  ignores is not free (Ollama's OpenAI endpoint accepts the key and changes
-  behaviour; other backends may reject an unknown one).
-  """
-  @spec provider_opts() :: keyword()
-  def provider_opts do
-    case ExAthena.Tuning.get(:model, :reasoning_effort, :default) do
-      :default -> []
-      effort when is_atom(effort) -> [reasoning_effort: effort]
-      _ -> []
-    end
-  end
-
   @doc "Where settings are stored. Override with `config :ex_athena, :settings_path`."
   @spec path() :: String.t()
   def path, do: Application.get_env(:ex_athena, :settings_path, @default_path)

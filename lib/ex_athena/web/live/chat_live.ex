@@ -2754,7 +2754,6 @@ defmodule ExAthena.Web.Live.ChatLive do
       # Confine filesystem/bash/web access to the opened project by default
       # (override with EX_ATHENA_CONFINE=0).
       |> Keyword.put(:confine, ExAthena.confine_default?())
-      |> merge_provider_opts(ExAthena.Web.Settings.provider_opts())
 
     user_detail = new_detail(:user_text, user_msg.id, %{text: text})
     messages = socket.assigns.messages ++ [user_msg]
@@ -3132,12 +3131,6 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   # Merge settings-derived provider options without clobbering any the caller
   # already set — an explicit opt always wins over a saved setting.
-  defp merge_provider_opts(opts, []), do: opts
-
-  defp merge_provider_opts(opts, extra) do
-    Keyword.update(opts, :provider_opts, extra, &Keyword.merge(extra, &1))
-  end
-
   defp new_detail(type, message_id, payload) do
     %{
       id: unique_id(),
