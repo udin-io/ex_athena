@@ -133,6 +133,11 @@ defmodule ExAthena do
     * `:messages` — list of canonical messages; `prompt` is prepended as a user
       message if given.
     * `:max_tokens`, `:temperature`, `:top_p`, `:stop` — optional sampling knobs.
+    * `:reasoning_effort` — how hard a reasoning model should think:
+      `:none`, `:minimal`, `:low`, `:medium`, `:high` or `:xhigh`. Omit it to
+      leave the model on its own default. Falls back to
+      `config :ex_athena, :model, reasoning_effort: …`; providers that have no
+      notion of reasoning effort ignore it rather than failing.
     * `:timeout_ms` — request timeout (default 300_000). The 5-minute default
       is deliberate: local backends spend minutes prompt-processing a large
       agent transcript before the first byte comes back.

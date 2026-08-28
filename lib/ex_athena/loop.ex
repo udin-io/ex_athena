@@ -22,8 +22,9 @@ defmodule ExAthena.Loop do
       `:claude`, `:mock`, `:req_llm`) or a module implementing
       `ExAthena.Provider`.
     * `:model`, `:system_prompt`, `:messages`, `:temperature`, `:top_p`,
-      `:max_tokens`, `:stop`, `:timeout_ms`, `:tool_choice`,
-      `:response_format`, `:provider_opts`, `:metadata`, `:images` —
+      `:max_tokens`, `:reasoning_effort`, `:stop`, `:timeout_ms`,
+      `:tool_choice`, `:response_format`, `:provider_opts`, `:metadata`,
+      `:images` —
       forwarded to `ExAthena.Request.new/2`. See `ExAthena.query/2` for
       the `:images` shorthand (inline and URL images).
     * `:tools` — list of modules implementing `ExAthena.Tool` or `:all`

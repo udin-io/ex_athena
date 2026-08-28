@@ -53,6 +53,13 @@ defmodule ExAthena.Providers.ReqLLM do
   # from eating the whole context.
   @default_completion_tokens 8_192
 
+  # req_llm's canonical effort ladder, minus its `:default` member — which is
+  # a "leave it alone" sentinel rather than a level, and is expressed here by
+  # sending nothing at all. Models honour their own subset (Qwen3.8's template
+  # accepts only low/medium/xhigh and raises on the rest), so the server, not
+  # this list, is the authority on what a given model will take.
+  @reasoning_efforts [:none, :minimal, :low, :medium, :high, :xhigh]
+
   # Matches the ProviderSpec discovery default. Long enough that opening a model
   # picker repeatedly costs one request, short enough that `ollama pull` shows up
   # without restarting the app.
@@ -514,6 +521,7 @@ defmodule ExAthena.Providers.ReqLLM do
         # server-default-hot. Explicit request values always win.
         temperature: request.temperature || 0.6,
         top_p: request.top_p || 0.95,
+        reasoning_effort: reasoning_effort(request),
         stop: request.stop,
         tools: to_req_llm_tools(request.tools),
         tool_choice: request.tool_choice,
@@ -527,6 +535,31 @@ defmodule ExAthena.Providers.ReqLLM do
     merged = fold_extra_headers(merged, Keyword.get(opts, :extra_headers))
     {:ok, merged}
   end
+
+  # Reasoning effort resolves per request first, then from the `:model` rail
+  # that the settings modal writes — the same order every other rail uses, so
+  # a host configures it once and every entry point (library, TUI, web) sends
+  # it, while a single call can still ask for cheaper thinking.
+  #
+  # Anything unrecognised — a typo in config, a level a future model invents —
+  # resolves to `nil` and is dropped by the reject below. `ExAthena.Tuning`
+  # degrades malformed config rather than crashing a run, and a wrong effort
+  # is not worth losing a run over; the settings modal validates on the way in.
+  defp reasoning_effort(%Request{reasoning_effort: nil}),
+    do: normalize_effort(Tuning.get(:model, :reasoning_effort, nil))
+
+  defp reasoning_effort(%Request{reasoning_effort: effort}), do: normalize_effort(effort)
+
+  # `:default` is the settings modal's "say nothing" choice: the model's own
+  # default is not a level, so naming one would change behaviour rather than
+  # leave it alone.
+  defp normalize_effort(effort) when effort in @reasoning_efforts, do: effort
+
+  defp normalize_effort(effort) when is_binary(effort) do
+    Enum.find(@reasoning_efforts, &(Atom.to_string(&1) == effort))
+  end
+
+  defp normalize_effort(_effort), do: nil
 
   # Converts a string-to-string map of extra headers into the `req_http_options`
   # keyword list that req_llm uses to inject headers into Req requests.
