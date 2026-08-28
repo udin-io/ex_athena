@@ -496,7 +496,7 @@ defmodule ExAthena.Providers.ReqLLMTest do
       request = %Request{messages: [], model: "test-model"}
       callback = fn _event -> :ok end
 
-      assert {:error, %ExAthena.Error{kind: :server_error}} =
+      assert {:error, %ExAthena.Error{kind: :transport}} =
                Adapter.consume_stream(sr, callback, request)
     end
 
@@ -519,7 +519,7 @@ defmodule ExAthena.Providers.ReqLLMTest do
       request = %Request{messages: [], model: "test-model"}
       callback = fn _event -> :ok end
 
-      assert {:error, %ExAthena.Error{kind: :server_error}} =
+      assert {:error, %ExAthena.Error{kind: :transport}} =
                Adapter.consume_stream(sr, callback, request)
     end
 
@@ -542,7 +542,7 @@ defmodule ExAthena.Providers.ReqLLMTest do
       request = %Request{messages: [], model: "test-model"}
       callback = fn _event -> :ok end
 
-      assert {:error, %ExAthena.Error{kind: :server_error}} =
+      assert {:error, %ExAthena.Error{kind: :timeout}} =
                Adapter.consume_stream(sr, callback, request)
     end
   end

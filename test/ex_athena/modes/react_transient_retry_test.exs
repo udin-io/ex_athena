@@ -23,4 +23,28 @@ defmodule ExAthena.Modes.ReactTransientRetryTest do
     # an execution error rather than crashing.
     assert result.finish_reason == :error_during_execution
   end
+
+  test "the transient-retry backoff honors the server's Retry-After hint" do
+    # Without a hint the retry sleeps the 2s default. A rate-limited error
+    # carrying retry_after_ms: 0 must retry immediately — the whole run
+    # (error → retry → error → halt) finishing well under 2s proves the
+    # server hint, not the hardcoded default, drove the backoff.
+    err = %Error{kind: :rate_limited, message: "slow down", retry_after_ms: 0}
+
+    started = System.monotonic_time(:millisecond)
+
+    assert {:ok, %Result{} = result} =
+             Loop.run("hi",
+               provider: :mock,
+               mock: [error: err],
+               memory: false,
+               conclusions: false,
+               max_iterations: 2
+             )
+
+    elapsed = System.monotonic_time(:millisecond) - started
+
+    assert result.finish_reason == :error_during_execution
+    assert elapsed < 1_500, "expected an immediate retry, took #{elapsed}ms"
+  end
 end
