@@ -2,16 +2,18 @@ defmodule ExAthena.Chat.Tui.RunnerTest do
   use ExUnit.Case, async: false
 
   alias ExAthena.Chat.{Session, Tui.Runner}
+  alias ExAthena.Config
+
+  @provider_keys [:ollama, :llamacpp, :exo, :openai, :claude]
 
   setup do
-    original = Application.get_env(:ex_athena, :ollama)
+    originals = Map.new(@provider_keys, &{&1, Application.get_env(:ex_athena, &1)})
 
     on_exit(fn ->
-      if original do
-        Application.put_env(:ex_athena, :ollama, original)
-      else
-        Application.delete_env(:ex_athena, :ollama)
-      end
+      Enum.each(originals, fn
+        {key, nil} -> Application.delete_env(:ex_athena, key)
+        {key, original} -> Application.put_env(:ex_athena, key, original)
+      end)
     end)
 
     :ok
@@ -58,6 +60,74 @@ defmodule ExAthena.Chat.Tui.RunnerTest do
 
       assert opts[:provider] == :llamacpp
       assert opts[:base_url] == "http://localhost:8080"
+    end
+  end
+
+  describe "build_run_opts/2 — base_url is local-daemon only" do
+    for provider <- [:openai, :claude] do
+      test "a #{provider} run carries no base_url when nothing is configured" do
+        Application.delete_env(:ex_athena, unquote(provider))
+
+        session = Session.new(provider: unquote(provider), model: "some-cloud-model")
+        opts = Runner.build_run_opts(session, fn _ -> :ok end)
+
+        assert opts[:provider] == unquote(provider)
+        refute Keyword.has_key?(opts, :base_url)
+      end
+    end
+
+    test "a cloud run is unaffected by a configured Ollama base_url" do
+      Application.put_env(:ex_athena, :ollama, base_url: "http://my-ollama.lan:11434")
+      Application.delete_env(:ex_athena, :openai)
+
+      session = Session.new(provider: :openai, model: "some-cloud-model")
+      opts = Runner.build_run_opts(session, fn _ -> :ok end)
+
+      refute Keyword.has_key?(opts, :base_url)
+    end
+
+    test "a configured cloud base_url is left for the provider layer to resolve" do
+      Application.put_env(:ex_athena, :openai, base_url: "https://proxy.internal/v1")
+
+      session = Session.new(provider: :openai, model: "some-cloud-model")
+      opts = Runner.build_run_opts(session, fn _ -> :ok end)
+
+      refute Keyword.has_key?(opts, :base_url)
+
+      # The Runner deliberately omits it; `run/2` resolves it from app config,
+      # so the configured URL — never a localhost default — is what ships.
+      assert Config.provider_opts(Config.provider_module(:openai), opts, :openai)[:base_url] ==
+               "https://proxy.internal/v1"
+    end
+
+    for {provider, url} <- [
+          {:ollama, "http://localhost:11434"},
+          {:llamacpp, "http://localhost:8080"},
+          {:exo, "http://localhost:52415"}
+        ] do
+      test "#{provider} still gets its stock default when unconfigured" do
+        Application.delete_env(:ex_athena, unquote(provider))
+
+        session = Session.new(provider: unquote(provider), model: "local-model")
+        opts = Runner.build_run_opts(session, fn _ -> :ok end)
+
+        assert opts[:base_url] == unquote(url)
+      end
+
+      test "#{provider} keeps an explicitly configured base_url" do
+        Application.put_env(:ex_athena, unquote(provider), base_url: "http://box.lan:9999")
+
+        session = Session.new(provider: unquote(provider), model: "local-model")
+        opts = Runner.build_run_opts(session, fn _ -> :ok end)
+
+        refute Keyword.has_key?(opts, :base_url)
+
+        assert Config.provider_opts(
+                 Config.provider_module(unquote(provider)),
+                 opts,
+                 unquote(provider)
+               )[:base_url] == "http://box.lan:9999"
+      end
     end
   end
 

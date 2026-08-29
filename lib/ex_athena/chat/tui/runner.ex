@@ -116,15 +116,25 @@ defmodule ExAthena.Chat.Tui.Runner do
   def select_initial_model(_desired, {:error, reason}), do: {:error, reason}
 
   # The stock URLs live in `Config.default_base_url/1` (shared with the
-  # listing path). The TUI predates multi-provider support, so a provider
-  # without its own local-daemon default historically falls back to the
-  # Ollama key — behavior preserved here; only the URL copy is consolidated.
+  # listing path), and it is nil for everything that isn't a local daemon.
+  # Only local daemons get a default filled in, so a zero-config TUI run
+  # still reaches ollama / llama.cpp / exo on its stock port. Every other
+  # provider is left without a `:base_url` for the adapter and app config to
+  # resolve — the TUI used to route unknown providers to the Ollama key,
+  # which injected `http://localhost:11434` into cloud runs (#192).
+  #
+  # An explicitly configured URL always wins: it is omitted here and picked
+  # up downstream by `Config.provider_opts/3`.
   defp apply_default_base_url(opts, provider) do
-    provider_key = if Config.default_base_url(provider), do: provider, else: :ollama
+    case Config.default_base_url(provider) do
+      nil ->
+        opts
 
-    case Application.get_env(:ex_athena, provider_key, [])[:base_url] do
-      nil -> Keyword.put(opts, :base_url, Config.default_base_url(provider_key))
-      _configured -> opts
+      default ->
+        case Application.get_env(:ex_athena, provider, [])[:base_url] do
+          nil -> Keyword.put(opts, :base_url, default)
+          _configured -> opts
+        end
     end
   end
 
