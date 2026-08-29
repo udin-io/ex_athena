@@ -116,6 +116,14 @@ defmodule ExAthena.Web.Live.ChatLive do
         # output streams to the client via push_event (no server buffer).
         terminals: [],
         active_terminal: nil,
+        # Files tab (right pane): lazy-loaded directory tree + file viewer.
+        # `root` is the open folder (absolute); `tree` maps a listed
+        # directory's absolute path to its sorted entries (children are only
+        # fetched when the directory is expanded); `expanded` holds the set of
+        # currently expanded directory paths; `selected` the open file's path;
+        # `content` the read file map (path/content/size/truncated/binary);
+        # `error` a list/read failure atom.
+        files: %{root: nil, tree: %{}, expanded: MapSet.new(), selected: nil, content: nil, error: nil},
         # Live orchestration snapshot (ExAthena.Orchestrator.Coordinator) for
         # the Overview tab. One coordinator per run; orchestrator_sid scopes
         # incoming updates to the current run.
@@ -877,7 +885,7 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   def handle_event("switch_details_tab", %{"tab" => tab}, socket)
-      when tab in ~w(overview log git terminal) do
+      when tab in ~w(overview log git terminal files) do
     tab = String.to_existing_atom(tab)
 
     git_diff =
@@ -890,6 +898,11 @@ defmodule ExAthena.Web.Live.ChatLive do
         # Opening the Terminal tab with no terminals yet spawns the first one.
         tab == :terminal and socket.assigns.terminals == [] ->
           open_terminal(socket)
+
+        # Opening the Files tab with no tree yet: list the root once and
+        # expand it so the top level is visible.
+        tab == :files and socket.assigns.files.root == nil and not is_nil(socket.assigns.cwd) ->
+          files_list_root(socket)
 
         # Re-activating the tab: the panel was display:none, so re-fit xterm
         # to the (now visible) pane width.
@@ -936,6 +949,68 @@ defmodule ExAthena.Web.Live.ChatLive do
       Enum.reduce(socket.assigns.terminals, socket, fn t, acc -> close_terminal(acc, t.id) end)
 
     {:noreply, socket}
+  end
+
+  # ── Files tab ──────────────────────────────────────────────────────
+
+  # Toggle a directory in the tree. Collapsing is pure state (no I/O);
+  # expanding lazily lists the directory and stores its entries under its
+  # absolute path in `files.tree`. Re-expanding a directory whose children
+  # are already cached is pure state as well — no second listing.
+  def handle_event("files_toggle", %{"path" => path}, socket) do
+    cwd = socket.assigns.cwd
+    files = socket.assigns.files
+
+    if MapSet.member?(files.expanded, path) do
+      {:noreply, assign(socket, files: %{files | expanded: MapSet.delete(files.expanded, path), error: nil})}
+    else
+      if Map.has_key?(files.tree, path) do
+        {:noreply, assign(socket, files: %{files | expanded: MapSet.put(files.expanded, path), error: nil})}
+      else
+        case ExAthena.Web.Files.list_dir(cwd, path) do
+        {:ok, entries} ->
+          {:noreply,
+           assign(socket,
+             files: %{
+               files
+               | tree: Map.put(files.tree, path, entries),
+                 expanded: MapSet.put(files.expanded, path),
+                 error: nil
+             }
+           )}
+
+        {:error, reason} ->
+          {:noreply, assign(socket, files: %{files | error: reason})}
+        end
+      end
+    end
+  end
+
+  def handle_event("files_open", %{"path" => path}, socket) do
+    cwd = socket.assigns.cwd
+
+    case ExAthena.Web.Files.read_file(cwd, path) do
+      {:ok, content} ->
+        files = socket.assigns.files
+        selected = Path.expand(path, cwd)
+        {:noreply, assign(socket, files: %{files | selected: selected, content: content, error: nil})}
+
+      {:error, reason} ->
+        files = socket.assigns.files
+        {:noreply, assign(socket, files: %{files | selected: nil, content: nil, error: reason})}
+    end
+  end
+
+  def handle_event("files_close", _params, socket) do
+    files = socket.assigns.files
+    {:noreply, assign(socket, files: %{files | selected: nil, content: nil, error: nil})}
+  end
+
+  # Collapse every expanded directory. Pure state — the cached listings in
+  # `files.tree` are kept so re-expanding stays instant.
+  def handle_event("files_collapse_all", _params, socket) do
+    files = socket.assigns.files
+    {:noreply, assign(socket, files: %{files | expanded: MapSet.new(), error: nil})}
   end
 
   def handle_event("refresh_git_diff", _params, socket) do
@@ -1614,6 +1689,11 @@ defmodule ExAthena.Web.Live.ChatLive do
                 phx-click="switch_details_tab"
                 phx-value-tab="terminal"
               >Terminal</button>
+              <button
+                class={tab_class(@details_tab, :files)}
+                phx-click="switch_details_tab"
+                phx-value-tab="files"
+              >Files</button>
               <span class="details-tabs-spacer"></span>
               <%= if @details_tab == :git do %>
                 <button class="details-tab-action" phx-click="refresh_git_diff" title="Refresh">↺</button>
@@ -1666,6 +1746,13 @@ defmodule ExAthena.Web.Live.ChatLive do
               <% :terminal -> %>
                 <%!-- Body rendered by the persistent panel below (kept
                       mounted across tab switches so xterm state survives). --%>
+              <% :files -> %>
+                <div class="details-tab-body">
+                  <.files_panel
+                    cwd={@cwd}
+                    files={@files}
+                  />
+                </div>
               <% _ -> %>
                 <div class="details-tab-body" id="details-pane" phx-hook="ScrollToBottom">
                   <.details_pane stream={@details_stream} max_diff_lines={Tuning.get(:ui, :max_diff_lines, @max_diff_lines)} />
@@ -1848,6 +1935,147 @@ defmodule ExAthena.Web.Live.ChatLive do
         </div>
       <% end %>
     </div>
+    """
+  end
+
+  # ── Files tab ──────────────────────────────────────────────────────
+
+  # List the open folder's root once and expand it so the top level shows.
+  defp files_list_root(socket) do
+    cwd = socket.assigns.cwd
+    files = socket.assigns.files
+
+    case ExAthena.Web.Files.list_dir(cwd, cwd) do
+      {:ok, entries} ->
+        assign(socket,
+          files: %{
+            files
+            | root: cwd,
+              tree: Map.put(files.tree, cwd, entries),
+              expanded: MapSet.put(files.expanded, cwd),
+              error: nil
+          }
+        )
+
+      {:error, reason} ->
+        assign(socket, files: %{files | root: cwd, error: reason})
+    end
+  end
+
+  defp files_error_text(:no_root), do: "Open a project folder first."
+  defp files_error_text(:outside_root), do: "That path is outside the open folder."
+  defp files_error_text(:no_such_directory), do: "Directory not found."
+  defp files_error_text(:not_a_directory), do: "Not a directory."
+  defp files_error_text(:no_such_file), do: "File not found."
+  defp files_error_text(:not_a_file), do: "Not a file."
+  defp files_error_text(reason), do: "Could not read that: #{inspect(reason)}."
+
+  defp files_size(n) when n < 1024, do: "#{n} B"
+  defp files_size(n) when n < 1_048_576, do: "#{Float.round(n / 1024, 1)} KB"
+  defp files_size(n), do: "#{Float.round(n / 1_048_576, 2)} MB"
+
+  defp files_panel(assigns) do
+    ~H"""
+    <div class="files-panel">
+      <%= if is_nil(@cwd) do %>
+        <div class="details-empty">
+          <div class="details-empty-title">Files</div>
+          <div class="details-empty-sub">Open a project folder first to browse its files.</div>
+        </div>
+      <% else %>
+        <div class="files-toolbar">
+          <span class="files-path">{Path.basename(@cwd)}</span>
+          <%= if @files.content != nil do %>
+            <span class="files-path files-path--selected">{Path.relative_to(@files.content.path, @cwd)}</span>
+          <% end %>
+          <button class="files-nav-btn files-toolbar-collapse" phx-click="files_collapse_all" title="Collapse all directories">
+            collapse all
+          </button>
+        </div>
+
+        <%= if @files.error != nil do %>
+          <div class="files-error">{files_error_text(@files.error)}</div>
+        <% end %>
+
+        <div class="files-tree">
+          <.files_tree_level
+            dir={@cwd}
+            depth={0}
+            files={@files}
+          />
+        </div>
+
+        <%= if @files.content != nil do %>
+          <div class="files-view">
+            <div class="file-header files-view-header">
+              <span class="files-view-name">{Path.basename(@files.content.path)}</span>
+              <span class="files-view-size">{files_size(@files.content.size)}</span>
+              <button class="files-nav-btn files-view-close" phx-click="files_close" title="Close file">×</button>
+            </div>
+            <%= if @files.content.binary do %>
+              <div class="files-notice">binary file — content not shown</div>
+            <% else %>
+              <pre class="file-content files-view-content">{@files.content.content}</pre>
+              <%= if @files.content.truncated do %>
+                <div class="files-notice">showing first 2 MB of {files_size(@files.content.size)}</div>
+              <% end %>
+            <% end %>
+          </div>
+        <% end %>
+      <% end %>
+    </div>
+    """
+  end
+
+  # One level of the tree: the entries of `dir` (already listed, per the
+  # lazy-load contract) plus the children of every expanded subdirectory.
+  # Indented per depth (inline style so the CSS worker can restyle freely).
+  defp files_tree_level(assigns) do
+    assigns = assign(assigns, :entries, Map.get(assigns.files.tree, assigns.dir) || [])
+
+    ~H"""
+    <div class="files-tree-level" style={"--files-depth: #{@depth}; padding-left: calc(#{@depth} * 0.9rem);"}>
+      <.files_tree_row
+        :for={e <- @entries}
+        e={e}
+        depth={@depth}
+        files={@files}
+      />
+    </div>
+    """
+  end
+
+  defp files_tree_row(assigns) do
+    assigns = assign(assigns, :expanded, MapSet.member?(assigns.files.expanded, assigns.e.path))
+
+    ~H"""
+    <%= if @e.is_dir do %>
+      <div class="files-tree-dir">
+        <button
+          class={["files-row files-row--dir", @expanded && "files-row--expanded"]}
+          phx-click="files_toggle"
+          phx-value-path={@e.path}
+          title={@e.path}
+          aria-expanded={@expanded}
+        >
+          <span class="files-toggle">{if(@expanded, do: "▾", else: "▸")}</span>
+          <span class="files-row-name">{@e.name}</span>
+        </button>
+        <div :if={@expanded} class="files-tree-children">
+          <.files_tree_level dir={@e.path} depth={@depth + 1} files={@files} />
+        </div>
+      </div>
+    <% else %>
+      <button
+        class={["files-row files-tree-file", @e.path == @files.selected && "files-row--active"]}
+        phx-click="files_open"
+        phx-value-path={@e.path}
+        title={@e.path}
+      >
+        <span class="files-row-glyph">·</span>
+        <span class="files-row-name">{@e.name}</span>
+      </button>
+    <% end %>
     """
   end
 

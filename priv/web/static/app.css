@@ -1640,6 +1640,131 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .details-empty-title { font-family: var(--font-mono); font-size: 13px; color: var(--text); }
 .details-empty-sub   { font-family: var(--font-mono); font-size: 11px; }
 
+/* ── Files tab ───────────────────────────────────────────────────────────── */
+
+.files-panel { display: flex; flex-direction: column; height: 100%; }
+
+.files-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(0,0,0,0.2);
+  flex: 0 0 auto;
+}
+
+/* "collapse all" — pinned to the toolbar's right edge, never compressed by the path. */
+.files-toolbar-collapse { flex: 0 0 auto; }
+
+.files-nav-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--muted);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1;
+  padding: 3px 7px;
+  transition: color 0.15s, border-color 0.15s;
+}
+.files-nav-btn:hover { color: var(--accent); border-color: var(--accent); }
+
+.files-path {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Selected file's relative path in the toolbar — accent so it reads as "current". */
+.files-path--selected { color: var(--accent); }
+
+.files-tree {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  min-height: 0;
+  padding: 4px 0;
+  background: rgba(0,0,0,0.06);
+}
+
+.files-tree-level { display: flex; flex-direction: column; }
+.files-tree-dir { display: flex; flex-direction: column; }
+/* Depth indentation is applied inline by the markup (--files-depth /
+   padding-left on .files-tree-level) — keep this container padding-free so
+   the two never double up. */
+.files-tree-children { display: flex; flex-direction: column; }
+
+.files-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-left: 2px solid transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 5px 12px;
+  text-align: left;
+  transition: background 0.12s, border-color 0.12s;
+}
+.files-row:hover { background: rgba(0,0,0,0.2); }
+.files-row--dir { color: var(--accent); font-weight: 600; }
+.files-row--expanded { background: rgba(0,0,0,0.12); }
+.files-row--active {
+  background: var(--accent-dim);
+  border-left-color: var(--accent);
+}
+/* Keep the selection highlight stable while hovering the active row
+   (otherwise .files-row:hover above would override it). */
+.files-row--active:hover { background: var(--accent-dim); }
+/* File (leaf) rows: plain text weight, neutral color — dirs carry the accent. */
+.files-tree-file { color: var(--text); font-weight: 400; }
+
+.files-toggle { flex: 0 0 auto; width: 12px; text-align: center; color: var(--accent); }
+.files-row-glyph { flex: 0 0 auto; width: 12px; text-align: center; color: var(--muted); }
+.files-row-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.files-error {
+  padding: 8px 12px;
+  margin: 8px 10px 0;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--error-text);
+  border-radius: var(--radius);
+  background: var(--error-bg);
+  color: var(--error-text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.files-notice {
+  padding: 6px 12px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-style: italic;
+}
+
+.files-view { flex: 0 0 auto; border-top: 1px solid var(--border); }
+.files-view-header { flex: 0 1 auto; }
+.files-view-name {
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.files-view-size { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
+.files-view-close { flex: 0 0 auto; padding: 2px 6px; }
+.files-view-content { max-height: 300px; }
+
 .details-list {
   display: flex;
   flex-direction: column;

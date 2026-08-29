@@ -56,6 +56,12 @@ defmodule ExAthena.MixProject do
       {:phoenix_live_view, "~> 1.0", optional: true},
       {:bandit, "~> 1.5", optional: true},
       {:bypass, "~> 2.1", only: :test},
+      {:excoveralls, "~> 0.18", only: :test},
+      # phoenix_live_view 1.1's test DOM (`live/2` in tests) hard-requires
+      # lazy_html, which it only declares as an optional dep — so we must pull
+      # it in ourselves for the web LiveView UI tests. Test-only, so it never
+      # lands in library consumers' runtime deps.
+      {:lazy_html, ">= 0.1.0", only: :test},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:dialyxir, "~> 1.4", only: [:dev], runtime: false}
