@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **A TUI run of a cloud provider no longer gets pointed at localhost.**
+  ([#192](https://github.com/udin-io/ex_athena/issues/192)) The TUI runner's
+  base-url fallback routed every provider without a local-daemon default to
+  the `:ollama` config key, so an unconfigured `:openai` or `:claude` session
+  had `base_url: http://localhost:11434` injected into its run opts. The
+  default is now applied only to the providers that have one; everything else
+  leaves the Runner without a `:base_url` for the adapter and app config to
+  resolve.
+
 ## v0.20.0 — One instrumented inference path, configurable rails & a settings UI
 
 ### Added
