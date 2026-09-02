@@ -6,14 +6,13 @@ defmodule ExAthena.Web.FilesTest do
   @cap 2_000_000
   @big_size 3_000_000
 
-  setup do
-    # `File.mkdtemp!/1` is unavailable in this Elixir build; build a unique
-    # temp dir from `System.tmp_dir!/0` + a unique integer instead.
-    parent =
-      System.tmp_dir!() <> "/ex_athena_files_parent_" <>
-        Integer.to_string(:erlang.unique_integer([:positive]))
+  # ExUnit's own per-test temp dir. Hand-building one from `System.tmp_dir!/0`
+  # yielded a doubled separator on macOS (`/T//ex_athena_…`), which the
+  # assertions then compared against paths that `Path.expand` had normalised.
+  @moduletag :tmp_dir
 
-    File.mkdir_p!(parent)
+  setup %{tmp_dir: tmp_dir} do
+    parent = tmp_dir
     root = Path.join(parent, "root")
 
     File.mkdir_p!(Path.join(root, "subdir"))
@@ -24,8 +23,6 @@ defmodule ExAthena.Web.FilesTest do
     File.write!(Path.join(root, "big.bin"), String.duplicate("x", @big_size))
     File.write!(Path.join(root, "data.bin"), <<0, 1, 2>>)
     File.write!(Path.join(parent, "secret.txt"), "top secret")
-
-    on_exit(fn -> File.rm_rf!(parent) end)
 
     %{root: root, parent: parent}
   end
@@ -56,6 +53,35 @@ defmodule ExAthena.Web.FilesTest do
   test "rejects a nil root" do
     assert {:error, :no_root} = Files.list_dir(nil, "x")
     assert {:error, :no_root} = Files.read_file(nil, "x")
+  end
+
+  # A prefix-based confinement check passes a symlink that is lexically inside
+  # the root, and `File.stat`/`File.open` then follow it out. Proven against
+  # the original implementation: `read_file` returned the outside file's
+  # contents. Both entry points are covered — listing a directory through the
+  # link leaks filenames even when no file is read.
+  test "refuses a symlink inside the root that points outside it", %{root: root, parent: parent} do
+    File.ln_s!(parent, Path.join(root, "escape"))
+
+    assert {:error, :outside_root} = Files.list_dir(root, Path.join(root, "escape"))
+    assert {:error, :outside_root} = Files.read_file(root, Path.join(root, "escape/secret.txt"))
+  end
+
+  # The guard must not over-reject: a link that stays inside the root is a
+  # normal thing to have in a project and still resolves.
+  test "follows a symlink that stays inside the root", %{root: root} do
+    File.ln_s!(Path.join(root, "subdir"), Path.join(root, "inside_link"))
+
+    assert {:ok, %{content: "inner file"}} =
+             Files.read_file(root, Path.join(root, "inside_link/inner.txt"))
+  end
+
+  # Paths arrive from client `phx-value-path`. A NUL byte raises ArgumentError
+  # out of the :file calls instead of returning an error tuple, which would
+  # crash the LiveView rather than show an error.
+  test "rejects a path containing a NUL byte instead of crashing", %{root: root} do
+    assert {:error, :outside_root} = Files.list_dir(root, Path.join(root, "sub\0dir"))
+    assert {:error, :outside_root} = Files.read_file(root, Path.join(root, "a\0.txt"))
   end
 
   test "rejects paths outside the root", %{root: root} do

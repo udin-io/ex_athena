@@ -21,6 +21,7 @@ defmodule ExAthena.Web.Files do
   @read_cap 2_000_000
 
   alias ExAthena.Permissions
+  alias ExAthena.ToolContext
 
   @spec list_dir(String.t() | nil, String.t()) ::
           {:ok, [%{name: String.t(), path: String.t(), is_dir: boolean()}]}
@@ -139,20 +140,34 @@ defmodule ExAthena.Web.Files do
     end
   end
 
-  # Normalize `dir_path` against `root` and verify the result stays inside
-  # it. `root == nil` → `:no_root`; escape attempts → `:outside_root`.
+  # Normalize `dir_path` against `root` and verify the result stays inside it.
+  # `root == nil` -> `:no_root`; escape attempts -> `:outside_root`.
+  #
+  # Confinement goes through `ExAthena.ToolContext.within_roots?/2` — the same
+  # guard the file tools use — rather than a string prefix test. A prefix test
+  # only rejects lexical `../` traversal: it compares the path as written, so a
+  # symlink INSIDE the root pointing out of it (`root/link -> /etc`) reads as
+  # inside, and `File.stat`/`File.open` then follow it. `within_roots?/2`
+  # canonicalizes every symlink component before comparing, and compares on
+  # path segments, so an escaping link is refused while links that stay inside
+  # (and a root that is itself a symlink, e.g. macOS `/tmp` -> `/private/tmp`)
+  # keep working.
   defp resolve(nil, _dir_path), do: {:error, :no_root}
 
   defp resolve(root, dir_path) when is_binary(root) and is_binary(dir_path) do
-    root = Path.expand(root)
-    candidate = Path.absname(Path.expand(dir_path, root))
-
-    # `File.separator/0` is unavailable in this Elixir build; the platform
-    # separator is `/` (Linux), so use it directly for the prefix check.
-    if candidate == root or String.starts_with?(candidate, root <> "/") do
-      {:ok, candidate}
-    else
+    # A NUL byte would raise ArgumentError out of the :file calls below rather
+    # than returning an error tuple, crashing the LiveView. Paths arrive
+    # straight from client `phx-value-path`, so reject it here.
+    if String.contains?(dir_path, <<0>>) do
       {:error, :outside_root}
+    else
+      candidate = Path.absname(Path.expand(dir_path, Path.expand(root)))
+
+      if ToolContext.within_roots?(candidate, [root]) do
+        {:ok, candidate}
+      else
+        {:error, :outside_root}
+      end
     end
   end
 
