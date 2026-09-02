@@ -204,7 +204,11 @@ defmodule ExAthena.Web.Layouts do
                 const btn = document.createElement("button")
                 btn.type = "button"
                 btn.className = "jump-latest"
-                btn.setAttribute("aria-live", "polite")
+                // Deliberately NOT an aria-live region: the label changes on
+                // every arriving item, so announcing it would read out
+                // "3 new items", "4 new items", "5 new items"… throughout a
+                // run. Screen reader users get the current count when they
+                // reach the button.
 
                 const arrow = document.createElement("span")
                 arrow.className = "jump-latest-arrow"
