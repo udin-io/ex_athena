@@ -86,6 +86,14 @@ defmodule ExAthena.Web.Layouts do
 
                 this.onScroll = () => this.measureSoon()
                 this.el.addEventListener("scroll", this.onScroll, {passive: true})
+
+                // Sending a message means "I'm done reading back" — the user's
+                // own message must never land off-screen.
+                this.handleEvent("scroll_to_bottom", ({target}) => {
+                  if (target && target !== this.el.id) return
+                  this.arm()
+                })
+
                 this.stick()
               },
 

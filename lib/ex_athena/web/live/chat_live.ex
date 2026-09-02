@@ -474,11 +474,20 @@ defmodule ExAthena.Web.Live.ChatLive do
     cond do
       # A run is paused on an `ask_user` question — route this as the answer
       # back into the blocked tool instead of starting a new run.
-      socket.assigns.awaiting_question != nil and text != "" -> answer_question(socket, text)
-      text == "" and socket.assigns.pending_images == [] -> {:noreply, socket}
-      socket.assigns.streaming -> {:noreply, socket}
-      is_nil(socket.assigns.cwd) -> {:noreply, socket}
-      true -> start_agent_run(socket, text)
+      socket.assigns.awaiting_question != nil and text != "" ->
+        socket |> follow_new_output() |> answer_question(text)
+
+      text == "" and socket.assigns.pending_images == [] ->
+        {:noreply, socket}
+
+      socket.assigns.streaming ->
+        {:noreply, socket}
+
+      is_nil(socket.assigns.cwd) ->
+        {:noreply, socket}
+
+      true ->
+        socket |> follow_new_output() |> start_agent_run(text)
     end
   end
 
@@ -3069,6 +3078,12 @@ defmodule ExAthena.Web.Live.ChatLive do
   # Route the user's reply back into the run task blocked inside the `ask_user`
   # tool, then clear the pending question and resume the "thinking" indicator.
   # The run continues from where it paused — no new run is started.
+  # Sending is an unambiguous "I'm done reading back": re-arm the chat thread's
+  # auto-scroll so the user's own message can't land off-screen. Only the chat
+  # thread — the details pane is not where they just typed.
+  defp follow_new_output(socket),
+    do: push_event(socket, "scroll_to_bottom", %{target: "messages"})
+
   defp answer_question(socket, answer) do
     q = socket.assigns.awaiting_question
 
