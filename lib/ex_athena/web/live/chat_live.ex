@@ -474,11 +474,20 @@ defmodule ExAthena.Web.Live.ChatLive do
     cond do
       # A run is paused on an `ask_user` question — route this as the answer
       # back into the blocked tool instead of starting a new run.
-      socket.assigns.awaiting_question != nil and text != "" -> answer_question(socket, text)
-      text == "" and socket.assigns.pending_images == [] -> {:noreply, socket}
-      socket.assigns.streaming -> {:noreply, socket}
-      is_nil(socket.assigns.cwd) -> {:noreply, socket}
-      true -> start_agent_run(socket, text)
+      socket.assigns.awaiting_question != nil and text != "" ->
+        socket |> follow_new_output() |> answer_question(text)
+
+      text == "" and socket.assigns.pending_images == [] ->
+        {:noreply, socket}
+
+      socket.assigns.streaming ->
+        {:noreply, socket}
+
+      is_nil(socket.assigns.cwd) ->
+        {:noreply, socket}
+
+      true ->
+        socket |> follow_new_output() |> start_agent_run(text)
     end
   end
 
@@ -1626,7 +1635,12 @@ defmodule ExAthena.Web.Live.ChatLive do
           >▤</button>
         </div>
 
-        <div class="messages" id="messages" phx-hook="ScrollToBottom">
+        <div
+          class="messages"
+          id="messages"
+          phx-hook="ScrollToBottom"
+          data-streaming={to_string(@streaming)}
+        >
           <%= if @messages == [] and not @streaming do %>
             <div class="empty-state">
               <div class="empty-icon">◈</div>
@@ -1674,6 +1688,13 @@ defmodule ExAthena.Web.Live.ChatLive do
             <div class="msg-error">⚠ {@error}</div>
           <% end %>
         </div>
+
+        <%!-- Mount point for the jump-to-latest pill, owned entirely by the
+              ScrollToBottom hook. It must live OUTSIDE the scroll container
+              (an absolutely positioned child of a scroller scrolls with the
+              content) and be ignored by the server, or the next streamed
+              token's diff would delete the pill the hook just built. --%>
+        <div class="jump-slot" id="messages-jump" phx-update="ignore"></div>
 
         <%= if @show_details do %>
           <div class="chat-divider" id="chat-divider" aria-label="Resize panes" role="separator"></div>
@@ -1765,9 +1786,15 @@ defmodule ExAthena.Web.Live.ChatLive do
                   />
                 </div>
               <% _ -> %>
-                <div class="details-tab-body" id="details-pane" phx-hook="ScrollToBottom">
+                <div
+                  class="details-tab-body"
+                  id="details-pane"
+                  phx-hook="ScrollToBottom"
+                  data-streaming={to_string(@streaming)}
+                >
                   <.details_pane stream={@details_stream} max_diff_lines={Tuning.get(:ui, :max_diff_lines, @max_diff_lines)} />
                 </div>
+                <div class="jump-slot" id="details-pane-jump" phx-update="ignore"></div>
             <% end %>
 
             <%!-- ALWAYS mounted (hidden unless the Terminal tab is active):
@@ -3051,6 +3078,12 @@ defmodule ExAthena.Web.Live.ChatLive do
   # Route the user's reply back into the run task blocked inside the `ask_user`
   # tool, then clear the pending question and resume the "thinking" indicator.
   # The run continues from where it paused — no new run is started.
+  # Sending is an unambiguous "I'm done reading back": re-arm the chat thread's
+  # auto-scroll so the user's own message can't land off-screen. Only the chat
+  # thread — the details pane is not where they just typed.
+  defp follow_new_output(socket),
+    do: push_event(socket, "scroll_to_bottom", %{target: "messages"})
+
   defp answer_question(socket, answer) do
     q = socket.assigns.awaiting_question
 

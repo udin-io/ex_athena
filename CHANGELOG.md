@@ -9,6 +9,18 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **Reading back through a thread no longer fights a live run.**
+  ([#206](https://github.com/udin-io/ex_athena/issues/206)) The web chat
+  pinned itself to the bottom on every LiveView diff — which, with the
+  message list re-diffed per streamed token, meant many times a second while
+  the agent worked. Scrolling up to re-read something was effectively
+  impossible. Auto-scroll is now armed only while the reader is already at
+  the bottom; scrolling away holds the view still, and a **jump to latest**
+  pill (counting what has arrived since) returns to the bottom and re-arms
+  it. Sending a message re-arms it too, so your own message can never land
+  off-screen. The chat thread and the details pane share the hook and so
+  behave the same.
+
 - **A TUI run of a cloud provider no longer gets pointed at localhost.**
   ([#192](https://github.com/udin-io/ex_athena/issues/192)) The TUI runner's
   base-url fallback routed every provider without a local-daemon default to
