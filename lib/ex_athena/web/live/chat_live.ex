@@ -123,7 +123,14 @@ defmodule ExAthena.Web.Live.ChatLive do
         # currently expanded directory paths; `selected` the open file's path;
         # `content` the read file map (path/content/size/truncated/binary);
         # `error` a list/read failure atom.
-        files: %{root: nil, tree: %{}, expanded: MapSet.new(), selected: nil, content: nil, error: nil},
+        files: %{
+          root: nil,
+          tree: %{},
+          expanded: MapSet.new(),
+          selected: nil,
+          content: nil,
+          error: nil
+        },
         # Live orchestration snapshot (ExAthena.Orchestrator.Coordinator) for
         # the Overview tab. One coordinator per run; orchestrator_sid scopes
         # incoming updates to the current run.
@@ -962,25 +969,27 @@ defmodule ExAthena.Web.Live.ChatLive do
     files = socket.assigns.files
 
     if MapSet.member?(files.expanded, path) do
-      {:noreply, assign(socket, files: %{files | expanded: MapSet.delete(files.expanded, path), error: nil})}
+      {:noreply,
+       assign(socket, files: %{files | expanded: MapSet.delete(files.expanded, path), error: nil})}
     else
       if Map.has_key?(files.tree, path) do
-        {:noreply, assign(socket, files: %{files | expanded: MapSet.put(files.expanded, path), error: nil})}
+        {:noreply,
+         assign(socket, files: %{files | expanded: MapSet.put(files.expanded, path), error: nil})}
       else
         case ExAthena.Web.Files.list_dir(cwd, path) do
-        {:ok, entries} ->
-          {:noreply,
-           assign(socket,
-             files: %{
-               files
-               | tree: Map.put(files.tree, path, entries),
-                 expanded: MapSet.put(files.expanded, path),
-                 error: nil
-             }
-           )}
+          {:ok, entries} ->
+            {:noreply,
+             assign(socket,
+               files: %{
+                 files
+                 | tree: Map.put(files.tree, path, entries),
+                   expanded: MapSet.put(files.expanded, path),
+                   error: nil
+               }
+             )}
 
-        {:error, reason} ->
-          {:noreply, assign(socket, files: %{files | error: reason})}
+          {:error, reason} ->
+            {:noreply, assign(socket, files: %{files | error: reason})}
         end
       end
     end
@@ -993,7 +1002,9 @@ defmodule ExAthena.Web.Live.ChatLive do
       {:ok, content} ->
         files = socket.assigns.files
         selected = Path.expand(path, cwd)
-        {:noreply, assign(socket, files: %{files | selected: selected, content: content, error: nil})}
+
+        {:noreply,
+         assign(socket, files: %{files | selected: selected, content: content, error: nil})}
 
       {:error, reason} ->
         files = socket.assigns.files
