@@ -213,6 +213,7 @@ session is untouched.
 | **Bash output** | Bash tool calls show exit code, runtime, and stdout in a collapsible block. |
 | **Markdown** | Completed responses render headings, fenced code blocks (with language label), inline code, bold/italic, lists, links, and horizontal rules — no CDN needed. |
 | **Git panel** | The ± button opens a live `git diff HEAD` panel, refreshed after each tool result. |
+| **Files panel** | The **Files** tab in the right pane browses the open folder (artifact dirs like `deps/` and `node_modules/` hidden). Click a file to view it inline — binary files are flagged, and files over 2 MB are truncated with a notice. |
 | **Fork** | Snapshot any assistant message and branch the conversation from that point. |
 | **Session recall** | Reload any past session; the full conversation and tool-call details restore instantly. |
 

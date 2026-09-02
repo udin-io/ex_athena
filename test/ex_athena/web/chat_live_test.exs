@@ -854,4 +854,259 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
                ChatLive.session_signature(assigns(%{tool_uis: %{"c1" => %{kind: :diff}}}))
     end
   end
+
+  # The Files tab (right pane) drives `ExAthena.Web.Files` through the `files`
+  # assign: a lazy-loaded directory tree (expand/collapse) plus a file viewer.
+  # The low-level list_dir/read_file behaviour is covered in FilesTest; here we
+  # exercise the tab's event handlers, tree state, and the rendered HTML.
+  describe "Files tab (handle_event) — lazy tree + file viewer" do
+    defp default_files,
+      do: %{root: nil, tree: %{}, expanded: MapSet.new(), selected: nil, content: nil, error: nil}
+
+    defp files_socket(overrides) do
+      assigns =
+        Map.merge(
+          %{
+            __changed__: %{},
+            cwd: nil,
+            files: default_files(),
+            details_tab: :overview,
+            show_details: true,
+            git_diff: nil
+          },
+          Map.new(overrides)
+        )
+
+      %Phoenix.LiveView.Socket{assigns: assigns}
+    end
+
+    defp files(socket), do: socket.assigns.files
+
+    # Mount the real LiveView (populating every assign render/1 reads) and
+    # override only the Files-tab state + the pane that shows it. This is the
+    # same LiveView entry point the browser uses: mount/3 → handle_event/3 →
+    # render/1, so a test that passes proves the HTML the client receives.
+    defp mounted_files_socket(files) do
+      {:ok, socket} = ChatLive.mount(%{}, nil, %Phoenix.LiveView.Socket{})
+
+      assigns =
+        socket.assigns
+        |> Map.put(:cwd, files.root)
+        |> Map.put(:details_tab, :files)
+        |> Map.put(:show_details, true)
+        # A bare socket is "disconnected" so mount sets page_loading: true,
+        # which would render only the "Connecting…" div and skip the tab bar.
+        |> Map.put(:page_loading, false)
+        |> Map.put(:files, files)
+
+      %{socket | assigns: assigns}
+    end
+
+    defp render_html(socket) do
+      socket.assigns
+      |> ChatLive.render()
+      |> Phoenix.HTML.Safe.to_iodata()
+      |> IO.iodata_to_binary()
+    end
+
+    @describetag :tmp_dir
+
+    setup %{tmp_dir: tmp_dir} do
+      parent = tmp_dir
+      root = Path.join(parent, "root")
+
+      File.mkdir_p!(Path.join(root, "subdir"))
+      File.write!(Path.join(root, "subdir/inner.txt"), "inner file")
+      File.write!(Path.join(root, "a.txt"), "hello a")
+      File.write!(Path.join(root, "data.bin"), <<0, 1, 2>>)
+      # A file OUTSIDE the root, to prove traversal is refused.
+      File.write!(Path.join(parent, "secret.txt"), "top secret")
+
+      %{root: root, parent: parent}
+    end
+
+    test "switching to the Files tab initialises the tree at the root (expanded)", %{root: root} do
+      socket = files_socket(cwd: root)
+
+      assert {:noreply, socket} =
+               ChatLive.handle_event("switch_details_tab", %{"tab" => "files"}, socket)
+
+      assert socket.assigns.details_tab == :files
+      assert files(socket).root == root
+      assert files(socket).error == nil
+      assert MapSet.member?(files(socket).expanded, root)
+
+      assert files(socket).tree[root] == [
+               %{name: "subdir", path: Path.join(root, "subdir"), is_dir: true},
+               %{name: "a.txt", path: Path.join(root, "a.txt"), is_dir: false},
+               %{name: "data.bin", path: Path.join(root, "data.bin"), is_dir: false}
+             ]
+    end
+
+    test "switching to the Files tab with no folder open shows the empty state (no crash)" do
+      socket = files_socket(cwd: nil)
+
+      assert {:noreply, socket} =
+               ChatLive.handle_event("switch_details_tab", %{"tab" => "files"}, socket)
+
+      assert socket.assigns.details_tab == :files
+      assert files(socket).root == nil
+      assert files(socket).tree == %{}
+      assert files(socket).expanded == MapSet.new()
+      assert files(socket).error == nil
+    end
+
+    test "files_toggle expands a directory, loading its children lazily", %{root: root} do
+      subdir = Path.join(root, "subdir")
+      socket = files_socket(cwd: root)
+
+      assert {:noreply, socket} =
+               ChatLive.handle_event("files_toggle", %{"path" => subdir}, socket)
+
+      assert MapSet.member?(files(socket).expanded, subdir)
+
+      assert files(socket).tree[subdir] == [
+               %{name: "inner.txt", path: Path.join(root, "subdir/inner.txt"), is_dir: false}
+             ]
+
+      assert files(socket).error == nil
+    end
+
+    test "files_toggle on an expanded directory collapses it without re-listing", %{root: root} do
+      subdir = Path.join(root, "subdir")
+      socket = files_socket(cwd: root, files: %{default_files() | expanded: MapSet.new([subdir])})
+
+      assert {:noreply, socket} =
+               ChatLive.handle_event("files_toggle", %{"path" => subdir}, socket)
+
+      refute MapSet.member?(files(socket).expanded, subdir)
+      assert files(socket).error == nil
+    end
+
+    test "files_open on a text file sets selected and content", %{root: root} do
+      socket = files_socket(cwd: root)
+
+      assert {:noreply, socket} =
+               ChatLive.handle_event("files_open", %{"path" => "a.txt"}, socket)
+
+      assert files(socket).selected == Path.join(root, "a.txt")
+      assert files(socket).error == nil
+      assert files(socket).content.path == Path.join(root, "a.txt")
+      assert files(socket).content.content == "hello a"
+      assert files(socket).content.binary == false
+    end
+
+    test "files_open on a missing file sets an error (no crash)", %{root: root} do
+      socket = files_socket(cwd: root)
+
+      assert {:noreply, socket} =
+               ChatLive.handle_event("files_open", %{"path" => "missing.txt"}, socket)
+
+      assert files(socket).error == :no_such_file
+      assert files(socket).selected == nil
+      assert files(socket).content == nil
+    end
+
+    test "files_close clears the selection, content and error", %{root: root} do
+      socket =
+        files_socket(
+          cwd: root,
+          files: %{
+            root: root,
+            tree: %{},
+            expanded: MapSet.new(),
+            error: :no_such_file,
+            selected: "a.txt",
+            content: %{
+              path: Path.join(root, "a.txt"),
+              content: "hello a",
+              size: 7,
+              truncated: false,
+              binary: false
+            }
+          }
+        )
+
+      assert {:noreply, socket} = ChatLive.handle_event("files_close", %{}, socket)
+
+      assert files(socket).selected == nil
+      assert files(socket).content == nil
+      assert files(socket).error == nil
+    end
+
+    test "files_open with a traversal path is refused (no read outside the root)", %{root: root} do
+      socket = files_socket(cwd: root)
+
+      assert {:noreply, socket} =
+               ChatLive.handle_event("files_open", %{"path" => "../secret.txt"}, socket)
+
+      assert files(socket).error == :outside_root
+      assert files(socket).selected == nil
+      assert files(socket).content == nil
+    end
+
+    test "files_toggle with a traversal path is refused (no listing outside the root)", %{
+      root: root
+    } do
+      socket = files_socket(cwd: root)
+
+      assert {:noreply, socket} =
+               ChatLive.handle_event("files_toggle", %{"path" => "../.."}, socket)
+
+      assert files(socket).error == :outside_root
+      assert files(socket).tree == %{}
+      assert files(socket).expanded == MapSet.new()
+    end
+
+    # The handle_event tests above only prove the *assigns* are set. This one
+    # drives the actual LiveView render pipeline (render/1 -> files_panel/1)
+    # and asserts on the emitted HTML, proving the Files tab is what the
+    # browser receives — not just server-side state.
+    test "render/1 emits the Files tab button and the file listing", %{root: root} do
+      # mount/3 populates every assign render/1 reads (provider/model/sessions/
+      # terminals/...); we then override only the Files-tab state.
+      {:ok, socket} = ChatLive.mount(%{}, nil, %Phoenix.LiveView.Socket{})
+
+      assigns =
+        socket.assigns
+        |> Map.put(:cwd, root)
+        |> Map.put(:details_tab, :files)
+        |> Map.put(:show_details, true)
+        # A bare socket is "disconnected" so mount sets page_loading: true,
+        # which would render only the "Connecting…" div and skip the tab bar.
+        |> Map.put(:page_loading, false)
+        |> Map.put(:files, %{
+          root: root,
+          tree: %{
+            root => [
+              %{name: "subdir", path: Path.join(root, "subdir"), is_dir: true},
+              %{name: "a.txt", path: Path.join(root, "a.txt"), is_dir: false}
+            ]
+          },
+          expanded: MapSet.new([root]),
+          error: nil,
+          selected: nil,
+          content: nil
+        })
+
+      socket = %{socket | assigns: assigns}
+
+      # render/1 takes the assigns map and returns a Phoenix.LiveView.Rendered
+      # struct; convert it to the HTML string the client would receive.
+      html =
+        ChatLive.render(socket.assigns) |> Phoenix.HTML.Safe.to_iodata() |> IO.iodata_to_binary()
+
+      # The Files tab button (chat_live.ex:1662) is present in the tab bar.
+      assert html =~ ~s(phx-value-tab="files")
+      assert html =~ ">Files</button>"
+      # The panel is mounted (not the "open a folder" empty state).
+      assert html =~ "files-panel"
+      # The tree rows (files_tree_row/1) render the known entries, each dir
+      # with its lazy expand/collapse toggle.
+      assert html =~ "files-row-name"
+      assert html =~ "files-toggle"
+      assert html =~ "a.txt"
+      assert html =~ "subdir"
+    end
+  end
 end
