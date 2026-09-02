@@ -1,0 +1,235 @@
+# CI for ex_athena — see https://github.com/udin-io/ex_athena/issues/171.
+#
+# Two classes of check live in this file, and the split is deliberate. Every
+# step below is named BLOCKING or ADVISORY; read the name, not the tick.
+#
+#   BLOCKING — a failure fails the build:
+#     * mix compile --warnings-as-errors
+#     * mix test
+#     * mix format --check-formatted
+#     * mix hex.audit   (retired hex packages)
+#
+#   ADVISORY — runs on every PR, prints its findings, never fails the build:
+#     * mix credo --strict
+#     * mix dialyzer
+#     * mix sobelow --config
+#     * mix deps.audit  (known-vulnerable hex packages)
+#
+# ADVISORY IS NOT THE SAME AS PASSING. Measured on main at 4caa611 (2026-09-02),
+# before this workflow existed:
+#
+#     mix credo --strict   244 findings (6 warning / 103 refactor / 49 readability / 86 design), exit 30
+#     mix dialyzer          41 warnings, exit 2
+#     mix sobelow           69 findings (2 high + 1 high-confidence config, 66 low), exit 1 with `exit: :low`
+#     mix deps.audit         5 advisories in mix.lock (req, cowboy, cowlib), exit 1
+#
+# credo and dialyxir have been declared in mix.exs for a long time and never
+# run, so those two backlogs accumulated unseen. Making any of the four blocking
+# today would mean either fixing ~350 findings inside a CI ticket or suppressing
+# them — neither is acceptable, and both would turn this into a different PR. So
+# they run, loudly, on every PR while the backlog is burned down under its own
+# issues.
+#
+# Nothing is suppressed to buy a green tick. There is no `# credo:disable-for-*`,
+# no `@dialyzer {:nowarn_function, ...}`, no `.dialyzer_ignore.exs`, no
+# `# sobelow_skip`, and `.sobelow-conf` has `ignore: []` / `skip: false`.
+# `mix deps.audit` is run without `--ignore-advisory-ids`.
+#
+# When a backlog reaches zero, delete that step's `continue-on-error: true` and
+# it becomes blocking. That is the whole migration.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # BLOCKING. The matrix is the range mix.exs claims to support
+    # (`elixir: "~> 1.18"`). 1.18/OTP 27 is the floor and matches local dev; the
+    # newer pairs stop the declared range from quietly rotting.
+    name: test (elixir ${{ matrix.elixir }} / otp ${{ matrix.otp }})
+    runs-on: ubuntu-24.04
+    env:
+      MIX_ENV: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - elixir: "1.18.5"
+            otp: "27.3.4.17"
+          - elixir: "1.19.6"
+            otp: "28.5.0.6"
+          - elixir: "1.20.4"
+            otp: "28.5.0.6"
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: ${{ matrix.otp }}
+          elixir-version: ${{ matrix.elixir }}
+
+      # ExAthena.Sandbox shells out to `bwrap` on Linux (`sandbox-exec` on
+      # macOS) and ExAthena.Tools.Bash fails closed when the helper is missing,
+      # so the confinement tests need it present. Ubuntu 24.04 also gates
+      # unprivileged user namespaces behind AppArmor, which bwrap requires —
+      # relaxed here for the runner VM only.
+      - name: Install bubblewrap (sandbox helper for the confinement tests)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Cache deps and _build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-test-${{ matrix.otp }}-${{ matrix.elixir }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-test-${{ matrix.otp }}-${{ matrix.elixir }}-
+
+      - run: mix deps.get
+
+      - name: Compile deps
+        run: mix deps.compile
+
+      - name: BLOCKING — mix compile --warnings-as-errors
+        run: mix compile --warnings-as-errors
+
+      - name: BLOCKING — mix test
+        run: mix test
+
+  format:
+    # BLOCKING. Cheap, and green on main today, so there is no reason for it
+    # not to be.
+    name: format
+    runs-on: ubuntu-24.04
+    env:
+      MIX_ENV: test
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.3.4.17"
+          elixir-version: "1.18.5"
+
+      - name: Cache deps
+        uses: actions/cache@v4
+        with:
+          path: deps
+          key: ${{ runner.os }}-deps-1.18.5-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-deps-1.18.5-
+
+      # .formatter.exs does `import_deps: [:phoenix, :phoenix_live_view]`, so
+      # the dep sources have to be on disk — but they never need compiling.
+      - run: mix deps.get
+
+      - name: BLOCKING — mix format --check-formatted
+        run: mix format --check-formatted
+
+  security:
+    # This library shells out to OS processes, drives an HTTP client, and ships
+    # a web console, so dependency advisories and Phoenix-shaped findings matter
+    # here. Only hex.audit is blocking today — see the header for why the other
+    # two are not, and what they currently report.
+    name: security
+    runs-on: ubuntu-24.04
+    env:
+      MIX_ENV: dev
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.3.4.17"
+          elixir-version: "1.18.5"
+
+      - name: Cache deps and _build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-dev-27.3.4.17-1.18.5-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-dev-27.3.4.17-1.18.5-
+
+      - run: mix deps.get
+
+      - name: BLOCKING — mix hex.audit (retired hex packages)
+        run: mix hex.audit
+
+      - name: ADVISORY — mix deps.audit (5 advisories in mix.lock today; needs a dependency-bump PR, not a suppression)
+        run: mix deps.audit
+        continue-on-error: true
+
+      - name: ADVISORY — mix sobelow --config (69 findings today; tracked for burn-down)
+        run: mix sobelow --config
+        continue-on-error: true
+
+  advisory:
+    # ADVISORY — every step here is `continue-on-error: true` on purpose. Read
+    # the header of this file before reading a green tick here as "clean".
+    name: static analysis (advisory)
+    runs-on: ubuntu-24.04
+    env:
+      MIX_ENV: dev
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.3.4.17"
+          elixir-version: "1.18.5"
+
+      - name: Cache deps and _build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-dev-27.3.4.17-1.18.5-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-dev-27.3.4.17-1.18.5-
+
+      - run: mix deps.get
+
+      - name: Compile
+        run: mix compile
+
+      - name: ADVISORY — mix credo --strict (244 findings today; tracked for burn-down)
+        run: mix credo --strict
+        continue-on-error: true
+
+      # The PLT is the expensive half of dialyzer — minutes on a cold cache,
+      # seconds on a warm one. Keyed on OTP + Elixir + mix.lock because a PLT
+      # built against a different version of any of those is invalid. mix.exs
+      # points dialyxir at ./plts so this cache can address it directly.
+      - name: Cache dialyzer PLT
+        uses: actions/cache@v4
+        with:
+          path: plts
+          key: ${{ runner.os }}-plt-27.3.4.17-1.18.5-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-plt-27.3.4.17-1.18.5-
+
+      - name: Build dialyzer PLT
+        run: mix dialyzer --plt
+
+      - name: ADVISORY — mix dialyzer (41 warnings today; tracked for burn-down)
+        run: mix dialyzer --format short
+        continue-on-error: true
