@@ -16,7 +16,14 @@ defmodule ExAthena.MixProject do
       package: package(),
       docs: docs(),
       name: "ExAthena",
-      source_url: @source_url
+      source_url: @source_url,
+      # PLTs live outside _build so CI can cache them on their own key: a PLT is
+      # valid only for a given OTP + Elixir + mix.lock, and is far more
+      # expensive to rebuild than the rest of _build. Gitignored.
+      dialyzer: [
+        plt_local_path: "plts",
+        plt_core_path: "plts"
+      ]
     ]
   end
 
