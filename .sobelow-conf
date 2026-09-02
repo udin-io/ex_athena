@@ -1,0 +1,24 @@
+# Sobelow configuration — consumed by `mix sobelow --config` (see .github/workflows/ci.yml).
+#
+# `ignore`, `ignore_files` and `skip` are deliberately empty/false and should
+# stay that way. Sobelow findings on this repo are surfaced, not suppressed: the
+# CI step that runs this config is advisory precisely so that nothing has to be
+# silenced to keep the build green. Fix findings; do not list them here.
+#
+# `exit: :low` makes the task exit non-zero whenever anything at or above low
+# confidence is reported, so the advisory step reports honestly instead of
+# always looking green.
+[
+  exit: :low,
+  format: "txt",
+  ignore: [],
+  ignore_files: [],
+  out: nil,
+  # Skip sobelow's own "is there a newer version" network call — CI should not
+  # depend on an outbound request to decide whether it can run.
+  private: true,
+  router: "lib/ex_athena/web/router.ex",
+  skip: false,
+  threshold: :low,
+  verbose: false
+]

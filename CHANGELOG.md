@@ -7,6 +7,23 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## Unreleased
 
+### Added
+
+- **CI, at last.** ([#171](https://github.com/udin-io/ex_athena/issues/171))
+  The repo had no `.github/` at all: `credo` and `dialyxir` were declared in
+  `mix.exs` and never run, and there was no dependency-advisory or static
+  security scanning. A GitHub Actions workflow now runs on every push to `main`
+  and every pull request. Blocking: `mix test` (matrixed over Elixir
+  1.18/1.19/1.20 on OTP 27/28), `mix compile --warnings-as-errors` on 1.18, and
+  `mix format --check-formatted`. Advisory — reported on every PR but not
+  failing the build while the backlogs are burned down: `mix credo --strict`,
+  `mix dialyzer`, `mix sobelow --config`, `mix hex.audit`, `mix deps.audit`,
+  and `--warnings-as-errors` on Elixir 1.19/1.20, which the tree does not yet
+  compile clean under. `sobelow` and `mix_audit` are new dev/test dependencies.
+  Nothing is suppressed to keep a check green: `.sobelow-conf` carries an empty
+  ignore list, and there is no dialyzer ignore file or credo disable comment
+  anywhere in the tree.
+
 ### Fixed
 
 - **Reading back through a thread no longer fights a live run.**

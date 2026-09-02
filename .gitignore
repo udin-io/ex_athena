@@ -31,3 +31,6 @@ ex_athena-*.tar
 
 # Machine-local config (provider endpoints, model names) — see config/dev.exs.
 /config/*.local.exs
+
+# Dialyzer PLTs (see the :dialyzer config in mix.exs; cached separately in CI).
+/plts/

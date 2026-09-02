@@ -16,7 +16,14 @@ defmodule ExAthena.MixProject do
       package: package(),
       docs: docs(),
       name: "ExAthena",
-      source_url: @source_url
+      source_url: @source_url,
+      # PLTs live outside _build so CI can cache them on their own key: a PLT is
+      # valid only for a given OTP + Elixir + mix.lock, and is far more
+      # expensive to rebuild than the rest of _build. Gitignored.
+      dialyzer: [
+        plt_local_path: "plts",
+        plt_core_path: "plts"
+      ]
     ]
   end
 
@@ -63,7 +70,10 @@ defmodule ExAthena.MixProject do
       {:lazy_html, ">= 0.1.0", only: :test},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
-      {:dialyxir, "~> 1.4", only: [:dev], runtime: false}
+      {:dialyxir, "~> 1.4", only: [:dev], runtime: false},
+      # Static security analysis + advisory scanning, run by .github/workflows/ci.yml.
+      {:sobelow, "~> 0.15", only: [:dev, :test], runtime: false},
+      {:mix_audit, "~> 2.0", only: [:dev, :test], runtime: false}
     ]
   end
 
