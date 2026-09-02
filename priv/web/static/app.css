@@ -359,6 +359,70 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   min-width: 0;
 }
 
+/* ── Jump to latest ───────────────────────────────────────────────────────── */
+
+/* Empty mount point for the pill the ScrollToBottom hook builds. It overlays
+   its pane's scrolling area without being inside it — an absolutely positioned
+   child of a scroll container scrolls away with the content. */
+.jump-slot { pointer-events: none; }
+
+/* Chat thread: stretch over the messages track (row 1, col 1) so the pill sits
+   above the input bar rather than over it. */
+.chat-main > .jump-slot {
+  position: relative;
+  grid-column: 1;
+  grid-row: 1;
+}
+
+/* Details pane: the scrolling body is the last visible child, so the pane's own
+   bottom edge is the body's bottom edge. */
+.details-pane > .jump-slot {
+  position: absolute;
+  inset: 0;
+}
+
+.jump-latest {
+  position: absolute;
+  right: 20px;
+  bottom: 16px;
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 13px;
+  border-radius: 999px;
+  border: 1px solid var(--accent);
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  transition: background 0.2s, color 0.2s;
+}
+
+[data-theme="light"] .jump-latest { box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12); }
+
+.jump-latest:hover {
+  background: var(--accent);
+  color: #0e0e12;
+}
+
+.jump-latest[hidden] { display: none; }
+
+.jump-latest-arrow { font-size: 13px; line-height: 1; }
+
+/* Narrow panes have no room for a right-anchored pill beside the content, so
+   it centres above the input bar instead. */
+@media (max-width: 600px) {
+  .jump-latest {
+    right: auto;
+    left: 50%;
+    transform: translateX(-50%);
+  }
+}
+
 /* Empty state */
 .empty-state {
   flex: 1;
@@ -1573,6 +1637,8 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   overflow: hidden;
   background: var(--bg);
   min-width: 0;
+  /* Containing block for this pane's jump-to-latest pill. */
+  position: relative;
 }
 
 /* ── Details tabs (Overview / Log / Git) ──────────────────────────────────── */

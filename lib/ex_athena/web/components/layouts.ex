@@ -45,6 +45,13 @@ defmodule ExAthena.Web.Layouts do
           // enough that a deliberate scroll away always disarms the pin.
           const SCROLL_BOTTOM_PX = 64
 
+          // What the jump-to-latest pill counts: whole messages, and the blocks
+          // an assistant turn grows as it streams (a text segment, a tool call,
+          // a reasoning block, a details-pane entry). Deliberately NOT one per
+          // token — "347 new items" tells a reader nothing.
+          const NEW_ITEM_SELECTOR =
+            ".msg, .msg-body, .msg-thinking, .tool-events, .detail-entry"
+
           const Hooks = {
             ThemeToggle: {
               mounted() {
@@ -60,7 +67,8 @@ defmodule ExAthena.Web.Layouts do
             // Keeps a scrolling pane stuck to the bottom, but ONLY while the
             // reader is already there. Scrolling up disarms the pin, so a live
             // run can no longer yank the pane out from under someone reading
-            // back through the thread.
+            // back through the thread; a "jump to latest" pill offers the way
+            // back and re-arms it.
             //
             // updated() runs on EVERY LiveView diff — and the message list is
             // re-diffed per streamed token — so it must never touch layout.
@@ -69,19 +77,37 @@ defmodule ExAthena.Web.Layouts do
             ScrollToBottom: {
               mounted() {
                 this.pinned = true
+                this.newItems = 0
                 this.rafPending = false
+                this.pill = null
+                this.observer = null
+                this.slot = document.getElementById(`${this.el.id}-jump`)
+                this.streamingSeen = this.isStreaming()
+
                 this.onScroll = () => this.measureSoon()
                 this.el.addEventListener("scroll", this.onScroll, {passive: true})
                 this.stick()
               },
 
               updated() {
-                if (this.pinned) this.stick()
+                if (this.pinned) { this.stick(); return }
+                // Scrolled away: the only thing that can change here is whether
+                // the run is still live (the pill hides when it ends). One
+                // dataset read, no layout.
+                const streaming = this.isStreaming()
+                if (streaming !== this.streamingSeen) {
+                  this.streamingSeen = streaming
+                  this.renderPill()
+                }
               },
 
               destroyed() {
                 this.el.removeEventListener("scroll", this.onScroll)
+                this.stopCounting()
+                if (this.pill) this.pill.remove()
               },
+
+              isStreaming() { return this.el.dataset.streaming === "true" },
 
               // Both scroll containers set `scroll-behavior: smooth` in CSS, so
               // the jump has to be forced instant: a smooth jump emits
@@ -107,11 +133,82 @@ defmodule ExAthena.Web.Layouts do
 
               arm() {
                 this.pinned = true
+                this.newItems = 0
+                this.stopCounting()
+                this.renderPill()
                 this.stick()
               },
 
               disarm() {
                 this.pinned = false
+                this.newItems = 0
+                this.streamingSeen = this.isStreaming()
+                this.startCounting()
+                this.renderPill()
+              },
+
+              // Counting only runs while scrolled away, so the common case
+              // (pinned, following a run) pays nothing for it. Watching the DOM
+              // rather than counting updated() calls is what makes the number
+              // mean "items that arrived" instead of "tokens that streamed".
+              startCounting() {
+                if (this.observer) return
+                this.observer = new MutationObserver((records) => {
+                  let added = 0
+                  for (const record of records) {
+                    for (const node of record.addedNodes) {
+                      if (node.nodeType === 1 && node.matches(NEW_ITEM_SELECTOR)) added++
+                    }
+                  }
+                  if (added === 0) return
+                  this.newItems += added
+                  this.renderPill()
+                })
+                this.observer.observe(this.el, {childList: true, subtree: true})
+              },
+
+              stopCounting() {
+                if (!this.observer) return
+                this.observer.disconnect()
+                this.observer = null
+              },
+
+              renderPill() {
+                const show = !this.pinned && this.isStreaming()
+                if (!show) {
+                  if (this.pill) this.pill.hidden = true
+                  return
+                }
+                if (!this.pill) this.buildPill()
+                if (!this.pill) return
+                this.pill.hidden = false
+                this.pillLabel.textContent = this.pillText()
+              },
+
+              pillText() {
+                if (this.newItems === 0) return "jump to latest"
+                const n = this.newItems > 99 ? "99+" : String(this.newItems)
+                return `${n} new ${this.newItems === 1 ? "item" : "items"}`
+              },
+
+              buildPill() {
+                if (!this.slot) return
+                const btn = document.createElement("button")
+                btn.type = "button"
+                btn.className = "jump-latest"
+                btn.setAttribute("aria-live", "polite")
+
+                const arrow = document.createElement("span")
+                arrow.className = "jump-latest-arrow"
+                arrow.textContent = "↓"
+
+                this.pillLabel = document.createElement("span")
+                this.pillLabel.className = "jump-latest-label"
+
+                btn.append(arrow, this.pillLabel)
+                btn.addEventListener("click", () => this.arm())
+                this.slot.appendChild(btn)
+                this.pill = btn
               }
             },
 

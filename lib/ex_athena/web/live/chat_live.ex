@@ -1626,7 +1626,12 @@ defmodule ExAthena.Web.Live.ChatLive do
           >▤</button>
         </div>
 
-        <div class="messages" id="messages" phx-hook="ScrollToBottom">
+        <div
+          class="messages"
+          id="messages"
+          phx-hook="ScrollToBottom"
+          data-streaming={to_string(@streaming)}
+        >
           <%= if @messages == [] and not @streaming do %>
             <div class="empty-state">
               <div class="empty-icon">◈</div>
@@ -1674,6 +1679,13 @@ defmodule ExAthena.Web.Live.ChatLive do
             <div class="msg-error">⚠ {@error}</div>
           <% end %>
         </div>
+
+        <%!-- Mount point for the jump-to-latest pill, owned entirely by the
+              ScrollToBottom hook. It must live OUTSIDE the scroll container
+              (an absolutely positioned child of a scroller scrolls with the
+              content) and be ignored by the server, or the next streamed
+              token's diff would delete the pill the hook just built. --%>
+        <div class="jump-slot" id="messages-jump" phx-update="ignore"></div>
 
         <%= if @show_details do %>
           <div class="chat-divider" id="chat-divider" aria-label="Resize panes" role="separator"></div>
@@ -1765,9 +1777,15 @@ defmodule ExAthena.Web.Live.ChatLive do
                   />
                 </div>
               <% _ -> %>
-                <div class="details-tab-body" id="details-pane" phx-hook="ScrollToBottom">
+                <div
+                  class="details-tab-body"
+                  id="details-pane"
+                  phx-hook="ScrollToBottom"
+                  data-streaming={to_string(@streaming)}
+                >
                   <.details_pane stream={@details_stream} max_diff_lines={Tuning.get(:ui, :max_diff_lines, @max_diff_lines)} />
                 </div>
+                <div class="jump-slot" id="details-pane-jump" phx-update="ignore"></div>
             <% end %>
 
             <%!-- ALWAYS mounted (hidden unless the Terminal tab is active):
