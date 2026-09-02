@@ -33,15 +33,24 @@ defmodule ExAthena.Tools.GlobGrepTest do
 
     pattern = "../#{Path.basename(outside)}/*.ex"
 
+    # `include_artifacts` is on for both calls so that this test measures
+    # confinement and nothing else. A match that escapes the cwd stays absolute
+    # after `Path.relative_to/2`, so the artifact filter sees the whole
+    # `System.tmp_dir!()` prefix — and on Linux that prefix is literally `/tmp`,
+    # which is one of the artifact dirs. Without this the unconfined control
+    # assertion below fails on every Linux box (including CI) for a reason that
+    # has nothing to do with allowed_roots.
+    args = %{"pattern" => pattern, "include_artifacts" => true}
+
     # Unconfined: the `..` escapes and finds the sibling file.
-    assert {:ok, unconfined, _} = Glob.execute(%{"pattern" => pattern}, ctx)
+    assert {:ok, unconfined, _} = Glob.execute(args, ctx)
     assert unconfined =~ "secret.ex"
 
     # Confined to [dir]: the out-of-root match is filtered away.
     confined = ToolContext.new(cwd: dir, allowed_roots: [dir])
 
     assert {:ok, "(no matches)", %{payload: %{count: 0}}} =
-             Glob.execute(%{"pattern" => pattern}, confined)
+             Glob.execute(args, confined)
   end
 
   test "Glob returns '(no matches)' on empty", %{ctx: ctx} do
