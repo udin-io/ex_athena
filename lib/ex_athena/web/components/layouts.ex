@@ -40,6 +40,11 @@ defmodule ExAthena.Web.Layouts do
             localStorage.setItem(THEME_KEY, light ? "light" : "dark")
           }
 
+          // How close to the bottom still counts as "at the bottom". Large
+          // enough to survive fractional-pixel scrollHeight rounding, small
+          // enough that a deliberate scroll away always disarms the pin.
+          const SCROLL_BOTTOM_PX = 64
+
           const Hooks = {
             ThemeToggle: {
               mounted() {
@@ -52,10 +57,62 @@ defmodule ExAthena.Web.Layouts do
                 }
               }
             },
+            // Keeps a scrolling pane stuck to the bottom, but ONLY while the
+            // reader is already there. Scrolling up disarms the pin, so a live
+            // run can no longer yank the pane out from under someone reading
+            // back through the thread.
+            //
+            // updated() runs on EVERY LiveView diff — and the message list is
+            // re-diffed per streamed token — so it must never touch layout.
+            // The pinned flag is computed in a passive, rAF-coalesced scroll
+            // listener; updated() only reads the cached boolean.
             ScrollToBottom: {
-              mounted()  { this.scrollToBottom() },
-              updated()  { this.scrollToBottom() },
-              scrollToBottom() { this.el.scrollTop = this.el.scrollHeight }
+              mounted() {
+                this.pinned = true
+                this.rafPending = false
+                this.onScroll = () => this.measureSoon()
+                this.el.addEventListener("scroll", this.onScroll, {passive: true})
+                this.stick()
+              },
+
+              updated() {
+                if (this.pinned) this.stick()
+              },
+
+              destroyed() {
+                this.el.removeEventListener("scroll", this.onScroll)
+              },
+
+              // Both scroll containers set `scroll-behavior: smooth` in CSS, so
+              // the jump has to be forced instant: a smooth jump emits
+              // intermediate scroll events that read as "not at the bottom",
+              // which would disarm the pin mid-flight and never re-arm it.
+              stick() {
+                this.el.scrollTo({top: this.el.scrollHeight, behavior: "instant"})
+              },
+
+              // One layout read per animation frame, no matter how many scroll
+              // events fire.
+              measureSoon() {
+                if (this.rafPending) return
+                this.rafPending = true
+                requestAnimationFrame(() => {
+                  this.rafPending = false
+                  const gap = this.el.scrollHeight - this.el.scrollTop - this.el.clientHeight
+                  const atBottom = gap <= SCROLL_BOTTOM_PX
+                  if (atBottom === this.pinned) return
+                  if (atBottom) this.arm(); else this.disarm()
+                })
+              },
+
+              arm() {
+                this.pinned = true
+                this.stick()
+              },
+
+              disarm() {
+                this.pinned = false
+              }
             },
 
             // A real terminal via xterm.js over the erlexec PTY. The hook
