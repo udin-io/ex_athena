@@ -12,7 +12,9 @@ defmodule ExAthena.Web.Live.ChatLiveFilesUITest do
   alias ExAthena.Web.Endpoint
   @endpoint Endpoint
 
-  setup do
+  @moduletag :tmp_dir
+
+  setup %{tmp_dir: tmp_dir} do
     # Start the (server: false) endpoint in-process so `live/2` can mount the
     # connected LiveView. Linked to the test process, so it's reaped on exit.
     case Endpoint.start_link() do
@@ -22,16 +24,10 @@ defmodule ExAthena.Web.Live.ChatLiveFilesUITest do
 
     # Temp fixture: a root with one subdirectory holding one text file, plus a
     # root-level text file, so the lazy tree + viewer are meaningful.
-    parent =
-      System.tmp_dir!() <> "/ex_athena_files_ui_" <>
-        Integer.to_string(:erlang.unique_integer([:positive]))
-
-    root = Path.join(parent, "root")
+    root = Path.join(tmp_dir, "root")
     File.mkdir_p!(Path.join(root, "subdir"))
     File.write!(Path.join(root, "subdir/inner.txt"), "inner file content")
     File.write!(Path.join(root, "a.txt"), "hello a")
-
-    on_exit(fn -> File.rm_rf!(parent) end)
 
     %{conn: Phoenix.ConnTest.build_conn(), root: root}
   end

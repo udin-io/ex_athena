@@ -909,14 +909,10 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
       |> IO.iodata_to_binary()
     end
 
-    setup do
-      # `File.mkdtemp!/1` is unavailable in this Elixir build; build a unique
-      # temp dir from `System.tmp_dir!/0` + a unique integer instead.
-      parent =
-        System.tmp_dir!() <> "/ex_athena_files_tab_" <>
-          Integer.to_string(:erlang.unique_integer([:positive]))
+    @describetag :tmp_dir
 
-      File.mkdir_p!(parent)
+    setup %{tmp_dir: tmp_dir} do
+      parent = tmp_dir
       root = Path.join(parent, "root")
 
       File.mkdir_p!(Path.join(root, "subdir"))
@@ -925,8 +921,6 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
       File.write!(Path.join(root, "data.bin"), <<0, 1, 2>>)
       # A file OUTSIDE the root, to prove traversal is refused.
       File.write!(Path.join(parent, "secret.txt"), "top secret")
-
-      on_exit(fn -> File.rm_rf!(parent) end)
 
       %{root: root, parent: parent}
     end
@@ -941,6 +935,7 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
       assert files(socket).root == root
       assert files(socket).error == nil
       assert MapSet.member?(files(socket).expanded, root)
+
       assert files(socket).tree[root] == [
                %{name: "subdir", path: Path.join(root, "subdir"), is_dir: true},
                %{name: "a.txt", path: Path.join(root, "a.txt"), is_dir: false},
@@ -965,12 +960,15 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
       subdir = Path.join(root, "subdir")
       socket = files_socket(cwd: root)
 
-      assert {:noreply, socket} = ChatLive.handle_event("files_toggle", %{"path" => subdir}, socket)
+      assert {:noreply, socket} =
+               ChatLive.handle_event("files_toggle", %{"path" => subdir}, socket)
 
       assert MapSet.member?(files(socket).expanded, subdir)
+
       assert files(socket).tree[subdir] == [
                %{name: "inner.txt", path: Path.join(root, "subdir/inner.txt"), is_dir: false}
              ]
+
       assert files(socket).error == nil
     end
 
@@ -978,7 +976,8 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
       subdir = Path.join(root, "subdir")
       socket = files_socket(cwd: root, files: %{default_files() | expanded: MapSet.new([subdir])})
 
-      assert {:noreply, socket} = ChatLive.handle_event("files_toggle", %{"path" => subdir}, socket)
+      assert {:noreply, socket} =
+               ChatLive.handle_event("files_toggle", %{"path" => subdir}, socket)
 
       refute MapSet.member?(files(socket).expanded, subdir)
       assert files(socket).error == nil
@@ -987,7 +986,8 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
     test "files_open on a text file sets selected and content", %{root: root} do
       socket = files_socket(cwd: root)
 
-      assert {:noreply, socket} = ChatLive.handle_event("files_open", %{"path" => "a.txt"}, socket)
+      assert {:noreply, socket} =
+               ChatLive.handle_event("files_open", %{"path" => "a.txt"}, socket)
 
       assert files(socket).selected == Path.join(root, "a.txt")
       assert files(socket).error == nil
@@ -1045,10 +1045,13 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
       assert files(socket).content == nil
     end
 
-    test "files_toggle with a traversal path is refused (no listing outside the root)", %{root: root} do
+    test "files_toggle with a traversal path is refused (no listing outside the root)", %{
+      root: root
+    } do
       socket = files_socket(cwd: root)
 
-      assert {:noreply, socket} = ChatLive.handle_event("files_toggle", %{"path" => "../.."}, socket)
+      assert {:noreply, socket} =
+               ChatLive.handle_event("files_toggle", %{"path" => "../.."}, socket)
 
       assert files(socket).error == :outside_root
       assert files(socket).tree == %{}
@@ -1090,7 +1093,8 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
 
       # render/1 takes the assigns map and returns a Phoenix.LiveView.Rendered
       # struct; convert it to the HTML string the client would receive.
-      html = ChatLive.render(socket.assigns) |> Phoenix.HTML.Safe.to_iodata() |> IO.iodata_to_binary()
+      html =
+        ChatLive.render(socket.assigns) |> Phoenix.HTML.Safe.to_iodata() |> IO.iodata_to_binary()
 
       # The Files tab button (chat_live.ex:1662) is present in the tab bar.
       assert html =~ ~s(phx-value-tab="files")
