@@ -318,6 +318,88 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
       |> Enum.map(& &1.payload.tool_call_id)
     end
 
+    # The tool history recovers, but a run's REASONING did not: a session
+    # reopened after the browser had gone showed the worker spawns with none
+    # of the thinking that chose them. It is in `ex_snapshot` too — the same
+    # place the tool rows come from.
+    defp reasoning_snap(steps) do
+      Enum.flat_map(steps, fn {id, name, reasoning} ->
+        [
+          %Message{
+            role: :assistant,
+            content: "",
+            reasoning: reasoning,
+            tool_calls: [%ToolCall{id: id, name: name, arguments: %{}}]
+          },
+          %Message{
+            role: :tool,
+            content: nil,
+            tool_results: [
+              %ToolResult{tool_call_id: id, content: "result of #{id}", is_error: false}
+            ]
+          }
+        ]
+      end)
+    end
+
+    defp thinking_texts(stream) do
+      stream
+      |> Enum.filter(&(&1.type == :thinking))
+      |> Enum.map(& &1.payload.text)
+    end
+
+    test "recovers the thinking that led to a missing tool call" do
+      snapshot = reasoning_snap([{"c1", "spawn_agent", "delegating the explore step"}])
+      messages = [%{id: "a1", role: :assistant, text: "done", ex_snapshot: snapshot}]
+
+      stream = ChatLive.restore_details_stream(session(messages, [])).details_stream
+
+      assert thinking_texts(stream) == ["delegating the explore step"]
+
+      # Chronological within the step: the thinking that chose the call sits
+      # older than the call itself (the stream is newest-first).
+      types = Enum.map(stream, & &1.type)
+
+      assert Enum.find_index(types, &(&1 == :tool_call)) <
+               Enum.find_index(types, &(&1 == :thinking))
+    end
+
+    test "does not duplicate thinking for a step the stream already has" do
+      snapshot =
+        reasoning_snap([
+          {"c1", "spawn_agent", "already recorded"},
+          {"c2", "todo_write", "never recorded"}
+        ])
+
+      messages = [%{id: "a1", role: :assistant, text: "done", ex_snapshot: snapshot}]
+
+      kept = [
+        %{
+          id: "d1",
+          type: :tool_call,
+          message_id: "a1",
+          payload: %{tool_call_id: "c1", name: "spawn_agent", arguments: %{}}
+        },
+        %{id: "d2", type: :thinking, message_id: "a1", payload: %{text: "already recorded"}}
+      ]
+
+      stream = ChatLive.restore_details_stream(session(messages, kept)).details_stream
+
+      # Each text appears exactly once. (Recovered rows land at the turn's
+      # older end by existing design, so order is kept-then-recovered.)
+      assert Enum.sort(thinking_texts(stream)) == ["already recorded", "never recorded"]
+    end
+
+    test "a step with no reasoning recovers its tool rows as before" do
+      snapshot = reasoning_snap([{"c1", "todo_write", nil}])
+      messages = [%{id: "a1", role: :assistant, text: "done", ex_snapshot: snapshot}]
+
+      stream = ChatLive.restore_details_stream(session(messages, [])).details_stream
+
+      assert thinking_texts(stream) == []
+      assert call_ids(stream) == ["c1"]
+    end
+
     test "recovers a turn whose details were never persisted at all" do
       data = session([turn("a1", [{"c1", "spawn_agent"}, {"c2", "todo_write"}])], [])
 
