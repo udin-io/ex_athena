@@ -39,6 +39,7 @@ defmodule ExAthena.Orchestrator.Coordinator do
   use GenServer, restart: :temporary
 
   alias ExAthena.Orchestrator.AgentInfo
+  alias ExAthena.Result
 
   @flush_ms 100
   @default_retention_ms 5 * 60 * 1000
@@ -112,6 +113,42 @@ defmodule ExAthena.Orchestrator.Coordinator do
   end
 
   @doc """
+  The observed state of one agent, by the id `SpawnAgent` generated for it.
+
+  The coordinator accumulates a worker's todos, conclusions and transcript as
+  they stream past, so this is the only account of what a worker had learned
+  once the worker itself has been killed — see `SpawnAgent`'s timeout path.
+  """
+  @spec agent_info(pid() | String.t(), term()) :: {:ok, AgentInfo.t()} | {:error, :not_found}
+  def agent_info(coordinator, agent_id) do
+    case resolve(coordinator) do
+      nil -> {:error, :not_found}
+      pid -> GenServer.call(pid, {:agent_info, agent_id})
+    end
+  end
+
+  @doc """
+  Close a snapshot out with the run's own terminal `Result`.
+
+  The coordinator marks `main` done from the `{:done, _}` event it observes,
+  but that snapshot reaches a host asynchronously (batched, see `@flush_ms`)
+  and loses the race against the host persisting the finished run. Applying
+  the result directly needs no such ordering: it is the same transition the
+  event would have made, so a persisted session never claims a finished run is
+  still going.
+  """
+  @spec finalize(map(), Result.t()) :: map()
+  def finalize(%{main: %AgentInfo{} = main} = snapshot, %Result{} = result) do
+    %{
+      snapshot
+      | main: AgentInfo.apply_event(main, {:done, result}),
+        agents: Enum.map(snapshot.agents, &AgentInfo.fail/1)
+    }
+  end
+
+  def finalize(snapshot, _result), do: snapshot
+
+  @doc """
   Subscribe `pid` to batched `{:orchestrator_update, session_id, snapshot}`
   messages. Subscribe-then-snapshot in one call, so no update can fall in
   between. The subscriber is monitored and dropped on exit.
@@ -166,6 +203,17 @@ defmodule ExAthena.Orchestrator.Coordinator do
   @impl GenServer
   def handle_call(:snapshot, _from, state) do
     {:reply, build_snapshot(state), state}
+  end
+
+  @impl GenServer
+  def handle_call({:agent_info, agent_id}, _from, state) do
+    reply =
+      case Map.fetch(state.agents, agent_id) do
+        {:ok, info} -> {:ok, info}
+        :error -> {:error, :not_found}
+      end
+
+    {:reply, reply, state}
   end
 
   @impl GenServer

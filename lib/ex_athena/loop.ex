@@ -938,9 +938,18 @@ defmodule ExAthena.Loop do
       ExAthena.Orchestrator.Coordinator.notify(coordinator, sub_id, event)
     end
 
+    # The read side of the same channel. A worker killed on timeout takes its
+    # Result with it, so the coordinator's observation is the only surviving
+    # record of what it had found — SpawnAgent reads it back to build the
+    # handoff digest instead of returning a bare timeout.
+    progress_reader = fn sub_id ->
+      ExAthena.Orchestrator.Coordinator.agent_info(coordinator, sub_id)
+    end
+
     assigns
     |> Map.put(:todo_writer, todo_writer)
     |> Map.put(:agent_event_sink, sink)
+    |> Map.put(:agent_progress_reader, progress_reader)
   end
 
   defp maybe_put_subagent_suffix(assigns, nil), do: assigns
