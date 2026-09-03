@@ -146,7 +146,8 @@ defmodule ExAthena.Orchestrator.AgentInfo do
     %{info | status: :waiting_gpu, current_action: "waiting for a GPU slot"}
   end
 
-  def apply_event(info, {:queue_wait, %{status: :acquired}}) do
+  def apply_event(info, {:queue_wait, %{status: status}})
+      when status in [:acquired, :abandoned] do
     %{info | status: :running, current_action: "thinking…"}
   end
 

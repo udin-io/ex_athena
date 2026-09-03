@@ -46,7 +46,7 @@ defmodule ExAthena.Tools.SpawnAgent do
   """
 
   alias ExAthena.Agents
-  alias ExAthena.Agents.{Sidechain, Worktree}
+  alias ExAthena.Agents.{Deadline, Sidechain, Worktree}
   alias ExAthena.Orchestrator.AgentInfo
   alias ExAthena.Tuning
 
@@ -143,9 +143,13 @@ defmodule ExAthena.Tools.SpawnAgent do
   # see the depth rail in execute/2.
   @default_max_agent_depth 5
 
-  # Wall clock a worker gets when nothing narrower applies. See
-  # `configured_timeout/1` and `deadline_for/3`.
+  # Working time a worker gets when nothing narrower applies. See
+  # `configured_timeout/1` and `ExAthena.Agents.Deadline`.
   @default_timeout_ms 1_800_000
+
+  # How often `await_worker/3` re-reads the worker's accrued queue credit
+  # while blocked on it. Only bounds how late a deadline extension is noticed.
+  @poll_ms 1_000
 
   # Where the worker's instruction comes from, in order of preference.
   #
@@ -209,7 +213,7 @@ defmodule ExAthena.Tools.SpawnAgent do
     assigns = ctx.assigns || %{}
     now = System.monotonic_time(:millisecond)
 
-    case deadline_for(assigns, configured_timeout(assigns), now) do
+    case Deadline.for_child(assigns, configured_timeout(assigns), now) do
       :exhausted ->
         {:error,
          "not started: the run's deadline is exhausted. " <>
@@ -232,33 +236,8 @@ defmodule ExAthena.Tools.SpawnAgent do
     end
   end
 
-  @doc """
-  The monotonic-clock deadline a worker spawned right now must respect.
-
-  Every level used to be granted `timeout_ms` afresh, so a depth-4 worker
-  could outlive the root that was waiting on it — live, a worker whose parent
-  had already been killed at its 30 minute mark ran for 99 more minutes.
-  A deadline is inherited through `assigns[:agent_deadline_at]` and can only
-  move earlier: the worker gets whichever of its own budget and its parent's
-  remaining time runs out first.
-
-  Returns `:exhausted` when there is no time left, so the caller can refuse
-  the spawn instead of starting a worker that cannot finish.
-  """
-  @spec deadline_for(map(), pos_integer(), integer()) :: {:ok, integer()} | :exhausted
-  def deadline_for(assigns, configured_ms, now) do
-    own = now + configured_ms
-
-    deadline =
-      case Map.get(assigns, :agent_deadline_at) do
-        inherited when is_integer(inherited) -> min(inherited, own)
-        _ -> own
-      end
-
-    if deadline > now, do: {:ok, deadline}, else: :exhausted
-  end
-
   defp do_execute(args, prompt, ctx, deadline, timeout) do
+    wait_counter = Deadline.new_counter()
     prompt = compose_worker_prompt(prompt, args, ctx.cwd)
 
     {agent_def, base_opts} = resolve_agent(args, ctx)
@@ -286,7 +265,7 @@ defmodule ExAthena.Tools.SpawnAgent do
       )
       |> apply_prompt_suffix(ctx)
       |> attribute_events(sub_id, ctx, args, agent_def, child_depth)
-      |> put_deadline(deadline)
+      |> put_deadline(deadline, wait_counter)
       |> Keyword.put(:parent_session_id, ctx.session_id)
       |> inherit_guardrails(ctx)
 
@@ -333,7 +312,7 @@ defmodule ExAthena.Tools.SpawnAgent do
         ExAthena.Loop.run(prompt, sub_opts)
       end)
 
-    raw_result = Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill)
+    raw_result = await_worker(task, deadline, wait_counter)
 
     # Reap unconditionally: on timeout this kills the subtree the worker left
     # behind, and on success it retires a supervisor that would otherwise
@@ -466,10 +445,29 @@ defmodule ExAthena.Tools.SpawnAgent do
               isolation: finalized_isolation
             })
 
-          timed_out(ctx, sub_id, timeout)
+          timed_out(ctx, sub_id, timeout, Deadline.waited(%{agent_wait_counters: [wait_counter]}))
       end
 
     result
+  end
+
+  # Wait for the worker on its WORKING clock, not the wall clock: time its
+  # subtree spends queued for a provider slot is credited back and pushes the
+  # deadline out (see `ExAthena.Agents.Deadline`). Polling re-reads the credit
+  # as it accrues — the budget can be extended while we are already blocked.
+  defp await_worker(task, deadline, counter) do
+    case Deadline.remaining(deadline, counter, System.monotonic_time(:millisecond)) do
+      left when is_integer(left) and left <= 0 ->
+        Task.shutdown(task, :brutal_kill)
+
+      left ->
+        wait = if left == :paused, do: @poll_ms, else: min(left, @poll_ms)
+
+        case Task.yield(task, wait) do
+          nil -> await_worker(task, deadline, counter)
+          result -> result
+        end
+    end
   end
 
   # A timed-out worker is brutal-killed, so its `Result` — and with it every
@@ -479,21 +477,31 @@ defmodule ExAthena.Tools.SpawnAgent do
   # already does. Live, one worker was killed at its 30 minute mark after 19
   # iterations and 555k input tokens, and returned literally nothing; the
   # orchestrator re-delegated the same ground twice.
-  defp timed_out(ctx, sub_id, timeout) do
+  defp timed_out(ctx, sub_id, timeout, queued_ms) do
+    spent = describe_budget(timeout, queued_ms)
+
     case progress_digest(ctx, sub_id) do
       nil ->
-        notify_failure(ctx, sub_id, "timed out after #{timeout}ms — no progress recorded")
+        notify_failure(ctx, sub_id, "timed out after #{spent} — no progress recorded")
         {:error, {:sub_agent_timeout, timeout}}
 
       digest ->
-        notify_failure(ctx, sub_id, "timed out after #{timeout}ms:\n#{digest}")
+        notify_failure(ctx, sub_id, "timed out after #{spent}:\n#{digest}")
 
         {:error,
-         "worker timed out after #{timeout}ms. " <>
+         "worker timed out after #{spent}. " <>
            "What it learned before stopping:\n#{digest}\n" <>
            "Re-delegate a narrower slice building on those findings, or finish without it."}
     end
   end
+
+  # Naming the queue time keeps the orchestrator from reading a slow worker as
+  # a stuck one: on a single-slot provider a worker can burn most of an hour of
+  # wall clock without being given the chance to do anything wrong.
+  defp describe_budget(timeout, queued_ms) when queued_ms > 0,
+    do: "#{timeout}ms of working time (plus #{queued_ms}ms queued for a provider slot)"
+
+  defp describe_budget(timeout, _queued_ms), do: "#{timeout}ms"
 
   defp progress_digest(ctx, sub_id) do
     with reader when is_function(reader, 1) <-
@@ -518,11 +526,11 @@ defmodule ExAthena.Tools.SpawnAgent do
     :exit, {reason, _} when reason in [:noproc, :normal, :shutdown] -> :ok
   end
 
-  defp put_deadline(sub_opts, deadline) do
+  defp put_deadline(sub_opts, deadline, counter) do
     assigns =
       sub_opts
       |> Keyword.get(:assigns, %{})
-      |> Map.put(:agent_deadline_at, deadline)
+      |> Deadline.install(deadline, counter)
 
     Keyword.put(sub_opts, :assigns, assigns)
   end

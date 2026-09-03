@@ -151,30 +151,7 @@ defmodule ExAthena.Tools.SpawnAgentSubtreeTest do
       assert message =~ "deadline"
     end
 
-    test "the deadline is the earlier of the parent's and the configured timeout" do
-      now = 1_000_000
-
-      # No inherited deadline: the configured timeout stands on its own.
-      assert {:ok, deadline} = SpawnAgent.deadline_for(%{}, 30_000, now)
-      assert deadline == now + 30_000
-
-      # A nearer parent deadline wins — this is what stops a nested worker
-      # from being re-granted the full timeout at every level.
-      assert {:ok, deadline} =
-               SpawnAgent.deadline_for(%{agent_deadline_at: now + 5_000}, 30_000, now)
-
-      assert deadline == now + 5_000
-
-      # A parent deadline further out than our own budget does not extend us.
-      assert {:ok, deadline} =
-               SpawnAgent.deadline_for(%{agent_deadline_at: now + 90_000}, 30_000, now)
-
-      assert deadline == now + 30_000
-
-      # Already past: refuse rather than start a worker that cannot finish.
-      assert :exhausted = SpawnAgent.deadline_for(%{agent_deadline_at: now}, 30_000, now)
-      assert :exhausted = SpawnAgent.deadline_for(%{agent_deadline_at: now - 1}, 30_000, now)
-    end
+    # The arithmetic itself lives in ExAthena.Agents.DeadlineTest.
   end
 
   describe "timed-out workers hand back their progress" do

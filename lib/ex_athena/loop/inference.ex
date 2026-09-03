@@ -46,6 +46,7 @@ defmodule ExAthena.Loop.Inference do
   """
 
   alias ExAthena.{Budget, Telemetry}
+  alias ExAthena.Agents.Deadline
   alias ExAthena.Loop.{Events, State}
 
   @type option ::
@@ -182,9 +183,31 @@ defmodule ExAthena.Loop.Inference do
       fn -> provider_call(state, request, stream_cb) end,
       Keyword.merge(
         state.meta[:queue_opts] || [],
-        on_wait: Events.queue_wait_emitter(state.on_event, state.meta[:provider_atom])
+        on_wait: queue_wait_callback(state)
       )
     )
+  end
+
+  # Queue time is not the worker's fault and must not be charged to its
+  # deadline — the queue is deliberately entered with `timeout: :infinity`
+  # because a subagent legitimately waits minutes for a slot. The wait pauses
+  # this agent's budget and every ancestor's, then credits the elapsed time
+  # when it closes out; the UI event is emitted as before. `with_slot/3` only
+  # invokes this when the acquire actually blocked, so a free slot costs
+  # nothing, and it closes out every `:waiting` exactly once.
+  defp queue_wait_callback(state) do
+    emitter = Events.queue_wait_emitter(state.on_event, state.meta[:provider_atom])
+    assigns = (state.ctx && state.ctx.assigns) || %{}
+
+    fn notification ->
+      case notification do
+        :waiting -> Deadline.begin_wait(assigns)
+        {_closed, waited_ms} -> Deadline.end_wait(assigns, waited_ms)
+      end
+
+      if is_function(emitter, 1), do: emitter.(notification)
+      :ok
+    end
   end
 
   defp provider_call(state, request, nil),
