@@ -649,6 +649,103 @@ defmodule ExAthena.Modes.OrchestrateTest do
            end)
   end
 
+  # A failed worker's digest goes to the ORCHESTRATOR, not to whoever retries
+  # the step. When the runtime auto-delegated a todo a worker had just failed,
+  # the retry therefore started from nothing: live, it re-derived the same
+  # ground over 38 iterations and 550k input tokens, and landed on a cause the
+  # first attempt had already ruled out.
+  test "an auto-delegated retry carries what the failed attempt learned", %{dir: dir} do
+    test_pid = self()
+    counter = :counters.new(1, [:atomics])
+
+    todos_args = %{
+      "todos" => [%{"content" => "capture the compile error", "status" => "pending"}]
+    }
+
+    responder = fn _request ->
+      :counters.add(counter, 1, 1)
+
+      case :counters.get(counter, 1) do
+        1 ->
+          %Response{text: "the plan", tool_calls: [], finish_reason: :stop, provider: :mock}
+
+        2 ->
+          # The model delegates the todo itself; this worker will fail.
+          %Response{
+            text: "delegating",
+            tool_calls: [
+              %ToolCall{id: "t2", name: "todo_write", arguments: todos_args},
+              %ToolCall{
+                id: "s2",
+                name: "spawn_agent",
+                arguments: %{
+                  "prompt" => "capture the compile error",
+                  "todo" => "capture the compile error"
+                }
+              }
+            ],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+
+        n when n in [3, 4] ->
+          # Two spawn-less turns — the runtime takes the todo over.
+          %Response{
+            text: "thinking",
+            tool_calls: [%ToolCall{id: "t#{n}", name: "todo_write", arguments: todos_args}],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+
+        _ ->
+          %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+      end
+    end
+
+    # Never stops, so with a 1-iteration budget it ends on error_max_turns and
+    # SpawnAgent hands its conclusions back as a digest.
+    sub_responder = fn _request ->
+      %Response{
+        text: "cargo is missing from PATH\nCONCLUSION: cargo is missing from PATH",
+        tool_calls: [%ToolCall{id: "w1", name: "todo_write", arguments: todos_args}],
+        finish_reason: :tool_calls,
+        provider: :mock
+      }
+    end
+
+    on_event = fn ev -> send(test_pid, {:event, ev}) end
+
+    assert {:ok, %Result{}} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: responder],
+               cwd: dir,
+               memory: false,
+               tools: [ExAthena.Tools.TodoWrite, ExAthena.Tools.SpawnAgent],
+               mode: :orchestrate,
+               on_event: on_event,
+               assigns: %{
+                 spawn_agent_opts: [
+                   provider: :mock,
+                   mock: [responder: sub_responder],
+                   memory: false,
+                   max_iterations: 1
+                 ]
+               }
+             )
+
+    # First spawn: the model's own, briefed only with the todo.
+    assert_receive {:event, {:subagent_spawn, %{prompt: first}}}, 10_000
+    refute first =~ "previous attempt"
+
+    # Second spawn: the runtime's retry of the same todo, now carrying the
+    # first attempt's findings instead of starting from scratch.
+    assert_receive {:event, {:subagent_spawn, %{prompt: retry}}}, 10_000
+    assert retry =~ "capture the compile error"
+    assert retry =~ "previous attempt"
+    assert retry =~ "cargo is missing from PATH"
+  end
+
   test "fan-out is capped at the provider's queue slots", %{dir: dir} do
     # :mock has no override here → cloud default 10, but orchestrate caps
     # at min(slots, configured max_concurrency).
