@@ -9,10 +9,21 @@ defmodule ExAthena.Web.Sessions do
 
   alias ExAthena.Tuning
 
-  @base_dir Path.expand("~/.ex_athena/web")
-  @sessions_dir Path.join(@base_dir, "sessions")
-  @recent_path Path.join(@base_dir, "recent.json")
+  @default_base_dir "~/.ex_athena/web"
   @max_recent 20
+
+  @doc """
+  Root of the on-disk session store.
+
+  Configurable (`config :ex_athena, :web_dir, path`) so tests can point the
+  store at a `@tag :tmp_dir` directory instead of the developer's real one.
+  """
+  @spec base_dir() :: Path.t()
+  def base_dir do
+    :ex_athena
+    |> Application.get_env(:web_dir, @default_base_dir)
+    |> Path.expand()
+  end
 
   # ---------------------------------------------------------------------------
   # Sessions
@@ -78,12 +89,16 @@ defmodule ExAthena.Web.Sessions do
   final `{:athena_done, result}` to a now-dead pid). Load-modify-save, and
   **idempotent by `msg_id`** — a no-op if the LiveView already persisted that
   message, so the LiveView's richer (tool-event-bearing) version is preserved.
+
+  An `orchestrator` snapshot, when given, is always written: it is the run's
+  terminal Overview state and is strictly newer than anything an autosave
+  could have stored.
   """
-  @spec append_run_result(String.t(), String.t(), map(), map()) :: :ok
-  def append_run_result(session_id, msg_id, assistant_msg, result) do
+  @spec append_run_result(String.t(), String.t(), map(), map(), map() | nil) :: :ok
+  def append_run_result(session_id, msg_id, assistant_msg, result, orchestrator \\ nil) do
     case load(session_id) do
       {:ok, data} ->
-        case merge_run_result(data, msg_id, assistant_msg, result) do
+        case merge_run_result(data, msg_id, assistant_msg, result, orchestrator) do
           {:save, merged} -> save(merged)
           :skip -> :ok
         end
@@ -95,21 +110,39 @@ defmodule ExAthena.Web.Sessions do
   end
 
   @doc false
-  @spec merge_run_result(map(), String.t(), map(), map()) :: {:save, map()} | :skip
-  def merge_run_result(data, msg_id, assistant_msg, result) do
+  @spec merge_run_result(map(), String.t(), map(), map(), map() | nil) :: {:save, map()} | :skip
+  def merge_run_result(data, msg_id, assistant_msg, result, orchestrator \\ nil) do
     msgs = Map.get(data, :display_messages, [])
 
-    if Enum.any?(msgs, &(&1.id == msg_id)) do
-      :skip
-    else
-      {:save,
-       data
-       |> Map.put(:display_messages, msgs ++ [assistant_msg])
-       |> Map.put(:ex_messages, result.messages || Map.get(data, :ex_messages, []))
-       |> Map.put(:provider_session_id, result.session_id || Map.get(data, :provider_session_id))
-       |> Map.put(:updated_at, DateTime.utc_now())}
+    cond do
+      not Enum.any?(msgs, &(&1.id == msg_id)) ->
+        {:save,
+         data
+         |> Map.put(:display_messages, msgs ++ [assistant_msg])
+         |> Map.put(:ex_messages, result.messages || Map.get(data, :ex_messages, []))
+         |> Map.put(
+           :provider_session_id,
+           result.session_id || Map.get(data, :provider_session_id)
+         )
+         |> put_orchestrator(orchestrator)
+         |> Map.put(:updated_at, DateTime.utc_now())}
+
+      # The message was already written (a LiveView beat us to it) but the
+      # Overview snapshot it saved is whatever its last autosave held — always
+      # older than the terminal one, so that part is still worth writing.
+      is_map(orchestrator) ->
+        {:save,
+         data
+         |> Map.put(:orchestrator, orchestrator)
+         |> Map.put(:updated_at, DateTime.utc_now())}
+
+      true ->
+        :skip
     end
   end
+
+  defp put_orchestrator(data, nil), do: data
+  defp put_orchestrator(data, snapshot), do: Map.put(data, :orchestrator, snapshot)
 
   @doc """
   The chat message text for a finished run, surfacing the `finish` deliverable
@@ -138,10 +171,11 @@ defmodule ExAthena.Web.Sessions do
   state) and durably append it to the session. The durable path for when the
   process that owns the run wants the answer saved regardless of whether a
   LiveView is currently attached. Idempotent by `msg_id` (see
-  `append_run_result/4`).
+  `append_run_result/5`), except for the optional terminal `orchestrator`
+  snapshot, which is always written.
   """
-  @spec persist_run_result(String.t(), String.t(), ExAthena.Result.t()) :: :ok
-  def persist_run_result(session_id, msg_id, result) do
+  @spec persist_run_result(String.t(), String.t(), ExAthena.Result.t(), map() | nil) :: :ok
+  def persist_run_result(session_id, msg_id, result, orchestrator \\ nil) do
     usage = result.usage || %{}
 
     status = %{
@@ -160,7 +194,7 @@ defmodule ExAthena.Web.Sessions do
       ex_snapshot: result.messages
     }
 
-    append_run_result(session_id, msg_id, msg, result)
+    append_run_result(session_id, msg_id, msg, result, orchestrator)
   rescue
     _ -> :ok
   end
@@ -192,7 +226,7 @@ defmodule ExAthena.Web.Sessions do
   """
   @spec list_recent() :: [map()]
   def list_recent do
-    case File.read(@recent_path) do
+    case File.read(recent_path()) do
       {:ok, json} ->
         json
         |> Jason.decode!(keys: :atoms)
@@ -228,8 +262,8 @@ defmodule ExAthena.Web.Sessions do
         %{cwd: e.cwd, opened_at: DateTime.to_iso8601(e.opened_at)}
       end)
 
-    File.mkdir_p!(@base_dir)
-    File.write!(@recent_path, Jason.encode!(payload))
+    File.mkdir_p!(base_dir())
+    File.write!(recent_path(), Jason.encode!(payload))
     :ok
   rescue
     _ -> :ok
@@ -245,8 +279,8 @@ defmodule ExAthena.Web.Sessions do
         %{cwd: e.cwd, opened_at: DateTime.to_iso8601(e.opened_at)}
       end)
 
-    File.mkdir_p!(@base_dir)
-    File.write!(@recent_path, Jason.encode!(payload))
+    File.mkdir_p!(base_dir())
+    File.write!(recent_path(), Jason.encode!(payload))
     :ok
   rescue
     _ -> :ok
@@ -257,9 +291,12 @@ defmodule ExAthena.Web.Sessions do
   # ---------------------------------------------------------------------------
 
   defp sessions_dir do
-    File.mkdir_p!(@sessions_dir)
-    @sessions_dir
+    dir = Path.join(base_dir(), "sessions")
+    File.mkdir_p!(dir)
+    dir
   end
+
+  defp recent_path, do: Path.join(base_dir(), "recent.json")
 
   defp read_header(path) do
     with {:ok, bin} <- File.read(path),

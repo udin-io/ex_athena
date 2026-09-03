@@ -89,6 +89,46 @@ defmodule ExAthena.Web.SessionsTest do
       assert merged.ex_messages == [:keep]
       assert merged.provider_session_id == "old"
     end
+
+    # The Overview is fed by the in-memory Coordinator and only ever reached
+    # disk through the LiveView's autosave. A run that finished with no browser
+    # attached therefore persisted a snapshot frozen at whatever iteration the
+    # browser last saw — one live session was still rendering "main: running,
+    # iteration 7" for a run that had finished 105 minutes later.
+    test "writes the terminal orchestrator snapshot when one is supplied" do
+      data = %{id: "s", display_messages: [], ex_messages: [], orchestrator: %{stale: true}}
+      result = %Result{messages: [], session_id: nil}
+
+      assert {:save, merged} =
+               Sessions.merge_run_result(data, "a1", %{id: "a1"}, result, %{final: true})
+
+      assert merged.orchestrator == %{final: true}
+    end
+
+    test "leaves the stored snapshot alone when none is supplied" do
+      data = %{id: "s", display_messages: [], ex_messages: [], orchestrator: %{keep: true}}
+      result = %Result{messages: [], session_id: nil}
+
+      assert {:save, merged} = Sessions.merge_run_result(data, "a1", %{id: "a1"}, result)
+      assert merged.orchestrator == %{keep: true}
+    end
+
+    test "still writes the snapshot when the message was already persisted" do
+      data = %{
+        id: "s",
+        display_messages: [%{id: "a1", role: :assistant, text: "rich version"}],
+        ex_messages: [],
+        orchestrator: %{stale: true}
+      }
+
+      result = %Result{messages: [], session_id: nil}
+
+      assert {:save, merged} =
+               Sessions.merge_run_result(data, "a1", %{id: "a1"}, result, %{final: true})
+
+      assert merged.orchestrator == %{final: true}
+      assert merged.display_messages == data.display_messages
+    end
   end
 
   describe "final_message_text/2 — surfacing the finish deliverable" do
