@@ -68,7 +68,9 @@ defmodule ExAthena.RequestQueue do
     * `:timeout` — milliseconds (or `:infinity`) to wait for a slot before
       returning `{:error, :request_queue_timeout}` (default `5_000`).
     * `:on_wait` — optional `fun/1` invoked with `:waiting` just before a
-      blocking acquire and `{:acquired, waited_ms}` once the slot is granted.
+      blocking acquire, and then exactly once more with `{:acquired,
+      waited_ms}` when the slot is granted or `{:abandoned, waited_ms}` when
+      the acquire gives up first.
       Not invoked at all when a slot is free — hosts use this to show a
       "waiting on GPU" state only when there is actually a wait.
   """
@@ -213,6 +215,11 @@ defmodule ExAthena.RequestQueue do
 
       {:error, :timeout} ->
         waited_ms = System.monotonic_time(:millisecond) - start_ms
+
+        # Every `:waiting` is closed out by exactly one `{:acquired, _}` or
+        # `{:abandoned, _}`, so a listener can keep balanced state (a UI
+        # spinner, a paused deadline) without leaking on this path.
+        if blocked? and is_function(on_wait, 1), do: on_wait.({:abandoned, waited_ms})
 
         Telemetry.event(
           [:ex_athena, :request_queue, :timeout],

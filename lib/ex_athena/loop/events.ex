@@ -113,7 +113,7 @@ defmodule ExAthena.Loop.Events do
   on_wait as "don't notify").
   """
   @spec queue_wait_emitter((t() -> term()) | nil, atom() | nil) ::
-          (:waiting | {:acquired, non_neg_integer()} -> :ok) | nil
+          (:waiting | {:acquired | :abandoned, non_neg_integer()} -> :ok) | nil
   def queue_wait_emitter(nil, _provider), do: nil
   def queue_wait_emitter(_on_event, nil), do: nil
 
@@ -122,10 +122,10 @@ defmodule ExAthena.Loop.Events do
       :waiting ->
         emit(on_event, {:queue_wait, %{provider: provider, status: :waiting}})
 
-      {:acquired, waited_ms} ->
+      {status, waited_ms} when status in [:acquired, :abandoned] ->
         emit(
           on_event,
-          {:queue_wait, %{provider: provider, status: :acquired, waited_ms: waited_ms}}
+          {:queue_wait, %{provider: provider, status: status, waited_ms: waited_ms}}
         )
     end
   end

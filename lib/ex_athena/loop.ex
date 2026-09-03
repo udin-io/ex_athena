@@ -799,6 +799,11 @@ defmodule ExAthena.Loop do
         # tool context. put_new keeps a callback the caller (or a spawning
         # parent) already placed in assigns.
         |> maybe_put_new_on_event(on_event)
+        # One worker allowance for the whole tree: seeded here for a top-level
+        # run, and left alone for a subagent, whose assigns already carry the
+        # run's counter (put_new). Seeding it in SpawnAgent instead would give
+        # every branch its own allowance and cap nothing.
+        |> ExAthena.Agents.Quota.install()
         |> wire_coordinator(coordinator)
         |> maybe_put_subagent_suffix(Keyword.get(opts, :subagent_prompt_suffix))
 
@@ -938,9 +943,18 @@ defmodule ExAthena.Loop do
       ExAthena.Orchestrator.Coordinator.notify(coordinator, sub_id, event)
     end
 
+    # The read side of the same channel. A worker killed on timeout takes its
+    # Result with it, so the coordinator's observation is the only surviving
+    # record of what it had found — SpawnAgent reads it back to build the
+    # handoff digest instead of returning a bare timeout.
+    progress_reader = fn sub_id ->
+      ExAthena.Orchestrator.Coordinator.agent_info(coordinator, sub_id)
+    end
+
     assigns
     |> Map.put(:todo_writer, todo_writer)
     |> Map.put(:agent_event_sink, sink)
+    |> Map.put(:agent_progress_reader, progress_reader)
   end
 
   defp maybe_put_subagent_suffix(assigns, nil), do: assigns

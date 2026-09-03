@@ -1212,7 +1212,13 @@ defmodule ExAthena.Web.Live.ChatLive do
         pending_assistant_msg_id: nil,
         status: status,
         error: nil,
-        session_title: title
+        session_title: title,
+        orchestrator:
+          terminal_orchestrator(
+            socket.assigns.orchestrator_sid,
+            Map.get(socket.assigns, :orchestrator),
+            result
+          )
       )
 
     socket =
@@ -3321,6 +3327,32 @@ defmodule ExAthena.Web.Live.ChatLive do
   defp compact_count(n) when n >= 1_000_000, do: "#{Float.round(n / 1_000_000, 1)}M"
   defp compact_count(n) when n >= 1_000, do: "#{Float.round(n / 1_000, 1)}k"
   defp compact_count(n), do: to_string(n)
+
+  @doc """
+  The Overview snapshot to persist for a run that has just finished.
+
+  Prefers the coordinator's own state over this LiveView's assign, then applies
+  the run's `Result` to close it out. The assign is only ever as fresh as the
+  last batched `{:orchestrator_update, _, _}`, and that 100 ms flush loses the
+  race against the completion save below — so the terminal snapshot never
+  reached disk and a reopened session showed a finished run still running.
+  """
+  @spec terminal_orchestrator(String.t() | nil, map() | nil, ExAthena.Result.t()) :: map() | nil
+  def terminal_orchestrator(run_sid, current, result) do
+    case live_snapshot(run_sid) || current do
+      nil -> nil
+      snapshot -> ExAthena.Orchestrator.Coordinator.finalize(snapshot, result)
+    end
+  end
+
+  defp live_snapshot(nil), do: nil
+
+  defp live_snapshot(run_sid) do
+    case ExAthena.Orchestrator.Coordinator.snapshot(run_sid) do
+      {:ok, snapshot} -> snapshot
+      _ -> nil
+    end
+  end
 
   @doc "The orchestrator snapshot stored with a session, if any."
   @spec stored_orchestrator(map()) :: map() | nil

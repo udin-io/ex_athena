@@ -5,6 +5,7 @@ defmodule ExAthena.Web.RunServerTest do
 
   alias ExAthena.Messages
   alias ExAthena.Web.RunServer
+  alias ExAthena.Web.Sessions
 
   setup do
     start_supervised!({Registry, keys: :unique, name: ExAthena.Web.RunRegistry})
@@ -19,7 +20,7 @@ defmodule ExAthena.Web.RunServerTest do
   # A run whose provider blocks until the test sends `:finish`, so the run is
   # deterministically "in flight" while we attach/inspect. The responder runs
   # inside the run Task, so `self()` there is the task pid we unblock.
-  defp blocking_run(session_id, assistant_msg_id \\ "amsg") do
+  defp blocking_run(session_id, assistant_msg_id \\ "amsg", coordinator \\ nil) do
     test_pid = self()
 
     responder = fn _request ->
@@ -44,7 +45,8 @@ defmodule ExAthena.Web.RunServerTest do
           messages: [Messages.user("hi")]
         ],
         assistant_msg_id: assistant_msg_id,
-        run_sid: "#{session_id}-run-#{assistant_msg_id}"
+        run_sid: "#{session_id}-run-#{assistant_msg_id}",
+        coordinator: coordinator
       })
 
     assert_receive {:run_task, task}, 2_000
@@ -207,6 +209,48 @@ defmodule ExAthena.Web.RunServerTest do
 
       send(task, :finish)
       assert_receive {:athena_done, _}, 2_000
+    end
+  end
+
+  # The Overview only ever reached disk through the LiveView's 5s autosave, and
+  # that timer stops the moment the run ends — so a run that finished with no
+  # browser attached (or one whose final save beat the coordinator's 100 ms
+  # batched flush) left the Overview frozen mid-run. Session 0211188215f3 sat
+  # at "main: running, iteration 7" for a run that had reached iteration 10 and
+  # submitted its answer.
+  describe "terminal orchestrator snapshot" do
+    @tag :tmp_dir
+    test "the run server persists the run's terminal Overview state", %{tmp_dir: tmp_dir} do
+      Application.put_env(:ex_athena, :web_dir, tmp_dir)
+      on_exit(fn -> Application.delete_env(:ex_athena, :web_dir) end)
+
+      sid = "s-orchestrator"
+      run_sid = "#{sid}-run-amsg"
+
+      # The orchestrator registry/supervisor come from the application.
+      {:ok, coordinator} = ExAthena.Orchestrator.Coordinator.start_for(run_sid)
+      on_exit(fn -> if Process.alive?(coordinator), do: GenServer.stop(coordinator, :normal) end)
+
+      # A session file must already exist — persistence is load-modify-save.
+      :ok =
+        Sessions.save(%{
+          id: sid,
+          display_messages: [%{id: "u1", role: :user, text: "hi"}],
+          ex_messages: [],
+          updated_at: DateTime.utc_now()
+        })
+
+      task = blocking_run(sid, "amsg", coordinator)
+      # Attached only to observe completion — a bare pid writes nothing, so
+      # anything on disk afterwards was written by the run server itself.
+      {:ok, _} = RunServer.attach(sid, self())
+      send(task, :finish)
+      assert_receive {:athena_done, _}, 5_000
+
+      assert {:ok, data} = Sessions.load(sid)
+      assert %{main: main} = data.orchestrator
+      assert main.status == :done
+      refute is_nil(main.finished_at)
     end
   end
 

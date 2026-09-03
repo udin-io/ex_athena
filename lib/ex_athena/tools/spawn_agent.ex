@@ -6,6 +6,10 @@ defmodule ExAthena.Tools.SpawnAgent do
   file) to a fresh conversation with its own message history — so the parent
   loop doesn't pay the token cost of the sub-task's intermediate steps.
 
+  Two rails bound the worker tree: `max_agent_depth` (how deep delegation may
+  nest) and `max_agents_per_run` (how many workers a whole run may spawn — see
+  `ExAthena.Agents.Quota`). Both refuse with an error the model reads.
+
   Arguments:
 
     * `prompt` (required) — the sub-agent's opening message.
@@ -46,7 +50,8 @@ defmodule ExAthena.Tools.SpawnAgent do
   """
 
   alias ExAthena.Agents
-  alias ExAthena.Agents.{Sidechain, Worktree}
+  alias ExAthena.Agents.{Deadline, Quota, Sidechain, Worktree}
+  alias ExAthena.Orchestrator.AgentInfo
   alias ExAthena.Tuning
 
   @behaviour ExAthena.Tool
@@ -137,10 +142,20 @@ defmodule ExAthena.Tools.SpawnAgent do
   }
   @brief_fields ~w(objective expected_output tool_guidance boundaries)
 
-  # Max agent nesting depth (0 = main/orchestrator, 1 = its workers, 2+ =
-  # nested). High by default so workers can delegate sub-tasks, but bounded —
-  # see the depth rail in execute/2.
-  @default_max_agent_depth 5
+  # Max agent nesting depth (0 = main/orchestrator, 1 = its workers, 2 = a
+  # worker's own helpers). One level of delegation below a worker is enough to
+  # split a task up; below that the orchestrator is reading a summary of a
+  # summary of a summary, and a depth-5 tree was observed reaching 33 nodes.
+  # See the depth rail in execute/2.
+  @default_max_agent_depth 2
+
+  # Working time a worker gets when nothing narrower applies. See
+  # `configured_timeout/1` and `ExAthena.Agents.Deadline`.
+  @default_timeout_ms 1_800_000
+
+  # How often `await_worker/3` re-reads the worker's accrued queue credit
+  # while blocked on it. Only bounds how late a deadline extension is noticed.
+  @poll_ms 1_000
 
   # Where the worker's instruction comes from, in order of preference.
   #
@@ -201,17 +216,50 @@ defmodule ExAthena.Tools.SpawnAgent do
   end
 
   defp do_execute(args, prompt, ctx) do
-    # 30 min wall clock — covers the 25-iteration budget on a local model
-    # at 30–90s/turn plus single-slot queue waits. NOT model-controllable:
-    # small models supplied self-sabotaging 30–60s budgets that killed the
-    # worker after one turn (same lesson as cwd). Host override only, via
-    # spawn_agent_opts[:timeout_ms].
-    timeout =
-      case (ctx.assigns[:spawn_agent_opts] || [])[:timeout_ms] do
-        n when is_integer(n) and n > 0 -> n
-        _ -> 1_800_000
-      end
+    assigns = ctx.assigns || %{}
+    now = System.monotonic_time(:millisecond)
 
+    # Both rails refuse the way the depth rail does — an error the model reads,
+    # naming what to do instead. A refused spawn is not a failed run: the
+    # orchestrator still holds every result it has already collected.
+    case Deadline.for_child(assigns, configured_timeout(assigns), now) do
+      :exhausted ->
+        {:error,
+         "not started: the run's deadline is exhausted. " <>
+           "Stop delegating and finish with what you already have."}
+
+      {:ok, deadline} ->
+        claim_and_spawn(args, prompt, ctx, assigns, deadline, now)
+    end
+  end
+
+  defp claim_and_spawn(args, prompt, ctx, assigns, deadline, now) do
+    case Quota.claim(assigns) do
+      :exhausted ->
+        {:error,
+         "not started: this run has already spawned its full allowance of " <>
+           "#{Quota.limit(assigns)} workers. " <>
+           "Do the remaining work yourself, or finish with what you already have."}
+
+      {:ok, _spawned} ->
+        do_execute(args, prompt, ctx, deadline, deadline - now)
+    end
+  end
+
+  # 30 min wall clock — covers the 25-iteration budget on a local model at
+  # 30–90s/turn plus single-slot queue waits. NOT model-controllable: small
+  # models supplied self-sabotaging 30–60s budgets that killed the worker
+  # after one turn (same lesson as cwd). Host override only, via
+  # spawn_agent_opts[:timeout_ms].
+  defp configured_timeout(assigns) do
+    case (assigns[:spawn_agent_opts] || [])[:timeout_ms] do
+      n when is_integer(n) and n > 0 -> n
+      _ -> @default_timeout_ms
+    end
+  end
+
+  defp do_execute(args, prompt, ctx, deadline, timeout) do
+    wait_counter = Deadline.new_counter()
     prompt = compose_worker_prompt(prompt, args, ctx.cwd)
 
     {agent_def, base_opts} = resolve_agent(args, ctx)
@@ -239,6 +287,7 @@ defmodule ExAthena.Tools.SpawnAgent do
       )
       |> apply_prompt_suffix(ctx)
       |> attribute_events(sub_id, ctx, args, agent_def, child_depth)
+      |> put_deadline(deadline, wait_counter)
       |> Keyword.put(:parent_session_id, ctx.session_id)
       |> inherit_guardrails(ctx)
 
@@ -269,15 +318,28 @@ defmodule ExAthena.Tools.SpawnAgent do
       }
     )
 
-    # Run the sub-loop under a supervised Task so a crash doesn't bring
-    # down the parent, and timeouts are enforceable. Task.Supervisor is
-    # started by ExAthena.Application under `ExAthena.Tasks`.
+    # The worker runs under a Task.Supervisor started HERE, linked to us — not
+    # under the global `ExAthena.Tasks`. `async_nolink` still isolates us from
+    # the worker's crashes, but the supervisor now shares our fate, so the
+    # whole subtree collapses when we die: our death takes the supervisor,
+    # which takes the worker, whose death takes the supervisor IT started for
+    # its own children, and so on down. Under the global supervisor a killed
+    # worker orphaned its descendants — live, 33 of them kept running for 69
+    # minutes past the death of the worker that was waiting on them, burning a
+    # single-slot GPU on results nobody could receive.
+    {:ok, subtree} = Task.Supervisor.start_link([])
+
     task =
-      Task.Supervisor.async_nolink(ExAthena.Tasks, fn ->
+      Task.Supervisor.async_nolink(subtree, fn ->
         ExAthena.Loop.run(prompt, sub_opts)
       end)
 
-    raw_result = Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill)
+    raw_result = await_worker(task, deadline, wait_counter)
+
+    # Reap unconditionally: on timeout this kills the subtree the worker left
+    # behind, and on success it retires a supervisor that would otherwise
+    # accumulate once per spawn for the rest of our own run.
+    stop_subtree(subtree)
 
     # Persist the sidechain transcript (best-effort; never fails the spawn).
     _ =
@@ -405,11 +467,94 @@ defmodule ExAthena.Tools.SpawnAgent do
               isolation: finalized_isolation
             })
 
-          notify_failure(ctx, sub_id, "timed out after #{timeout}ms — progress discarded")
-          {:error, {:sub_agent_timeout, timeout}}
+          timed_out(ctx, sub_id, timeout, Deadline.waited(%{agent_wait_counters: [wait_counter]}))
       end
 
     result
+  end
+
+  # Wait for the worker on its WORKING clock, not the wall clock: time its
+  # subtree spends queued for a provider slot is credited back and pushes the
+  # deadline out (see `ExAthena.Agents.Deadline`). Polling re-reads the credit
+  # as it accrues — the budget can be extended while we are already blocked.
+  defp await_worker(task, deadline, counter) do
+    case Deadline.remaining(deadline, counter, System.monotonic_time(:millisecond)) do
+      left when is_integer(left) and left <= 0 ->
+        Task.shutdown(task, :brutal_kill)
+
+      left ->
+        wait = if left == :paused, do: @poll_ms, else: min(left, @poll_ms)
+
+        case Task.yield(task, wait) do
+          nil -> await_worker(task, deadline, counter)
+          result -> result
+        end
+    end
+  end
+
+  # A timed-out worker is brutal-killed, so its `Result` — and with it every
+  # finding — dies with the process. The observer (Coordinator) has been
+  # accumulating the same todos and conclusions all along, so the digest is
+  # rebuilt from there and handed back the way the `error_max_turns` path
+  # already does. Live, one worker was killed at its 30 minute mark after 19
+  # iterations and 555k input tokens, and returned literally nothing; the
+  # orchestrator re-delegated the same ground twice.
+  defp timed_out(ctx, sub_id, timeout, queued_ms) do
+    spent = describe_budget(timeout, queued_ms)
+
+    case progress_digest(ctx, sub_id) do
+      nil ->
+        notify_failure(ctx, sub_id, "timed out after #{spent} — no progress recorded")
+        {:error, {:sub_agent_timeout, timeout}}
+
+      digest ->
+        notify_failure(ctx, sub_id, "timed out after #{spent}:\n#{digest}")
+
+        {:error,
+         "worker timed out after #{spent}. " <>
+           "What it learned before stopping:\n#{digest}\n" <>
+           "Re-delegate a narrower slice building on those findings, or finish without it."}
+    end
+  end
+
+  # Naming the queue time keeps the orchestrator from reading a slow worker as
+  # a stuck one: on a single-slot provider a worker can burn most of an hour of
+  # wall clock without being given the chance to do anything wrong.
+  defp describe_budget(timeout, queued_ms) when queued_ms > 0,
+    do: "#{timeout}ms of working time (plus #{queued_ms}ms queued for a provider slot)"
+
+  defp describe_budget(timeout, _queued_ms), do: "#{timeout}ms"
+
+  defp progress_digest(ctx, sub_id) do
+    with reader when is_function(reader, 1) <-
+           Map.get(ctx.assigns || %{}, :agent_progress_reader),
+         {:ok, %AgentInfo{todos: todos, conclusions: conclusions} = info} <- reader.(sub_id),
+         true <- todos != [] or conclusions != [] do
+      conclusions_digest(info)
+    else
+      _ -> nil
+    end
+  end
+
+  # `Supervisor.stop/3` with `:normal` so the exit signal travelling back up
+  # our link is one a non-trapping caller ignores. The supervisor is linked to
+  # us and we are alive, so a dead one is not a fault worth crashing over —
+  # same reasoning as the client-side guards elsewhere, and not a callback body
+  # swallowing a genuine failure.
+  defp stop_subtree(pid) do
+    Supervisor.stop(pid, :normal)
+  catch
+    :exit, :noproc -> :ok
+    :exit, {reason, _} when reason in [:noproc, :normal, :shutdown] -> :ok
+  end
+
+  defp put_deadline(sub_opts, deadline, counter) do
+    assigns =
+      sub_opts
+      |> Keyword.get(:assigns, %{})
+      |> Deadline.install(deadline, counter)
+
+    Keyword.put(sub_opts, :assigns, assigns)
   end
 
   # Killed/crashed workers never emit their own {:done} — without this the
@@ -727,19 +872,27 @@ defmodule ExAthena.Tools.SpawnAgent do
   # Structured handoff so the retry skips finished work: completed and
   # remaining sub-todos, plus the worker's STATED findings (derived
   # "ran bash" noise only as a last resort).
-  defp conclusions_digest(%ExAthena.Result{} = sub_result) do
+  # Accepts either the worker's own Result or the Coordinator's observation of
+  # it — the latter is all that survives when the worker was killed mid-flight.
+  defp conclusions_digest(%ExAthena.Result{} = sub_result),
+    do: digest(sub_result.todos, sub_result.conclusions, sub_result.text)
+
+  defp conclusions_digest(%AgentInfo{} = info),
+    do: digest(info.todos, info.conclusions, nil)
+
+  defp digest(todos, conclusions, raw_text) do
     {completed, remaining} =
-      Enum.split_with(sub_result.todos, fn t ->
+      Enum.split_with(todos, fn t ->
         (t["status"] || t[:status]) in ["completed", :completed]
       end)
 
     findings =
-      case Enum.filter(sub_result.conclusions, &(&1.source == :stated)) do
-        [] -> Enum.take(sub_result.conclusions, -3)
+      case Enum.filter(conclusions, &(&1.source == :stated)) do
+        [] -> Enum.take(conclusions, -3)
         stated -> Enum.take(stated, -3)
       end
 
-    text = String.trim(sub_result.text || "")
+    text = String.trim(raw_text || "")
 
     sections =
       [

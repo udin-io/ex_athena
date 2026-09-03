@@ -19,8 +19,9 @@ defmodule ExAthena.Web.RunServer do
       existing `handle_info` clauses already expect;
     * routes a user's `ask_user` answer back into the blocked run via the
       stable channel (`answer/3`), so the reply survives a reconnect;
-    * durably persists the final answer (`Sessions.persist_run_result/3`) the
-      moment the run finishes — works even with **zero** LiveViews attached.
+    * durably persists the final answer and the run's terminal Overview
+      snapshot (`Sessions.persist_run_result/4`) the moment the run finishes —
+      works even with **zero** LiveViews attached.
 
   ## Supervision & naming
 
@@ -35,8 +36,9 @@ defmodule ExAthena.Web.RunServer do
 
   use GenServer, restart: :temporary
 
-  alias ExAthena.Web.Sessions
+  alias ExAthena.Orchestrator.Coordinator
   alias ExAthena.Tuning
+  alias ExAthena.Web.Sessions
 
   @registry ExAthena.Web.RunRegistry
   @supervisor ExAthena.Web.RunSupervisor
@@ -288,7 +290,13 @@ defmodule ExAthena.Web.RunServer do
   @impl GenServer
   def handle_info({:run_done, result}, state) do
     # Durable first: persist regardless of whether any LiveView is attached.
-    Sessions.persist_run_result(state.session_id, state.assistant_msg_id, result)
+    Sessions.persist_run_result(
+      state.session_id,
+      state.assistant_msg_id,
+      result,
+      terminal_snapshot(state, result)
+    )
+
     broadcast(state, {:athena_done, result})
     {:noreply, finish(state)}
   end
@@ -331,6 +339,25 @@ defmodule ExAthena.Web.RunServer do
     for {pid, _ref} <- state.subscribers, do: send(pid, message)
     :ok
   end
+
+  # The Overview reached disk only via the LiveView's autosave, which stops the
+  # instant the run ends — so a run finishing with nobody attached persisted a
+  # snapshot frozen at whatever the browser last saw. Taking it here closes
+  # that gap, and applying the run's own Result closes the other one: the
+  # coordinator's terminal snapshot is batched (100 ms) and would otherwise
+  # lose the race against this very save.
+  defp terminal_snapshot(%{coordinator: pid}, result) when is_pid(pid) do
+    case Coordinator.snapshot(pid) do
+      {:ok, snapshot} -> Coordinator.finalize(snapshot, result)
+      _ -> nil
+    end
+  catch
+    # Same time-of-check/time-of-use reasoning as `call_or/3`: a coordinator
+    # that retired first is not a fault, it just has nothing left to tell us.
+    :exit, {reason, _} when reason in [:noproc, :normal, :shutdown] -> nil
+  end
+
+  defp terminal_snapshot(_state, _result), do: nil
 
   defp finish(state) do
     Process.send_after(self(), :retire, Tuning.get(:ui, :run_grace_ms, @grace_ms))

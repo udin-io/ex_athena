@@ -699,6 +699,71 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
     end
   end
 
+  # The completion save used to write whatever the last batched
+  # `{:orchestrator_update, _, _}` had left in the assign. That flush is
+  # 100 ms behind, so a run that ended having submitted its answer was
+  # persisted mid-flight — one live session reopened days later still showed
+  # "main: running" with two todos outstanding.
+  describe "closing the snapshot out on completion" do
+    test "marks main done and finalizes its in-flight todos" do
+      current = %{
+        main: %AgentInfo{
+          id: :main,
+          status: :running,
+          todos: [
+            %{id: 1, content: "explore", status: :completed, active_form: nil},
+            %{id: 2, content: "write it up", status: :in_progress, active_form: nil}
+          ]
+        },
+        agents: []
+      }
+
+      result = %ExAthena.Result{finish_reason: :submitted, deliverable: "the plan"}
+
+      assert %{main: main} = ChatLive.terminal_orchestrator(nil, current, result)
+      assert main.status == :done
+      refute is_nil(main.finished_at)
+      assert Enum.all?(main.todos, &(&1.status == :completed))
+    end
+
+    test "a failed run keeps its todos honest" do
+      current = %{
+        main: %AgentInfo{
+          id: :main,
+          status: :running,
+          todos: [%{id: 1, content: "write it up", status: :in_progress, active_form: nil}]
+        },
+        agents: []
+      }
+
+      result = %ExAthena.Result{finish_reason: :error_max_turns}
+
+      assert %{main: main} = ChatLive.terminal_orchestrator(nil, current, result)
+      assert main.status == :failed
+      assert [%{status: :in_progress}] = main.todos
+    end
+
+    test "workers still marked running when the run ended are closed too" do
+      current = %{
+        main: %AgentInfo{id: :main, status: :running, todos: []},
+        agents: [
+          %AgentInfo{id: "sub_a", status: :running},
+          %AgentInfo{id: "sub_b", status: :done}
+        ]
+      }
+
+      result = %ExAthena.Result{finish_reason: :stop}
+
+      assert %{agents: [a, b]} = ChatLive.terminal_orchestrator(nil, current, result)
+      assert a.status == :failed
+      assert b.status == :done
+    end
+
+    test "nothing to close out is not an error" do
+      assert ChatLive.terminal_orchestrator(nil, nil, %ExAthena.Result{}) == nil
+    end
+  end
+
   describe "replay_run_events/2 — rebuilding a run after reconnect" do
     defp detail(type, msg_id), do: %{id: "d#{type}", type: type, message_id: msg_id, payload: %{}}
 

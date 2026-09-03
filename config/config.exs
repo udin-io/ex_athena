@@ -18,11 +18,17 @@ config :ex_athena, :search,
   adapter: ExAthena.Search.Http,
   backend: :duckduckgo
 
-# Max agent nesting depth (0 = orchestrator, 1 = its workers, 2+ = nested).
-# Agents may delegate sub-agents up to this depth; the ceiling prevents an
-# unbounded worker tree from wedging the single GPU slot. Override per-run via
-# spawn_agent_opts / assigns[:max_agent_depth].
-config :ex_athena, max_agent_depth: 5
+# Max agent nesting depth (0 = orchestrator, 1 = its workers, 2 = a worker's
+# own helpers). Deeper than this the orchestrator is reading a summary of a
+# summary of a summary, and one explore worker at depth 5 was observed growing
+# a 33-node subtree. Override per-run via spawn_agent_opts /
+# assigns[:max_agent_depth].
+config :ex_athena, max_agent_depth: 2
+
+# Max workers one run may spawn in total, across the whole tree. A runaway
+# backstop, not a planning budget — a refused spawn tells the orchestrator to
+# finish with what it has. Override per-run via assigns[:max_agents_per_run].
+config :ex_athena, max_agents_per_run: 24
 
 # Tunable rails. Every key below defaults to the value the rail was first
 # tuned to, so leaving this commented out changes nothing. Raise or lower
