@@ -55,18 +55,60 @@ defmodule ExAthena.Tools.TodoWrite do
     end
   end
 
-  def execute(_, _), do: {:error, :missing_todos}
+  def execute(_, _) do
+    {:error,
+     "missing `todos`: pass a list of objects, each with `content` (string) " <>
+       "and `status` (one of #{valid_statuses()})."}
+  end
 
+  # A rejection the model can act on. Bare atoms (`:invalid_status`) named
+  # neither the offending item nor the accepted values, and a small model
+  # reading one just repeats the identical call — live, two runs each lost an
+  # iteration to exactly that.
   defp validate_items(todos) do
-    Enum.reduce_while(todos, :ok, fn item, :ok ->
-      cond do
-        not is_map(item) -> {:halt, {:error, :invalid_todo}}
-        Map.get(item, "status") not in @valid_statuses -> {:halt, {:error, :invalid_status}}
-        not is_binary(Map.get(item, "content")) -> {:halt, {:error, :invalid_content}}
-        true -> {:cont, :ok}
+    todos
+    |> Enum.with_index(1)
+    |> Enum.reduce_while(:ok, fn {item, n}, :ok ->
+      case problem(item) do
+        nil -> {:cont, :ok}
+        message -> {:halt, {:error, "todo #{n}#{label(item)}: #{message}"}}
       end
     end)
   end
+
+  defp problem(item) when not is_map(item),
+    do: "must be an object with `content` and `status`, got #{inspect(item)}"
+
+  defp problem(item) do
+    status = Map.get(item, "status")
+
+    cond do
+      is_nil(status) ->
+        "missing `status` — must be one of #{valid_statuses()}"
+
+      status not in @valid_statuses ->
+        "unrecognised status #{inspect(status)} — must be one of #{valid_statuses()}"
+
+      not is_binary(Map.get(item, "content")) ->
+        "`content` must be a string, got #{inspect(Map.get(item, "content"))}"
+
+      true ->
+        nil
+    end
+  end
+
+  # Quote the content when there is one, so the model can see WHICH todo it
+  # has to fix rather than counting list positions.
+  defp label(item) when is_map(item) do
+    case Map.get(item, "content") do
+      content when is_binary(content) -> " (#{inspect(content)})"
+      _ -> ""
+    end
+  end
+
+  defp label(_item), do: ""
+
+  defp valid_statuses, do: Enum.map_join(@valid_statuses, ", ", &inspect/1)
 
   defp notify(%{assigns: %{todo_writer: writer}}, todos) when is_function(writer, 1) do
     try do
