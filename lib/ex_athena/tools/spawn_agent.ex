@@ -6,6 +6,10 @@ defmodule ExAthena.Tools.SpawnAgent do
   file) to a fresh conversation with its own message history — so the parent
   loop doesn't pay the token cost of the sub-task's intermediate steps.
 
+  Two rails bound the worker tree: `max_agent_depth` (how deep delegation may
+  nest) and `max_agents_per_run` (how many workers a whole run may spawn — see
+  `ExAthena.Agents.Quota`). Both refuse with an error the model reads.
+
   Arguments:
 
     * `prompt` (required) — the sub-agent's opening message.
@@ -46,7 +50,7 @@ defmodule ExAthena.Tools.SpawnAgent do
   """
 
   alias ExAthena.Agents
-  alias ExAthena.Agents.{Deadline, Sidechain, Worktree}
+  alias ExAthena.Agents.{Deadline, Quota, Sidechain, Worktree}
   alias ExAthena.Orchestrator.AgentInfo
   alias ExAthena.Tuning
 
@@ -138,10 +142,12 @@ defmodule ExAthena.Tools.SpawnAgent do
   }
   @brief_fields ~w(objective expected_output tool_guidance boundaries)
 
-  # Max agent nesting depth (0 = main/orchestrator, 1 = its workers, 2+ =
-  # nested). High by default so workers can delegate sub-tasks, but bounded —
-  # see the depth rail in execute/2.
-  @default_max_agent_depth 5
+  # Max agent nesting depth (0 = main/orchestrator, 1 = its workers, 2 = a
+  # worker's own helpers). One level of delegation below a worker is enough to
+  # split a task up; below that the orchestrator is reading a summary of a
+  # summary of a summary, and a depth-5 tree was observed reaching 33 nodes.
+  # See the depth rail in execute/2.
+  @default_max_agent_depth 2
 
   # Working time a worker gets when nothing narrower applies. See
   # `configured_timeout/1` and `ExAthena.Agents.Deadline`.
@@ -213,6 +219,9 @@ defmodule ExAthena.Tools.SpawnAgent do
     assigns = ctx.assigns || %{}
     now = System.monotonic_time(:millisecond)
 
+    # Both rails refuse the way the depth rail does — an error the model reads,
+    # naming what to do instead. A refused spawn is not a failed run: the
+    # orchestrator still holds every result it has already collected.
     case Deadline.for_child(assigns, configured_timeout(assigns), now) do
       :exhausted ->
         {:error,
@@ -220,6 +229,19 @@ defmodule ExAthena.Tools.SpawnAgent do
            "Stop delegating and finish with what you already have."}
 
       {:ok, deadline} ->
+        claim_and_spawn(args, prompt, ctx, assigns, deadline, now)
+    end
+  end
+
+  defp claim_and_spawn(args, prompt, ctx, assigns, deadline, now) do
+    case Quota.claim(assigns) do
+      :exhausted ->
+        {:error,
+         "not started: this run has already spawned its full allowance of " <>
+           "#{Quota.limit(assigns)} workers. " <>
+           "Do the remaining work yourself, or finish with what you already have."}
+
+      {:ok, _spawned} ->
         do_execute(args, prompt, ctx, deadline, deadline - now)
     end
   end

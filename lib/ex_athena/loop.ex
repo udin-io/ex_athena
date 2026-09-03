@@ -799,6 +799,11 @@ defmodule ExAthena.Loop do
         # tool context. put_new keeps a callback the caller (or a spawning
         # parent) already placed in assigns.
         |> maybe_put_new_on_event(on_event)
+        # One worker allowance for the whole tree: seeded here for a top-level
+        # run, and left alone for a subagent, whose assigns already carry the
+        # run's counter (put_new). Seeding it in SpawnAgent instead would give
+        # every branch its own allowance and cap nothing.
+        |> ExAthena.Agents.Quota.install()
         |> wire_coordinator(coordinator)
         |> maybe_put_subagent_suffix(Keyword.get(opts, :subagent_prompt_suffix))
 

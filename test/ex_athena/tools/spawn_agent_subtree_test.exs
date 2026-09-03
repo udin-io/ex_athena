@@ -19,6 +19,7 @@ defmodule ExAthena.Tools.SpawnAgentSubtreeTest do
 
   alias ExAthena.{Loop, Response, ToolContext}
   alias ExAthena.Messages.ToolCall
+  alias ExAthena.Agents.Quota
   alias ExAthena.Orchestrator.AgentInfo
   alias ExAthena.Tools.SpawnAgent
 
@@ -152,6 +153,46 @@ defmodule ExAthena.Tools.SpawnAgentSubtreeTest do
     end
 
     # The arithmetic itself lives in ExAthena.Agents.DeadlineTest.
+  end
+
+  describe "the run's worker allowance" do
+    test "a run stops delegating once its allowance is spent", %{dir: dir} do
+      test_pid = self()
+
+      # Always delegates, never finishes on its own — the shape that ran away
+      # live, where nothing but the depth rail stood between it and 39 agents.
+      responder = fn request ->
+        case Enum.find(Enum.reverse(request.messages), &(&1.role == :tool)) do
+          %{tool_results: [result | _]} -> send(test_pid, {:spawn_outcome, result})
+          _ -> :ok
+        end
+
+        call("spawn_agent", %{"prompt" => "another slice of work"})
+      end
+
+      worker = fn _request -> %Response{text: "did it", finish_reason: :stop, provider: :mock} end
+
+      Loop.run("go",
+        provider: :mock,
+        mock: [responder: responder],
+        tools: [SpawnAgent],
+        cwd: dir,
+        memory: false,
+        max_iterations: 6,
+        assigns:
+          Quota.install(%{
+            max_agents_per_run: 2,
+            spawn_agent_opts: [provider: :mock, mock: [responder: worker], memory: false]
+          })
+      )
+
+      # Two workers ran; the third request was refused rather than spawned.
+      assert_receive {:spawn_outcome, %{content: "did it" <> _}}, 10_000
+      assert_receive {:spawn_outcome, %{content: "did it" <> _}}, 10_000
+      assert_receive {:spawn_outcome, %{is_error: true, content: refusal}}, 10_000
+      assert refusal =~ "allowance"
+      assert refusal =~ "2 workers"
+    end
   end
 
   describe "timed-out workers hand back their progress" do
