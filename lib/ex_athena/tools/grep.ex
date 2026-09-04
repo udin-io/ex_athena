@@ -91,8 +91,64 @@ defmodule ExAthena.Tools.Grep do
       # ripgrep exit 1 = no matches
       {"", 1} -> build_payload(pattern, [])
       {output, 1} -> build_payload(pattern, take_lines(output, max))
+      # ripgrep exits 2 when it hit an error ANYWHERE in the walk — a directory
+      # it could not read, a file that vanished — even though it searched
+      # everything else and found matches. Treating that as a failure threw a
+      # completed search away: live, a worker grepping a project holding a
+      # root-owned `data_psql/` got `{:rg_failed, 2, "./data_psql: Permission
+      # denied (os error 13)"}` back three times and had to reason its way past
+      # its own tool ("the grep actually succeeded").
+      {output, 2} -> partial_payload(pattern, output, max)
       {output, code} -> {:error, {:rg_failed, code, output}}
     end
+  end
+
+  @doc """
+  Interpret a ripgrep run that exited 2 — "an error occurred".
+
+  That exit says an error happened *somewhere in the walk*, not that the search
+  failed: ripgrep still searched everything it could reach and still reports
+  what it found. Matches and diagnostics arrive on one stream
+  (`stderr_to_stdout: true`) and are told apart by shape — `--line-number`
+  makes a match `path:line:text`, while a diagnostic is `path: message`.
+
+  Returns the matches with a note naming what could not be read, or an error
+  when the output holds neither (a bad regex, an unknown flag) so a genuine
+  failure is never reported as an empty search.
+
+  Public because it is the tool's contract for ripgrep's partial-failure mode,
+  and because only a privileged-enough process can be *stopped* from reading a
+  directory — a test that chmods one proves nothing when it runs as root.
+  """
+  @spec partial_payload(String.t(), String.t(), pos_integer()) ::
+          {:ok, String.t(), map()} | {:error, term()}
+  def partial_payload(pattern, output, max) do
+    {matches, notices} =
+      output
+      |> String.split("\n", trim: true)
+      |> Enum.split_with(&Regex.match?(~r/^.+?:\d+:/, &1))
+
+    case {matches, notices} do
+      # Nothing usable and nothing explained — a real failure (bad regex, no
+      # such flag), so keep it an error rather than reporting an empty search.
+      {[], []} ->
+        {:error, {:rg_failed, 2, output}}
+
+      {matches, notices} ->
+        {:ok, llm, ui} = build_payload(pattern, Enum.take(matches, max))
+        {:ok, llm <> unreadable_note(notices), ui}
+    end
+  end
+
+  # Naming what was skipped is the point: a silently partial search is how a
+  # worker concludes something is absent when it simply could not look — and
+  # the worker contract tells it to stop searching once it believes that.
+  defp unreadable_note([]), do: ""
+
+  defp unreadable_note(notices) do
+    "\n\n[incomplete search — #{length(notices)} path(s) could not be read, " <>
+      "so a \"no match\" here does not prove absence:\n" <>
+      Enum.map_join(notices, "\n", &("  " <> &1)) <> "]"
   end
 
   defp build_payload(pattern, items) when is_list(items) do

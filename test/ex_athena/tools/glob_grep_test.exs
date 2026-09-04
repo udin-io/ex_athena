@@ -91,6 +91,77 @@ defmodule ExAthena.Tools.GlobGrepTest do
     assert {:error, :missing_pattern} = Grep.execute(%{}, ctx)
   end
 
+  # ripgrep exits 2 when it hit an error ANYWHERE in the walk — including a
+  # directory it could not read — even though it searched everything else and
+  # found matches. The tool treated any exit but 0/1 as a hard failure, so a
+  # completed search was thrown away: live, a worker grepping a project holding
+  # a root-owned `data_psql/` got `{:rg_failed, 2, "./data_psql: Permission
+  # denied (os error 13)"}` back three times, and had to reason its way past
+  # its own tool ("the grep actually succeeded").
+  #
+  # Driven through ripgrep's actual output rather than by chmodding a
+  # directory: only an unprivileged process can be stopped from reading one, so
+  # a chmod-based test asserts nothing wherever the suite runs as root.
+  describe "partial_payload/3 — ripgrep exited 2 mid-walk" do
+    @unreadable "./data_psql: Permission denied (os error 13)"
+    @match "./mix.lock:67:  \"ortex\": {:hex, :ortex, \"0.1.10\"},"
+
+    test "returns the matches the search did find" do
+      output = Enum.join([@unreadable, @match], "\n") <> "\n"
+
+      assert {:ok, llm, ui} = Grep.partial_payload("ortex", output, 200)
+      assert llm =~ "mix.lock:67"
+      assert ui.payload.count == 1
+      assert ui.payload.items == [@match]
+    end
+
+    test "does not count the diagnostic as a match" do
+      output = Enum.join([@unreadable, @match], "\n") <> "\n"
+
+      assert {:ok, _llm, ui} = Grep.partial_payload("ortex", output, 200)
+      refute Enum.any?(ui.payload.items, &(&1 =~ "Permission denied"))
+    end
+
+    test "names what could not be read, so 'no match' is never mistaken for absent" do
+      output = Enum.join([@unreadable, @match], "\n") <> "\n"
+
+      assert {:ok, llm, _ui} = Grep.partial_payload("ortex", output, 200)
+      assert llm =~ "incomplete search"
+      assert llm =~ "does not prove absence"
+      assert llm =~ "data_psql"
+    end
+
+    test "a search that matched nothing readable still reports the gap" do
+      assert {:ok, llm, ui} = Grep.partial_payload("nope", @unreadable <> "\n", 200)
+      assert ui.payload.count == 0
+      assert llm =~ "no matches"
+      assert llm =~ "incomplete search"
+      assert llm =~ "data_psql"
+    end
+
+    test "honours the result cap" do
+      output = Enum.map_join(1..10, "\n", &"./f#{&1}.ex:1:hit") <> "\n" <> @unreadable
+
+      assert {:ok, _llm, ui} = Grep.partial_payload("hit", output, 3)
+      assert ui.payload.count == 3
+    end
+
+    test "reads ripgrep output with no ./ prefix (version differences)" do
+      output = "mix.lock:67:  ortex\n" <> "data_psql: Permission denied (os error 13)\n"
+
+      assert {:ok, llm, ui} = Grep.partial_payload("ortex", output, 200)
+      assert ui.payload.items == ["mix.lock:67:  ortex"]
+      assert llm =~ "data_psql"
+    end
+
+    # A bad regex or an unknown flag also exits 2, with no matches and nothing
+    # that looks like a path diagnostic. That must stay an error — reporting it
+    # as an empty search would read as "definitely not there".
+    test "output with neither matches nor diagnostics stays an error" do
+      assert {:error, {:rg_failed, 2, _}} = Grep.partial_payload("(", "", 200)
+    end
+  end
+
   describe "build-artifact filtering" do
     setup do
       dir = Path.join(System.tmp_dir!(), "gg_filter_#{System.unique_integer([:positive])}")
