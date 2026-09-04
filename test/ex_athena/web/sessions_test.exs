@@ -9,6 +9,29 @@ defmodule ExAthena.Web.SessionsTest do
   # :month or :year is ever reached — `~U[2026-05-31] > ~U[2026-08-10]` is true.
   # The sidebar was therefore ordered by day-of-month, burying today's sessions
   # behind anything created late in an earlier month.
+  # The settings file learned this lesson first (see config/test.exs): a test
+  # that writes to a user-home store corrupts real state, silently. The web
+  # store went unpinned until it was pinnable, and `ChatLiveFilesUITest` was
+  # pushing one tmp_dir per test into the developer's real recent-projects
+  # list — five per suite run, evicting the projects they actually use.
+  describe "base_dir/0 — never the developer's real store under test" do
+    test "is pinned away from ~/.ex_athena" do
+      refute Sessions.base_dir() == Path.expand("~/.ex_athena/web")
+      refute String.starts_with?(Sessions.base_dir(), Path.expand("~/.ex_athena"))
+    end
+
+    test "the recent-projects list is written under it" do
+      cwd = Path.join(System.tmp_dir!(), "recent_probe_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(cwd)
+      on_exit(fn -> File.rm_rf!(cwd) end)
+
+      :ok = Sessions.touch_recent(cwd)
+
+      assert File.exists?(Path.join(Sessions.base_dir(), "recent.json"))
+      assert Enum.any?(Sessions.list_recent(), &(&1.cwd == cwd))
+    end
+  end
+
   describe "sort_by_recency/1" do
     defp header(id, dt), do: %{id: id, updated_at: dt}
 
