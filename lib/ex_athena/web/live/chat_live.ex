@@ -340,10 +340,14 @@ defmodule ExAthena.Web.Live.ChatLive do
           |> Enum.flat_map(&(&1.tool_results || []))
           |> Map.new(&{&1.tool_call_id, &1})
 
+        # Walk STEPS, not a flat list of calls: a step whose calls are all
+        # missing was never seen by the stream at all, so its reasoning is
+        # missing too — and that is the only safe signal for recovering text,
+        # which (unlike a tool call) carries no id to dedupe on. A step the
+        # stream already has keeps whatever text it already has.
         snapshot
-        |> Enum.flat_map(&(&1.tool_calls || []))
-        |> Enum.reject(&MapSet.member?(present, &1.id))
-        |> Enum.flat_map(&recovered_rows(&1, id, results, tool_uis))
+        |> Enum.filter(&(&1.role == :assistant and (&1.tool_calls || []) != []))
+        |> Enum.flat_map(&step_rows(&1, id, present, results, tool_uis))
         |> Enum.reverse()
 
       _ ->
@@ -352,6 +356,31 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   defp snapshot_details(_msg, _tool_uis, _present), do: []
+
+  defp step_rows(step, msg_id, present, results, tool_uis) do
+    calls = step.tool_calls || []
+    missing = Enum.reject(calls, &MapSet.member?(present, &1.id))
+
+    case missing do
+      [] ->
+        []
+
+      _ ->
+        text_rows =
+          if length(missing) == length(calls), do: step_text_rows(step, msg_id), else: []
+
+        text_rows ++ Enum.flat_map(missing, &recovered_rows(&1, msg_id, results, tool_uis))
+    end
+  end
+
+  # Oldest-first within the step (the caller reverses): the model thinks, then
+  # says something, then calls the tool — the order live delivery produces.
+  defp step_text_rows(step, msg_id) do
+    for {type, text} <- [thinking: step.reasoning, assistant_text: step.content],
+        is_binary(text),
+        String.trim(text) != "",
+        do: new_detail(type, msg_id, %{text: text})
+  end
 
   defp recovered_rows(call, msg_id, results, tool_uis) do
     result_row =

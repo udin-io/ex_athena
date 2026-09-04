@@ -832,7 +832,9 @@ defmodule ExAthena.Modes.Orchestrate do
     content = field(todo, :content) || "the next pending step"
 
     args = %{
-      "prompt" => "Complete this step of a larger task: #{content}",
+      "prompt" =>
+        "Complete this step of a larger task: #{content}"
+        |> with_prior_attempt(prior_attempt(state, content)),
       "objective" => content,
       "expected_output" =>
         "a self-contained summary (max 300 words) of findings, decisions, and files changed",
@@ -868,6 +870,51 @@ defmodule ExAthena.Modes.Orchestrate do
           end
 
         %{state | messages: state.messages ++ [ExAthena.Messages.user(note)]}
+    end
+  end
+
+  # When a worker already attempted this exact todo and failed, its digest of
+  # what it learned went to the ORCHESTRATOR — not to whoever picks the step up
+  # next. The runtime's retry therefore started from nothing and re-derived the
+  # same ground: live, 38 iterations and 550k input tokens, ending on a cause
+  # the first attempt had already ruled out. Hand it forward instead.
+  defp prior_attempt(state, content) do
+    ids =
+      for msg <- state.messages,
+          call <- msg.tool_calls || [],
+          call.name == "spawn_agent",
+          todo_arg(call) == content,
+          into: MapSet.new(),
+          do: call.id
+
+    if MapSet.size(ids) == 0 do
+      nil
+    else
+      state.messages
+      |> Enum.flat_map(&(&1.tool_results || []))
+      |> Enum.filter(&MapSet.member?(ids, &1.tool_call_id))
+      |> List.last()
+    end
+  end
+
+  defp todo_arg(%{arguments: args}) when is_map(args),
+    do: Map.get(args, "todo") || Map.get(args, :todo)
+
+  defp todo_arg(_call), do: nil
+
+  defp with_prior_attempt(prompt, nil), do: prompt
+
+  defp with_prior_attempt(prompt, result) do
+    case truncate(to_string(result.content || ""), 2_000) do
+      "" ->
+        prompt
+
+      text ->
+        prompt <>
+          "\n\n## What a previous attempt at this step found\n" <>
+          text <>
+          "\n\nBuild on that: do not redo work it already did, and re-check " <>
+          "anything it left uncertain or contradicted itself on."
     end
   end
 

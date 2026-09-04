@@ -34,6 +34,23 @@ defmodule ExAthena.Terminal.ServerTest do
     assert IO.iodata_to_binary(html) =~ "hello-from-shell"
   end
 
+  # xterm.js has no local echo — a character only appears because the pty
+  # echoed it back. erlexec creates the pty with echo DISABLED unless
+  # `pty_echo` is passed ("Allow the pty to run in echo mode, disabled by
+  # default"), so everything the user typed was invisible: the shell ran the
+  # command and printed its output, but the command line itself never
+  # appeared.
+  test "echoes typed input back so the user can see what they type", %{dir: dir} do
+    {id, _pid} = start(dir)
+
+    # Deliberately no newline: nothing is executed, so anything that comes
+    # back is the echo of the keystrokes themselves.
+    Server.input(id, "echo not-executed-yet")
+
+    assert_receive {:term_output, ^id, echoed}, 5_000
+    assert IO.iodata_to_binary(echoed) =~ "echo not-executed-yet"
+  end
+
   test "runs in the given cwd", %{dir: dir} do
     {id, _pid} = start(dir)
 

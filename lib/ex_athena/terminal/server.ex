@@ -3,17 +3,17 @@ defmodule ExAthena.Terminal.Server do
   One GenServer per embedded web terminal.
 
   Owns an interactive shell via `erlexec` (a real pseudo-terminal: prompt,
-  colors, job control, Ctrl-C), streams its output to the owning LiveView as
-  themed HTML, and dies with its owner (shared-fate cleanup). Output is
-  coalesced on a short timer so a flood (`yes`, a big `cat`) becomes a few
-  LiveView diffs instead of thousands of messages.
+  colors, job control, Ctrl-C), streams its raw output to the owning LiveView,
+  and dies with its owner (shared-fate cleanup). Output is coalesced on a
+  short timer so a flood (`yes`, a big `cat`) becomes a few LiveView diffs
+  instead of thousands of messages.
 
   Started on demand under `ExAthena.Terminal.Supervisor`, named by terminal
   id in `ExAthena.Terminal.Registry` (mirrors `Orchestrator.Coordinator`).
 
-  This is a COMMAND-RUNNER terminal — line-streaming with SGR colors. The
-  output renderer (`ExAthena.Terminal.Sgr`) does not emulate cursor control,
-  so full-screen TUIs (vim/htop) are out of scope by design.
+  The client is xterm.js, which renders the raw VT stream, so full-screen
+  TUIs, colors and the user's real prompt all work. It has no local echo of
+  its own, which is why the pty is opened with `pty_echo` — see `init/1`.
   """
 
   use GenServer
@@ -90,6 +90,13 @@ defmodule ExAthena.Terminal.Server do
         :stdout,
         :stderr,
         :pty,
+        # erlexec creates the pty with ECHO off unless asked ("Allow the pty
+        # to run in echo mode, disabled by default"). xterm.js has no local
+        # echo of its own — a keystroke only appears on screen because the pty
+        # echoed it back — so without this the user typed into an apparently
+        # dead terminal: the command ran and printed output, but the command
+        # line itself was never drawn.
+        :pty_echo,
         :monitor,
         {:cd, to_charlist(cwd)},
         {:winsz, {rows, cols}},
