@@ -14,6 +14,9 @@ defmodule ExAthena.Loop.Terminations do
     * `:stop` — model returned text with no tool calls.
     * `:submitted` — model explicitly called the `finish` tool to declare
       completion. The `Result.deliverable` field carries the payload.
+    * `:stopped` — a human interrupted the run (the UI's stop button). Not a
+      fault and not a success: whatever the run had produced by then is kept
+      and persisted, exactly as a completed run's output is.
     * `:error_max_turns` — iteration cap reached.
     * `:error_max_budget_usd` — cost ceiling tripped.
     * `:error_during_execution` — unrecoverable tool / provider error.
@@ -47,6 +50,7 @@ defmodule ExAthena.Loop.Terminations do
   @type subtype ::
           :stop
           | :submitted
+          | :stopped
           | :error_max_turns
           | :error_max_budget_usd
           | :error_during_execution
@@ -63,6 +67,7 @@ defmodule ExAthena.Loop.Terminations do
   @all_subtypes [
     :stop,
     :submitted,
+    :stopped,
     :error_max_turns,
     :error_max_budget_usd,
     :error_during_execution,
@@ -87,24 +92,32 @@ defmodule ExAthena.Loop.Terminations do
   def success?(:submitted), do: true
   def success?(_), do: false
 
+  @doc "Did a human end this run on purpose?"
+  @spec interrupted?(subtype()) :: boolean()
+  def interrupted?(:stopped), do: true
+  def interrupted?(_), do: false
+
   @doc "Is this an error termination?"
   @spec error?(subtype()) :: boolean()
   def error?(:stop), do: false
   def error?(:submitted), do: false
+  def error?(:stopped), do: false
   def error?(_), do: true
 
   @doc """
   Categorise a termination for retry classification. Returns one of:
   `:retryable`, `:capacity`, `:fatal`.
 
+    * `:interrupted` — a human stopped it; retry only if they ask.
     * `:retryable` — transient; caller may retry on a new run.
     * `:capacity` — the run hit a configured limit; caller should increase
       the limit or reduce scope.
     * `:fatal` — don't retry without operator action.
   """
-  @spec category(subtype()) :: :success | :retryable | :capacity | :fatal
+  @spec category(subtype()) :: :success | :interrupted | :retryable | :capacity | :fatal
   def category(:stop), do: :success
   def category(:submitted), do: :success
+  def category(:stopped), do: :interrupted
   def category(:error_max_turns), do: :capacity
   def category(:error_max_budget_usd), do: :capacity
   def category(:error_max_structured_output_retries), do: :capacity

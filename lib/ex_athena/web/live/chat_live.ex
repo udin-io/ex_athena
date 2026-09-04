@@ -538,20 +538,34 @@ defmodule ExAthena.Web.Live.ChatLive do
     {:noreply, assign(socket, pending_images: List.delete_at(socket.assigns.pending_images, idx))}
   end
 
+  # Stop is a termination, so it goes through the SAME path a completed run
+  # does: the run server persists what was produced and broadcasts
+  # `{:athena_done, _}`, and `handle_info/2` renders and saves it. Clearing the
+  # stream here instead — which is what this did — threw away the richer
+  # version only the LiveView holds, and nilling `pending_assistant_msg_id`
+  # left nothing to attribute the remains to. `streaming` deliberately stays
+  # true: the completion clause is a no-op once it is false, so flipping it
+  # here would swallow the stop's own result.
   def handle_event("stop", _params, socket) do
-    ExAthena.Web.RunServer.stop_run(socket.assigns.session_id)
+    case ExAthena.Web.RunServer.stop_run(socket.assigns.session_id) do
+      :ok ->
+        {:noreply, assign(socket, current_action: "stopping…")}
 
-    {:noreply,
-     assign(socket,
-       streaming: false,
-       streaming_task_pid: nil,
-       stream_text: "",
-       stream_events: [],
-       stream_tool_ui: %{},
-       current_action: nil,
-       awaiting_question: nil,
-       pending_assistant_msg_id: nil
-     )}
+      # Nothing left to answer us — tidy up locally or the composer stays
+      # disabled with no run to end it.
+      {:error, :not_running} ->
+        {:noreply,
+         assign(socket,
+           streaming: false,
+           streaming_task_pid: nil,
+           stream_text: "",
+           stream_events: [],
+           stream_tool_ui: %{},
+           current_action: nil,
+           awaiting_question: nil,
+           pending_assistant_msg_id: nil
+         )}
+    end
   end
 
   # --- Settings (gear) modal ---

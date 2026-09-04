@@ -85,13 +85,23 @@ defmodule ExAthena.Web.RunServer do
     )
   end
 
-  @doc "Pid of the run server for `session_id`, or nil."
+  @doc """
+  Pid of the run server for `session_id`, or nil.
+
+  Nil when the registry itself is not running, too: it is started by
+  `mix athena.web`, so its absence means there are no runs — which is what
+  every caller here already does with a nil. `Registry.lookup/2` raises on an
+  unknown registry, and that turned "is anything running?" into a crash in a
+  LiveView event handler.
+  """
   @spec whereis(String.t()) :: pid() | nil
   def whereis(session_id) do
     case Registry.lookup(@registry, session_id) do
       [{pid, _}] -> pid
       [] -> nil
     end
+  rescue
+    ArgumentError -> nil
   end
 
   @doc "Whether a run for `session_id` is currently in flight (still streaming)."
@@ -151,11 +161,17 @@ defmodule ExAthena.Web.RunServer do
     end
   end
 
-  @doc "Stop the in-flight run for `session_id` (user hit stop)."
-  @spec stop_run(String.t()) :: :ok
+  @doc """
+  Stop the in-flight run for `session_id` (user hit stop).
+
+  `{:error, :not_running}` when there is nothing to stop, so the caller knows
+  no `{:athena_done, _}` is coming and can reset its own UI instead of waiting
+  for one.
+  """
+  @spec stop_run(String.t()) :: :ok | {:error, :not_running}
   def stop_run(session_id) do
     case whereis(session_id) do
-      nil -> :ok
+      nil -> {:error, :not_running}
       pid -> GenServer.cast(pid, :stop_run)
     end
   end
@@ -263,10 +279,38 @@ defmodule ExAthena.Web.RunServer do
     {:noreply, %{state | awaiting_question: nil, current_action: "thinking…"}}
   end
 
+  # Stop is a termination like any other, so it persists like any other. It
+  # used to kill the task and stop, writing nothing: a live run stopped after
+  # nine minutes and ~332k input tokens left a session file frozen at
+  # iteration 1 — no assistant message, and an Overview that still read
+  # "main: running" days later. Whatever the run had produced by then is the
+  # user's, and it is the only thing they have to show for it.
   @impl GenServer
   def handle_cast(:stop_run, state) do
     if state.task_pid, do: Process.exit(state.task_pid, :kill)
+
+    result = interrupted_result(state)
+
+    Sessions.persist_run_result(
+      state.session_id,
+      state.assistant_msg_id,
+      result,
+      terminal_snapshot(state, result)
+    )
+
+    # Same message a completed run broadcasts, so an attached LiveView renders
+    # and saves its richer version through the one path it already has.
+    broadcast(state, {:athena_done, result})
     {:stop, :normal, %{state | streaming: false}}
+  end
+
+  defp interrupted_result(state) do
+    %ExAthena.Result{
+      text: state.stream_text,
+      finish_reason: :stopped,
+      halted_reason: "stopped by the user",
+      messages: nil
+    }
   end
 
   # --- Run → server events (accumulate + fan out unchanged to subscribers) ---
