@@ -91,6 +91,55 @@ defmodule ExAthena.Tools.GlobGrepTest do
     assert {:error, :missing_pattern} = Grep.execute(%{}, ctx)
   end
 
+  # ripgrep exits 2 when it hit an error ANYWHERE in the walk — including a
+  # directory it could not read — even though it searched everything else and
+  # found matches. The tool treated any exit but 0/1 as a hard failure, so a
+  # completed search was thrown away: live, a worker grepping a project holding
+  # a root-owned `data_psql/` got `{:rg_failed, 2, "./data_psql: Permission
+  # denied (os error 13)"}` back three times, and had to reason its way past
+  # its own tool ("the grep actually succeeded").
+  describe "an unreadable directory in the tree" do
+    setup %{ctx: ctx} do
+      locked = Path.join(ctx.cwd, "locked")
+      File.mkdir_p!(locked)
+      File.write!(Path.join(locked, "secret.ex"), "def foo, do: :hidden\n")
+      File.chmod!(locked, 0o000)
+      # Restore before the setup's rm_rf, which cannot descend into 000 either.
+      on_exit(fn -> File.chmod(locked, 0o755) end)
+
+      if System.find_executable("rg") == nil, do: :ok, else: {:ok, locked: locked}
+    end
+
+    test "still returns the matches it did find", %{ctx: ctx} do
+      assert {:ok, output, ui} = Grep.execute(%{"pattern" => "foo"}, ctx)
+
+      assert output =~ "a.ex"
+      assert output =~ "sub/c.ex"
+      assert ui.payload.count >= 2
+    end
+
+    test "says which paths it could not read, so 'no matches' is never mistaken for absent",
+         %{ctx: ctx} do
+      assert {:ok, output, _ui} = Grep.execute(%{"pattern" => "foo"}, ctx)
+
+      assert output =~ "locked"
+      assert output =~ "could not be read"
+    end
+
+    test "a pattern matching nothing readable still reports the gap", %{ctx: ctx} do
+      assert {:ok, output, _ui} = Grep.execute(%{"pattern" => "zzz_no_such_symbol"}, ctx)
+
+      assert output =~ "could not be read"
+      assert output =~ "locked"
+    end
+
+    test "the permission notice is not mistaken for a match", %{ctx: ctx} do
+      assert {:ok, _output, ui} = Grep.execute(%{"pattern" => "foo"}, ctx)
+
+      refute Enum.any?(ui.payload.items, &(&1 =~ "Permission denied"))
+    end
+  end
+
   describe "build-artifact filtering" do
     setup do
       dir = Path.join(System.tmp_dir!(), "gg_filter_#{System.unique_integer([:positive])}")
