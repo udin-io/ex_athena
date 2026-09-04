@@ -67,6 +67,19 @@ defmodule ExAthena.PermissionsTest do
              Permissions.check(call("write"), ctx(:plan), readonly_tools: readonly)
   end
 
+  # A worker spawned to "run mix compile and capture the error" hit the plan
+  # phase, read the denial as something to get around, and tried `cd … && mix
+  # -v`, `mix -v`, `cd …; mix -v` — the identical denial three times — then
+  # died on error_consecutive_mistakes with its step unstarted. The denial has
+  # to say that rephrasing is not the way out.
+  test "a bash phase denial says rephrasing will not help" do
+    assert {:deny, %Denial{code: :phase_gated, reason: reason}} =
+             Permissions.check(call("bash", %{"command" => "mix -v"}), ctx(:plan), %{})
+
+    assert reason =~ "Rephrasing will not change this"
+    assert reason =~ "report"
+  end
+
   test "plan phase allows web_search (read-only online research)" do
     assert :allow = Permissions.check(call("web_search", %{"query" => "q"}), ctx(:plan), %{})
     assert "web_search" in Permissions.readonly_tools()

@@ -258,6 +258,123 @@ defmodule ExAthena.Web.RunServerTest do
     end
   end
 
+  # Pressing stop threw the whole run away. `stop_run` killed the task and
+  # stopped the server without writing anything, so a live session that was
+  # stopped after nine minutes and ~332k input tokens kept a session file
+  # frozen at iteration 1: no assistant message, and an Overview still reading
+  # "main: running". Completion has persisted durably since #209; stop never
+  # did.
+  describe "stopping a run" do
+    @tag :tmp_dir
+    test "persists what the run produced and closes the Overview out", %{tmp_dir: tmp_dir} do
+      previous = Application.get_env(:ex_athena, :web_dir)
+      Application.put_env(:ex_athena, :web_dir, tmp_dir)
+      on_exit(fn -> Application.put_env(:ex_athena, :web_dir, previous) end)
+
+      sid = "s-stop-persist"
+      run_sid = "#{sid}-run-amsg"
+
+      {:ok, coordinator} = ExAthena.Orchestrator.Coordinator.start_for(run_sid)
+      on_exit(fn -> if Process.alive?(coordinator), do: GenServer.stop(coordinator, :normal) end)
+
+      :ok =
+        Sessions.save(%{
+          id: sid,
+          display_messages: [%{id: "u1", role: :user, text: "hi"}],
+          ex_messages: [],
+          updated_at: DateTime.utc_now()
+        })
+
+      _task = blocking_run(sid, "amsg", coordinator)
+      {:ok, _} = RunServer.attach(sid, self())
+
+      # Work the run had streamed before the user hit stop.
+      send(RunServer.whereis(sid), {:run_event, {:content, "partial finding: nx is pinned"}})
+
+      :ok = RunServer.stop_run(sid)
+
+      assert_receive {:athena_done, result}, 5_000
+      assert result.finish_reason == :stopped
+      assert result.text =~ "partial finding"
+
+      assert {:ok, data} = Sessions.load(sid)
+      assert %{text: text} = List.last(data.display_messages)
+      assert text =~ "partial finding"
+
+      assert %{main: main} = data.orchestrator
+      refute main.status == :running
+      refute is_nil(main.finished_at)
+    end
+
+    @tag :tmp_dir
+    test "a run that produced nothing yet still closes the Overview", %{tmp_dir: tmp_dir} do
+      previous = Application.get_env(:ex_athena, :web_dir)
+      Application.put_env(:ex_athena, :web_dir, tmp_dir)
+      on_exit(fn -> Application.put_env(:ex_athena, :web_dir, previous) end)
+
+      sid = "s-stop-empty"
+      run_sid = "#{sid}-run-amsg"
+
+      {:ok, coordinator} = ExAthena.Orchestrator.Coordinator.start_for(run_sid)
+      on_exit(fn -> if Process.alive?(coordinator), do: GenServer.stop(coordinator, :normal) end)
+
+      :ok =
+        Sessions.save(%{
+          id: sid,
+          display_messages: [%{id: "u1", role: :user, text: "hi"}],
+          ex_messages: [],
+          updated_at: DateTime.utc_now()
+        })
+
+      _task = blocking_run(sid, "amsg", coordinator)
+      {:ok, _} = RunServer.attach(sid, self())
+
+      :ok = RunServer.stop_run(sid)
+      assert_receive {:athena_done, _result}, 5_000
+
+      assert {:ok, data} = Sessions.load(sid)
+      assert %{main: main} = data.orchestrator
+      refute main.status == :running
+    end
+  end
+
+  # The LiveView half of the same fix: stop must not clear the stream it is
+  # about to be asked to save, and must not flip `streaming` (the completion
+  # clause is a no-op once it is false, which would swallow the stop's own
+  # result).
+  describe "the stop button, against a live run" do
+    defp stop_socket(session_id) do
+      %Phoenix.LiveView.Socket{
+        assigns: %{
+          __changed__: %{},
+          session_id: session_id,
+          streaming: true,
+          stream_text: "a partial finding",
+          stream_events: [%{type: :call, id: "c1", name: "grep", arguments: %{}}],
+          stream_tool_ui: %{},
+          streaming_task_pid: nil,
+          awaiting_question: nil,
+          pending_assistant_msg_id: "amsg",
+          current_action: "running grep…"
+        }
+      }
+    end
+
+    test "keeps the streamed work and stays streaming so the result lands" do
+      sid = "s-stop-ui"
+      _task = blocking_run(sid)
+
+      assert {:noreply, socket} =
+               ExAthena.Web.Live.ChatLive.handle_event("stop", %{}, stop_socket(sid))
+
+      assert socket.assigns.streaming
+      assert socket.assigns.stream_text == "a partial finding"
+      assert socket.assigns.stream_events != []
+      assert socket.assigns.pending_assistant_msg_id == "amsg"
+      assert socket.assigns.current_action =~ "stopping"
+    end
+  end
+
   test "stop_run kills the in-flight run and retires the server" do
     sid = "s-stop"
     server = RunServer.whereis(sid)

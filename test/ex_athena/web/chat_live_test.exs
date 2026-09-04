@@ -703,6 +703,34 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
     end
   end
 
+  # The stop handler cleared stream_text, stream_events and — fatally —
+  # pending_assistant_msg_id, all before anything had saved them. Stop now
+  # routes through the completion path instead; the live half of that is in
+  # ExAthena.Web.RunServerTest, which has a real run server to stop.
+  describe "the stop button with nothing to stop" do
+    test "resets the UI when no run server can answer" do
+      socket = %Phoenix.LiveView.Socket{
+        assigns: %{
+          __changed__: %{},
+          session_id: "s-gone-#{System.unique_integer([:positive])}",
+          streaming: true,
+          stream_text: "a partial finding",
+          stream_events: [%{type: :call, id: "c1", name: "grep", arguments: %{}}],
+          stream_tool_ui: %{},
+          streaming_task_pid: nil,
+          awaiting_question: nil,
+          pending_assistant_msg_id: "a1",
+          current_action: "running grep…"
+        }
+      }
+
+      assert {:noreply, socket} = ChatLive.handle_event("stop", %{}, socket)
+
+      refute socket.assigns.streaming
+      assert is_nil(socket.assigns.current_action)
+    end
+  end
+
   describe "orchestrator snapshot persistence" do
     defp payload_assigns(overrides \\ %{}) do
       Map.merge(

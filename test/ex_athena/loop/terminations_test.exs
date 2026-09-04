@@ -19,6 +19,7 @@ defmodule ExAthena.Loop.TerminationsTest do
       assert :error_schema_validation in Terminations.all()
       assert :error_provider_auth in Terminations.all()
       assert :error_thinking_starved in Terminations.all()
+      assert :stopped in Terminations.all()
     end
   end
 
@@ -33,15 +34,29 @@ defmodule ExAthena.Loop.TerminationsTest do
       refute Terminations.error?(:submitted)
     end
 
-    test "every error subtype is error, not success" do
-      for subtype <- Terminations.all() -- [:stop, :submitted] do
+    # A run a human stopped on purpose is neither: it did not achieve what it
+    # was asked, and nothing went wrong. Calling it an error would have
+    # `Result.error?/1` report a fault for every use of the stop button.
+    test ":stopped is neither success nor error" do
+      refute Terminations.success?(:stopped)
+      refute Terminations.error?(:stopped)
+      assert Terminations.interrupted?(:stopped)
+    end
+
+    test "every remaining subtype is error, not success" do
+      for subtype <- Terminations.all() -- [:stop, :submitted, :stopped] do
         refute Terminations.success?(subtype), "#{subtype} should not be success"
         assert Terminations.error?(subtype), "#{subtype} should be error"
+        refute Terminations.interrupted?(subtype), "#{subtype} should not be interrupted"
       end
     end
   end
 
   describe "category/1" do
+    test ":stopped is :interrupted — retry only if the user asks" do
+      assert Terminations.category(:stopped) == :interrupted
+    end
+
     test ":stop is :success" do
       assert Terminations.category(:stop) == :success
     end
