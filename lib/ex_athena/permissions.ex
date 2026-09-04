@@ -106,6 +106,17 @@ defmodule ExAthena.Permissions do
   alias ExAthena.ToolContext
 
   @readonly_tools ~w(read glob grep web_fetch web_search usage_rules plan_mode spawn_agent lsp)
+
+  # A phase denial is a property of the run, not of how the command was
+  # spelled — but nothing said so, and a worker read it as something to get
+  # around. One spawned to "run mix compile and capture the error" tried
+  # `cd … && mix -v`, then `mix -v`, then `cd …; mix -v`, drew the identical
+  # denial three times and died on error_consecutive_mistakes, leaving the
+  # step it was spawned for unstarted. Naming the dead end turns three wasted
+  # turns into one useful report back.
+  @rephrasing_wont_help "Rephrasing will not change this — the phase forbids the command " <>
+                          "itself. If this step genuinely needs it, stop and report that it " <>
+                          "cannot be done in a read-only phase."
   # `todo_write` is deliberately NOT here: it mutates session bookkeeping
   # (the todo list), never the workspace/filesystem, so it stays allowed in
   # the read-only `:plan` phase (see check_phase/4). Orchestrate planning and
@@ -241,7 +252,8 @@ defmodule ExAthena.Permissions do
                    "Every segment of a chain must be read-only" <>
                    segment_hint(segment) <>
                    " (unknown commands and interpreters are treated as mutating; " <>
-                   "use read-only commands like cat/ls/grep/git log).",
+                   "use read-only commands like cat/ls/grep/git log). " <>
+                   @rephrasing_wont_help,
                metadata: %{
                  phase: :plan,
                  requested_tool: "bash",
