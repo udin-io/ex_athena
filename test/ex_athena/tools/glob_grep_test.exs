@@ -162,6 +162,73 @@ defmodule ExAthena.Tools.GlobGrepTest do
     end
   end
 
+  # A worker globbed `deps/ortex/**`, got a bare "(no matches)" because `deps/`
+  # is filtered by default, and concluded "the glob tool is misbehaving with
+  # `**` patterns" — then worked around a tool that was fine. Same shape as the
+  # ripgrep case: a path that was SKIPPED must not be indistinguishable from
+  # one that is not there, because the worker contract tells workers to treat a
+  # repeated "no matches" as settled absence.
+  describe "paths excluded as build artifacts" do
+    setup %{ctx: ctx} do
+      File.mkdir_p!(Path.join(ctx.cwd, "deps/ortex/lib"))
+      File.write!(Path.join(ctx.cwd, "deps/ortex/mix.exs"), "x")
+      File.write!(Path.join(ctx.cwd, "deps/ortex/lib/backend.ex"), "x")
+      :ok
+    end
+
+    test "says they were excluded rather than reporting no matches", %{ctx: ctx} do
+      assert {:ok, output, ui} = Glob.execute(%{"pattern" => "deps/ortex/**"}, ctx)
+
+      assert ui.payload.count == 0
+      assert output =~ "excluded"
+      assert output =~ "include_artifacts"
+      refute output == "(no matches)"
+    end
+
+    test "a pattern matching nothing at all still reads as absent", %{ctx: ctx} do
+      assert {:ok, output, _ui} = Glob.execute(%{"pattern" => "no/such/thing/**"}, ctx)
+
+      assert output == "(no matches)"
+    end
+
+    test "results found outside artifact dirs are unaffected", %{ctx: ctx} do
+      assert {:ok, output, ui} = Glob.execute(%{"pattern" => "**/*.ex"}, ctx)
+
+      assert ui.payload.count >= 3
+      refute output =~ "excluded"
+      refute output =~ "deps/ortex"
+    end
+
+    test "include_artifacts returns them with no notice", %{ctx: ctx} do
+      assert {:ok, output, ui} =
+               Glob.execute(%{"pattern" => "deps/ortex/**", "include_artifacts" => true}, ctx)
+
+      assert ui.payload.count > 0
+      refute output =~ "excluded"
+    end
+  end
+
+  # `**` can expand to the same file by more than one route, and the duplicate
+  # reached both the model and the count.
+  describe "overlapping ** patterns" do
+    # `**/ortex/**/*.ex` reaches deps/ortex/lib/ortex/backend.ex by two routes
+    # when the segment repeats at two depths, and both reached the model.
+    test "each path is listed once", %{ctx: ctx} do
+      File.mkdir_p!(Path.join(ctx.cwd, "deps/ortex/lib/ortex"))
+      File.write!(Path.join(ctx.cwd, "deps/ortex/lib/ortex/backend.ex"), "x")
+
+      assert {:ok, output, ui} =
+               Glob.execute(
+                 %{"pattern" => "**/ortex/**/*.ex", "include_artifacts" => true},
+                 ctx
+               )
+
+      assert ui.payload.items == Enum.uniq(ui.payload.items)
+      assert ui.payload.count == length(ui.payload.items)
+      assert length(String.split(output, "\n")) == ui.payload.count
+    end
+  end
+
   describe "build-artifact filtering" do
     setup do
       dir = Path.join(System.tmp_dir!(), "gg_filter_#{System.unique_integer([:positive])}")

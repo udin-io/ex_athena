@@ -57,25 +57,31 @@ defmodule ExAthena.Tools.Glob do
     max = clamp(Map.get(args, "max_results", Tuning.get(:tools, :glob_default_max, @default_max)))
     include_artifacts = Map.get(args, "include_artifacts", false) == true
 
-    results =
+    # `**` can reach the same file by more than one route when a segment name
+    # repeats at two depths (`**/ortex/**/*.ex` over deps/ortex/lib/ortex/) —
+    # the duplicate reached the model and the count.
+    found =
       cwd
       |> Path.join(pattern)
       |> Path.wildcard()
+      |> Enum.uniq()
       |> confine(ctx.allowed_roots)
       |> Enum.map(&Path.relative_to(&1, cwd))
-      |> filter_artifacts(include_artifacts)
-      |> Enum.take(max)
+
+    allowed = filter_artifacts(found, include_artifacts)
+    kept = Enum.take(allowed, max)
+    excluded = length(found) - length(allowed)
 
     ui = %{
       kind: :matches,
       payload: %{
         pattern: pattern,
-        count: length(results),
-        items: results
+        count: length(kept),
+        items: kept
       }
     }
 
-    {:ok, format(results), ui}
+    {:ok, format(kept, excluded), ui}
   end
 
   def execute(_, _), do: {:error, :missing_pattern}
@@ -105,6 +111,17 @@ defmodule ExAthena.Tools.Glob do
     end)
   end
 
-  defp format([]), do: "(no matches)"
-  defp format(results), do: Enum.join(results, "\n")
+  # A path that was SKIPPED must never look like one that is not there. A
+  # worker globbed `deps/ortex/**`, got a bare "(no matches)", and concluded
+  # its own tool was broken with `**` patterns — the filter was the answer.
+  # The worker contract tells workers to treat a repeated "no matches" as
+  # settled absence, which makes a silent filter actively misleading.
+  defp format([], 0), do: "(no matches)"
+
+  defp format([], excluded) do
+    "(no matches — #{excluded} path(s) excluded as build artifacts; " <>
+      "pass include_artifacts: true to search them)"
+  end
+
+  defp format(results, _excluded), do: Enum.join(results, "\n")
 end
