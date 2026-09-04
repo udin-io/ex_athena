@@ -98,45 +98,67 @@ defmodule ExAthena.Tools.GlobGrepTest do
   # a root-owned `data_psql/` got `{:rg_failed, 2, "./data_psql: Permission
   # denied (os error 13)"}` back three times, and had to reason its way past
   # its own tool ("the grep actually succeeded").
-  describe "an unreadable directory in the tree" do
-    setup %{ctx: ctx} do
-      locked = Path.join(ctx.cwd, "locked")
-      File.mkdir_p!(locked)
-      File.write!(Path.join(locked, "secret.ex"), "def foo, do: :hidden\n")
-      File.chmod!(locked, 0o000)
-      # Restore before the setup's rm_rf, which cannot descend into 000 either.
-      on_exit(fn -> File.chmod(locked, 0o755) end)
+  #
+  # Driven through ripgrep's actual output rather than by chmodding a
+  # directory: only an unprivileged process can be stopped from reading one, so
+  # a chmod-based test asserts nothing wherever the suite runs as root.
+  describe "partial_payload/3 — ripgrep exited 2 mid-walk" do
+    @unreadable "./data_psql: Permission denied (os error 13)"
+    @match "./mix.lock:67:  \"ortex\": {:hex, :ortex, \"0.1.10\"},"
 
-      if System.find_executable("rg") == nil, do: :ok, else: {:ok, locked: locked}
+    test "returns the matches the search did find" do
+      output = Enum.join([@unreadable, @match], "\n") <> "\n"
+
+      assert {:ok, llm, ui} = Grep.partial_payload("ortex", output, 200)
+      assert llm =~ "mix.lock:67"
+      assert ui.payload.count == 1
+      assert ui.payload.items == [@match]
     end
 
-    test "still returns the matches it did find", %{ctx: ctx} do
-      assert {:ok, output, ui} = Grep.execute(%{"pattern" => "foo"}, ctx)
+    test "does not count the diagnostic as a match" do
+      output = Enum.join([@unreadable, @match], "\n") <> "\n"
 
-      assert output =~ "a.ex"
-      assert output =~ "sub/c.ex"
-      assert ui.payload.count >= 2
-    end
-
-    test "says which paths it could not read, so 'no matches' is never mistaken for absent",
-         %{ctx: ctx} do
-      assert {:ok, output, _ui} = Grep.execute(%{"pattern" => "foo"}, ctx)
-
-      assert output =~ "locked"
-      assert output =~ "could not be read"
-    end
-
-    test "a pattern matching nothing readable still reports the gap", %{ctx: ctx} do
-      assert {:ok, output, _ui} = Grep.execute(%{"pattern" => "zzz_no_such_symbol"}, ctx)
-
-      assert output =~ "could not be read"
-      assert output =~ "locked"
-    end
-
-    test "the permission notice is not mistaken for a match", %{ctx: ctx} do
-      assert {:ok, _output, ui} = Grep.execute(%{"pattern" => "foo"}, ctx)
-
+      assert {:ok, _llm, ui} = Grep.partial_payload("ortex", output, 200)
       refute Enum.any?(ui.payload.items, &(&1 =~ "Permission denied"))
+    end
+
+    test "names what could not be read, so 'no match' is never mistaken for absent" do
+      output = Enum.join([@unreadable, @match], "\n") <> "\n"
+
+      assert {:ok, llm, _ui} = Grep.partial_payload("ortex", output, 200)
+      assert llm =~ "incomplete search"
+      assert llm =~ "does not prove absence"
+      assert llm =~ "data_psql"
+    end
+
+    test "a search that matched nothing readable still reports the gap" do
+      assert {:ok, llm, ui} = Grep.partial_payload("nope", @unreadable <> "\n", 200)
+      assert ui.payload.count == 0
+      assert llm =~ "no matches"
+      assert llm =~ "incomplete search"
+      assert llm =~ "data_psql"
+    end
+
+    test "honours the result cap" do
+      output = Enum.map_join(1..10, "\n", &"./f#{&1}.ex:1:hit") <> "\n" <> @unreadable
+
+      assert {:ok, _llm, ui} = Grep.partial_payload("hit", output, 3)
+      assert ui.payload.count == 3
+    end
+
+    test "reads ripgrep output with no ./ prefix (version differences)" do
+      output = "mix.lock:67:  ortex\n" <> "data_psql: Permission denied (os error 13)\n"
+
+      assert {:ok, llm, ui} = Grep.partial_payload("ortex", output, 200)
+      assert ui.payload.items == ["mix.lock:67:  ortex"]
+      assert llm =~ "data_psql"
+    end
+
+    # A bad regex or an unknown flag also exits 2, with no matches and nothing
+    # that looks like a path diagnostic. That must stay an error — reporting it
+    # as an empty search would read as "definitely not there".
+    test "output with neither matches nor diagnostics stays an error" do
+      assert {:error, {:rg_failed, 2, _}} = Grep.partial_payload("(", "", 200)
     end
   end
 

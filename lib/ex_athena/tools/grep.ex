@@ -103,9 +103,26 @@ defmodule ExAthena.Tools.Grep do
     end
   end
 
-  # Matches and diagnostics arrive on one stream (`stderr_to_stdout`). A match
-  # from `--line-number` is `path:line:text`; a diagnostic is `path: message`.
-  defp partial_payload(pattern, output, max) do
+  @doc """
+  Interpret a ripgrep run that exited 2 — "an error occurred".
+
+  That exit says an error happened *somewhere in the walk*, not that the search
+  failed: ripgrep still searched everything it could reach and still reports
+  what it found. Matches and diagnostics arrive on one stream
+  (`stderr_to_stdout: true`) and are told apart by shape — `--line-number`
+  makes a match `path:line:text`, while a diagnostic is `path: message`.
+
+  Returns the matches with a note naming what could not be read, or an error
+  when the output holds neither (a bad regex, an unknown flag) so a genuine
+  failure is never reported as an empty search.
+
+  Public because it is the tool's contract for ripgrep's partial-failure mode,
+  and because only a privileged-enough process can be *stopped* from reading a
+  directory — a test that chmods one proves nothing when it runs as root.
+  """
+  @spec partial_payload(String.t(), String.t(), pos_integer()) ::
+          {:ok, String.t(), map()} | {:error, term()}
+  def partial_payload(pattern, output, max) do
     {matches, notices} =
       output
       |> String.split("\n", trim: true)
