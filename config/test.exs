@@ -29,6 +29,20 @@ config :ex_athena, :search, adapter: ExAthena.Search.Mock
 # can reach the real file.
 config :ex_athena, :settings_path, Path.join(System.tmp_dir!(), "ex_athena_test_settings.json")
 
+# Same lesson, the other user-home store: web sessions and the recent-projects
+# list live under ~/.ex_athena/web by default. Any LiveView test that opens a
+# cwd calls `Sessions.touch_recent/1`, and `ChatLiveFilesUITest` (which opens a
+# @tag :tmp_dir root) was pushing one entry per test into the developer's REAL
+# recent-projects list — five per suite run, evicting their actual projects.
+# Partitioned so concurrent `mix test` runs cannot collide, matching the
+# MIX_TEST_PARTITION convention used for the database.
+config :ex_athena,
+  web_dir:
+    Path.join(
+      System.tmp_dir!(),
+      "ex_athena_test_web#{System.get_env("MIX_TEST_PARTITION")}"
+    )
+
 # Web UI endpoint for route-level LiveView tests (test/ex_athena/web/*).
 # Phoenix.LiveViewTest drives the endpoint in-process; the HTTP server is
 # never started. Mirrors the config `mix athena.web` builds at runtime

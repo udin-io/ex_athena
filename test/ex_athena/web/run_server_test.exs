@@ -221,8 +221,12 @@ defmodule ExAthena.Web.RunServerTest do
   describe "terminal orchestrator snapshot" do
     @tag :tmp_dir
     test "the run server persists the run's terminal Overview state", %{tmp_dir: tmp_dir} do
+      # Restore, never delete: config/test.exs pins :web_dir away from the
+      # developer's real ~/.ex_athena/web, and deleting the key would drop
+      # every later test back onto it.
+      previous = Application.get_env(:ex_athena, :web_dir)
       Application.put_env(:ex_athena, :web_dir, tmp_dir)
-      on_exit(fn -> Application.delete_env(:ex_athena, :web_dir) end)
+      on_exit(fn -> Application.put_env(:ex_athena, :web_dir, previous) end)
 
       sid = "s-orchestrator"
       run_sid = "#{sid}-run-amsg"
