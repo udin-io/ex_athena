@@ -30,8 +30,7 @@ defmodule ExAthena.Terminal.ServerTest do
 
     Server.input(id, "echo hello-from-shell\n")
 
-    assert_receive {:term_output, ^id, html}, 5_000
-    assert IO.iodata_to_binary(html) =~ "hello-from-shell"
+    assert collect_until(id, "hello-from-shell", "")
   end
 
   # xterm.js has no local echo — a character only appears because the pty
@@ -47,8 +46,7 @@ defmodule ExAthena.Terminal.ServerTest do
     # back is the echo of the keystrokes themselves.
     Server.input(id, "echo not-executed-yet")
 
-    assert_receive {:term_output, ^id, echoed}, 5_000
-    assert IO.iodata_to_binary(echoed) =~ "echo not-executed-yet"
+    assert collect_until(id, "echo not-executed-yet", "")
   end
 
   test "runs in the given cwd", %{dir: dir} do
@@ -56,9 +54,8 @@ defmodule ExAthena.Terminal.ServerTest do
 
     Server.input(id, "pwd\n")
 
-    assert_receive {:term_output, ^id, html}, 5_000
     # macOS /tmp is a symlink to /private/tmp — match the leaf.
-    assert IO.iodata_to_binary(html) =~ Path.basename(dir)
+    assert collect_until(id, Path.basename(dir), "")
   end
 
   test "interrupt sends SIGINT to a running command", %{dir: dir} do
@@ -72,8 +69,7 @@ defmodule ExAthena.Terminal.ServerTest do
     Process.sleep(200)
     Server.input(id, "echo after-interrupt\n")
 
-    assert_receive {:term_output, ^id, html}, 5_000
-    assert collect_until(id, "after-interrupt", IO.iodata_to_binary(html))
+    assert collect_until(id, "after-interrupt", "")
   end
 
   describe "sanitize_replay/1 (strips device-query requests)" do
@@ -124,7 +120,10 @@ defmodule ExAthena.Terminal.ServerTest do
     assert_receive {:DOWN, ^ref, :process, ^pid, _}, 5_000
   end
 
-  # Drain term_output until `needle` appears (or timeout).
+  # Drain term_output until `needle` appears (or timeout). Assertions must
+  # accumulate rather than read one chunk: with the pty echoing, a command's
+  # first chunk is usually the keystrokes, and its result arrives in a later
+  # one — `pwd` returns "pwd" before it returns the directory.
   defp collect_until(_id, needle, acc) when is_binary(acc) do
     if acc =~ needle do
       true
