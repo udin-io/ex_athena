@@ -57,7 +57,8 @@ config :ex_athena, max_agents_per_run: 24
 #   conclusions_cap: 50                # conclusions retained per agent
 #
 # config :ex_athena, :loop,
-#   max_input_tokens: 0                # spend ceiling for the top-level run (0 = off)
+#   max_input_tokens: 0,               # spend ceiling for the top-level run (0 = off)
+#   wrap_up_at_percent: 75             # % of any budget before the wrap-up nudge
 #
 # config :ex_athena, :web,
 #   max_retained_events: 2_000         # events a run replays to a reattaching browser
