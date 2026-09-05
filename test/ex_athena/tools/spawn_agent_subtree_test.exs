@@ -195,7 +195,97 @@ defmodule ExAthena.Tools.SpawnAgentSubtreeTest do
     end
   end
 
+  # Wall clock was a worker's only spend rail, and 30 minutes holds a lot of
+  # context: live, one implementer reached 1,992,051 input tokens over 38
+  # iterations and completed none of its eight sub-steps, and its replacement
+  # spent another 920,357 hitting the same wall. Across 41 workers that DID
+  # finish, the most any used was 701,896.
+  describe "the worker spend rail" do
+    test "a worker past its input-token ceiling stops and hands back findings",
+         %{dir: dir} do
+      # Never stops on its own; each turn adds usage until the cap trips.
+      responder = fn _request ->
+        %Response{
+          text: "still going\nCONCLUSION: the engine lives in llama_cpp.ex",
+          tool_calls: [
+            %ToolCall{
+              id: "c#{System.unique_integer([:positive])}",
+              name: "todo_write",
+              arguments: %{"todos" => [%{"content" => "keep going", "status" => "in_progress"}]}
+            }
+          ],
+          finish_reason: :tool_calls,
+          provider: :mock,
+          usage: %{input_tokens: 40_000, output_tokens: 100}
+        }
+      end
+
+      ctx =
+        ToolContext.new(
+          cwd: dir,
+          assigns: %{
+            spawn_agent_opts: [
+              provider: :mock,
+              mock: [responder: responder],
+              memory: false,
+              max_iterations: 50,
+              max_input_tokens: 100_000
+            ]
+          }
+        )
+
+      assert {:error, message} = SpawnAgent.execute(%{"prompt" => "work"}, ctx)
+      assert is_binary(message)
+      assert message =~ "did not finish"
+      assert message =~ "error_max_input_tokens"
+      # The point of stopping early is that the parent still gets the work.
+      assert message =~ "the engine lives in llama_cpp.ex"
+    end
+
+    test "a worker under the ceiling is untouched", %{dir: dir} do
+      responder = fn _request ->
+        %Response{
+          text: "done here",
+          finish_reason: :stop,
+          provider: :mock,
+          usage: %{input_tokens: 40_000, output_tokens: 100}
+        }
+      end
+
+      ctx =
+        ToolContext.new(
+          cwd: dir,
+          assigns: %{
+            spawn_agent_opts: [
+              provider: :mock,
+              mock: [responder: responder],
+              memory: false,
+              max_input_tokens: 100_000
+            ]
+          }
+        )
+
+      assert {:ok, text, _ui} = SpawnAgent.execute(%{"prompt" => "work"}, ctx)
+      assert text =~ "done here"
+    end
+  end
+
   describe "timed-out workers hand back their progress" do
+    defp timeout_ctx(dir, reader) do
+      ToolContext.new(
+        cwd: dir,
+        assigns: %{
+          agent_progress_reader: reader,
+          spawn_agent_opts: [
+            provider: :mock,
+            mock: [responder: fn _r -> Process.sleep(:infinity) end],
+            memory: false,
+            timeout_ms: 1_000
+          ]
+        }
+      )
+    end
+
     test "the error carries the worker's todos and findings", %{dir: dir} do
       info = %AgentInfo{
         id: "sub",
@@ -226,6 +316,49 @@ defmodule ExAthena.Tools.SpawnAgentSubtreeTest do
       assert message =~ "routes live in router.ex"
       assert message =~ "map the router"
       assert message =~ "trace the auth flow"
+    end
+
+    # The live handoff read "Findings: - Let me check how the response body is
+    # parsed… - Let me check how the response body is decoded…" — three
+    # intentions under a heading that says findings. The conclusion protocol
+    # asks for findings, the model gave intentions, and the digest presented
+    # them as fact to whoever picks the step up next.
+    test "labels the fallback when the worker stated no findings", %{dir: dir} do
+      info = %AgentInfo{
+        id: "sub",
+        todos: [],
+        conclusions: [
+          %{text: "Let me check how the response body is parsed", source: :tail, iteration: 1},
+          %{text: "Let's check decode_success_response", source: :thinking, iteration: 2}
+        ]
+      }
+
+      ctx = timeout_ctx(dir, fn _id -> {:ok, info} end)
+
+      assert {:error, message} = SpawnAgent.execute(%{"prompt" => "work"}, ctx)
+      assert message =~ "No stated findings"
+      assert message =~ "leads, not facts"
+      assert message =~ "Let me check how the response body is parsed"
+    end
+
+    test "a worker that stated findings gets them presented as findings", %{dir: dir} do
+      info = %AgentInfo{
+        id: "sub",
+        todos: [],
+        conclusions: [
+          %{text: "Let me check the parser", source: :tail, iteration: 1},
+          %{text: "routes live in router.ex", source: :stated, iteration: 2}
+        ]
+      }
+
+      ctx = timeout_ctx(dir, fn _id -> {:ok, info} end)
+
+      assert {:error, message} = SpawnAgent.execute(%{"prompt" => "work"}, ctx)
+      assert message =~ "Findings:"
+      assert message =~ "routes live in router.ex"
+      refute message =~ "leads, not facts"
+      # An intention is not promoted alongside a real finding.
+      refute message =~ "Let me check the parser"
     end
 
     test "falls back to the bare timeout when no progress was recorded", %{dir: dir} do

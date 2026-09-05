@@ -64,6 +64,11 @@ defmodule ExAthena.Loop do
       `0` to disable the guard.
     * `:max_budget_usd` — optional float. Trips
       `:error_max_budget_usd` when cumulative cost crosses it.
+    * `:max_input_tokens` — optional integer. Trips
+      `:error_max_input_tokens` when cumulative INPUT tokens cross it.
+      Defaults to `config :ex_athena, :loop, max_input_tokens:` (0 =
+      uncapped). The cost cap is inert on a local provider, where every call
+      is free; this is the rail that bites there.
     * `:tool_timeout_ms` (default 60_000) — per-call timeout for parallel
       tool execution.
     * `:max_concurrency` (default 4) — `Task.async_stream` concurrency
@@ -166,6 +171,10 @@ defmodule ExAthena.Loop do
       Budget.exceeded?(state.budget, state.max_budget_usd) ->
         state
         |> set_finish_reason(:error_max_budget_usd)
+
+      Budget.input_exceeded?(state.budget, state.max_input_tokens) ->
+        state
+        |> set_finish_reason(:error_max_input_tokens)
 
       state.max_unproductive_iterations > 0 and
           state.unproductive_iterations >= state.max_unproductive_iterations ->
@@ -864,6 +873,10 @@ defmodule ExAthena.Loop do
             @default_max_unproductive_iterations
           ),
         max_budget_usd: Keyword.get(opts, :max_budget_usd),
+        # 0 = uncapped, so a top-level run is unchanged unless configured.
+        # Workers get their own default from SpawnAgent; see config/config.exs.
+        max_input_tokens:
+          Keyword.get(opts, :max_input_tokens, Tuning.get(:loop, :max_input_tokens, 0)),
         tool_timeout_ms: budget_opt(opts, :tool_timeout_ms, @default_tool_timeout_ms),
         max_concurrency: budget_opt(opts, :max_concurrency, @default_max_concurrency),
         mode: mode,

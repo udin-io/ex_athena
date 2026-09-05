@@ -153,6 +153,16 @@ defmodule ExAthena.Tools.SpawnAgent do
   # `configured_timeout/1` and `ExAthena.Agents.Deadline`.
   @default_timeout_ms 1_800_000
 
+  # Input-token ceiling for one worker. Set just above the largest spend
+  # observed from a worker that actually finished (701,896 across 41 of them),
+  # so it bites only on runaways: live, 1,992,051 and 920,357 on two workers
+  # that each delivered nothing.
+  @default_worker_input_tokens 800_000
+
+  # Conclusions carried in a handoff digest. Tune via
+  # config :ex_athena, :agents, digest_findings:.
+  @default_digest_findings 3
+
   # How often `await_worker/3` re-reads the worker's accrued queue credit
   # while blocked on it. Only bounds how late a deadline extension is noticed.
   @poll_ms 1_000
@@ -275,6 +285,17 @@ defmodule ExAthena.Tools.SpawnAgent do
     sub_opts =
       base_opts
       |> Keyword.put_new(:max_iterations, worker_iterations(Map.get(args, "max_iterations")))
+      # Spend rail. Wall clock alone let a worker reach 1.99M input tokens
+      # inside its 30 minutes and finish none of its eight sub-steps; across
+      # 41 workers that DID finish, the most any used was 702k. A worker past
+      # this is not close to done. It stops with a :capacity termination, so
+      # the digest path below hands its findings back like any other
+      # unfinished worker. Tune via config :ex_athena, :agents,
+      # max_input_tokens: (nil disables).
+      |> Keyword.put_new(
+        :max_input_tokens,
+        Tuning.get(:agents, :max_input_tokens, @default_worker_input_tokens)
+      )
       # The worker's per-REQUEST timeout defaults to the spawn timeout —
       # the 60s Request default became receive_timeout and killed workers
       # whose grown prompts made local backends prompt-process >60s before
@@ -886,22 +907,13 @@ defmodule ExAthena.Tools.SpawnAgent do
         (t["status"] || t[:status]) in ["completed", :completed]
       end)
 
-    findings =
-      case Enum.filter(conclusions, &(&1.source == :stated)) do
-        [] -> Enum.take(conclusions, -3)
-        stated -> Enum.take(stated, -3)
-      end
-
     text = String.trim(raw_text || "")
 
     sections =
       [
         section("Completed", completed, "✔"),
         section("Remaining", remaining, "◻"),
-        case findings do
-          [] -> nil
-          fs -> "Findings:\n" <> Enum.map_join(fs, "\n", &"- #{&1.text}")
-        end,
+        findings_section(conclusions),
         if(text != "", do: truncate_result(text, 300))
       ]
       |> Enum.reject(&is_nil/1)
@@ -911,6 +923,33 @@ defmodule ExAthena.Tools.SpawnAgent do
       _ -> Enum.join(sections, "\n")
     end
   end
+
+  # A worker that recorded only intentions must not have them handed on as
+  # facts. Live, a timed-out worker's handoff read "Findings: - Let me check
+  # how the response body is parsed - Let me check how the response body is
+  # decoded" — three intentions under a heading claiming findings, passed to
+  # whoever picked the step up next. The conclusion protocol asks for findings
+  # ("state findings, not intentions"); when the model did not comply, say so.
+  defp findings_section(conclusions) do
+    keep = Tuning.get(:agents, :digest_findings, @default_digest_findings)
+
+    case Enum.filter(conclusions, &(&1.source == :stated)) do
+      [] ->
+        case Enum.take(conclusions, -keep) do
+          [] ->
+            nil
+
+          leads ->
+            "No stated findings — the worker recorded only intentions. " <>
+              "Treat these as leads, not facts:\n" <> bullets(leads)
+        end
+
+      stated ->
+        "Findings:\n" <> bullets(Enum.take(stated, -keep))
+    end
+  end
+
+  defp bullets(entries), do: Enum.map_join(entries, "\n", &"- #{&1.text}")
 
   defp section(_label, [], _marker), do: nil
 

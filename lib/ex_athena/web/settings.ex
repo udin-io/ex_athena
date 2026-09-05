@@ -34,6 +34,16 @@ defmodule ExAthena.Web.Settings do
       blurb: "Top-level limits on a run. What stops it when it will not stop itself.",
       fields: [
         %{
+          key: :max_input_tokens,
+          label: "Spend ceiling (input tokens)",
+          default: 0,
+          type: :integer,
+          min: 0,
+          help:
+            "Stop the top-level run once it has consumed this many input tokens. " <>
+              "0 disables (the default). Workers have their own ceiling under Workers."
+        },
+        %{
           key: :max_iterations,
           label: "Max iterations",
           default: 55,
@@ -171,6 +181,25 @@ defmodule ExAthena.Web.Settings do
           type: :integer,
           min: 1,
           help: "Floor on a worker's iteration budget."
+        },
+        %{
+          key: :max_input_tokens,
+          label: "Spend ceiling (input tokens)",
+          default: 800_000,
+          type: :integer,
+          min: 0,
+          help:
+            "Stop a worker once it has consumed this many input tokens; it hands back " <>
+              "what it learned. 0 disables. Across 41 workers that finished, the most any " <>
+              "used was 702k; two that delivered nothing used 920k and 1.99M."
+        },
+        %{
+          key: :digest_findings,
+          label: "Handoff findings kept",
+          default: 3,
+          type: :integer,
+          min: 1,
+          help: "Conclusions carried in an unfinished worker's handoff to its parent."
         },
         %{
           key: :result_chars,

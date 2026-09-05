@@ -19,6 +19,11 @@ defmodule ExAthena.Loop.Terminations do
       and persisted, exactly as a completed run's output is.
     * `:error_max_turns` — iteration cap reached.
     * `:error_max_budget_usd` — cost ceiling tripped.
+    * `:error_max_input_tokens` — cumulative input tokens crossed the cap.
+      The cost ceiling is inert on a local provider (every call is free), so
+      this is the spend rail that actually bites there. Category `:capacity`;
+      `Result.conclusions`/`todos` still carry what the run learned, which is
+      how `SpawnAgent` hands a capped worker's findings back to its parent.
     * `:error_during_execution` — unrecoverable tool / provider error.
     * `:error_max_structured_output_retries` — repair budget exhausted.
     * `:error_consecutive_mistakes` — mistake counter threshold hit.
@@ -53,6 +58,7 @@ defmodule ExAthena.Loop.Terminations do
           | :stopped
           | :error_max_turns
           | :error_max_budget_usd
+          | :error_max_input_tokens
           | :error_during_execution
           | :error_max_structured_output_retries
           | :error_consecutive_mistakes
@@ -70,6 +76,7 @@ defmodule ExAthena.Loop.Terminations do
     :stopped,
     :error_max_turns,
     :error_max_budget_usd,
+    :error_max_input_tokens,
     :error_during_execution,
     :error_max_structured_output_retries,
     :error_consecutive_mistakes,
@@ -120,6 +127,7 @@ defmodule ExAthena.Loop.Terminations do
   def category(:stopped), do: :interrupted
   def category(:error_max_turns), do: :capacity
   def category(:error_max_budget_usd), do: :capacity
+  def category(:error_max_input_tokens), do: :capacity
   def category(:error_max_structured_output_retries), do: :capacity
   def category(:error_consecutive_mistakes), do: :capacity
   def category(:error_during_execution), do: :retryable
