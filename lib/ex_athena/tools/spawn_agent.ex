@@ -269,6 +269,7 @@ defmodule ExAthena.Tools.SpawnAgent do
   end
 
   defp do_execute(args, prompt, ctx, deadline, timeout) do
+    now = System.monotonic_time(:millisecond)
     wait_counter = Deadline.new_counter()
     prompt = compose_worker_prompt(prompt, args, ctx.cwd)
 
@@ -308,7 +309,7 @@ defmodule ExAthena.Tools.SpawnAgent do
       )
       |> apply_prompt_suffix(ctx)
       |> attribute_events(sub_id, ctx, args, agent_def, child_depth)
-      |> put_deadline(deadline, wait_counter)
+      |> put_deadline(deadline, wait_counter, now)
       |> Keyword.put(:parent_session_id, ctx.session_id)
       |> inherit_guardrails(ctx)
 
@@ -569,11 +570,11 @@ defmodule ExAthena.Tools.SpawnAgent do
     :exit, {reason, _} when reason in [:noproc, :normal, :shutdown] -> :ok
   end
 
-  defp put_deadline(sub_opts, deadline, counter) do
+  defp put_deadline(sub_opts, deadline, counter, started_at) do
     assigns =
       sub_opts
       |> Keyword.get(:assigns, %{})
-      |> Deadline.install(deadline, counter)
+      |> Deadline.install(deadline, counter, started_at)
 
     Keyword.put(sub_opts, :assigns, assigns)
   end

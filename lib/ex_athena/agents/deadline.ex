@@ -30,6 +30,8 @@ defmodule ExAthena.Agents.Deadline do
 
     * `:agent_deadline_at` — monotonic ms at which this worker's budget runs
       out, before any credit.
+    * `:agent_deadline_from` — monotonic ms at which it began, so the share
+      of the budget spent can be reported (see `ExAthena.Loop.BudgetPressure`).
     * `:agent_wait_counters` — `:counters` refs, nearest first. The head is
       this worker's own subtree counter; the tail belongs to its ancestors.
 
@@ -39,6 +41,7 @@ defmodule ExAthena.Agents.Deadline do
   """
 
   @deadline_key :agent_deadline_at
+  @started_key :agent_deadline_from
   @counters_key :agent_wait_counters
 
   @credited 1
@@ -128,14 +131,18 @@ defmodule ExAthena.Agents.Deadline do
   end
 
   @doc """
-  Put `deadline` and the worker's own `counter` into the assigns it inherits.
+  Put `deadline`, the worker's own `counter`, and the moment its budget began
+  into the assigns it inherits.
 
   The counter goes at the head of the chain the parent already carried, so a
-  wait deep in the tree credits every level above it.
+  wait deep in the tree credits every level above it. `started_at` is what
+  lets `ExAthena.Loop.BudgetPressure` express time as a fraction of the
+  budget rather than a bare "ms left".
   """
-  @spec install(map(), integer(), :counters.counters_ref()) :: map()
-  def install(assigns, deadline, counter) do
+  @spec install(map(), integer(), :counters.counters_ref(), integer()) :: map()
+  def install(assigns, deadline, counter, started_at) do
     assigns
+    |> Map.put(@started_key, started_at)
     |> Map.put(@deadline_key, deadline)
     |> Map.update(@counters_key, [counter], fn
       inherited when is_list(inherited) -> [counter | inherited]

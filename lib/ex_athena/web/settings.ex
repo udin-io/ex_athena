@@ -44,6 +44,16 @@ defmodule ExAthena.Web.Settings do
               "0 disables (the default). Workers have their own ceiling under Workers."
         },
         %{
+          key: :wrap_up_at_percent,
+          label: "Wrap-up nudge at (%)",
+          default: 75,
+          type: :integer,
+          min: 1,
+          help:
+            "How far through ANY budget — turns, time, or tokens — before the run is told " <>
+              "to reduce scope, finish what it can, and report which todos it is leaving."
+        },
+        %{
           key: :max_iterations,
           label: "Max iterations",
           default: 55,
