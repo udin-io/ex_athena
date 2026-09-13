@@ -6,9 +6,12 @@ defmodule ExAthena.Tools.SpawnAgent do
   file) to a fresh conversation with its own message history — so the parent
   loop doesn't pay the token cost of the sub-task's intermediate steps.
 
-  Two rails bound the worker tree: `max_agent_depth` (how deep delegation may
-  nest) and `max_agents_per_run` (how many workers a whole run may spawn — see
-  `ExAthena.Agents.Quota`). Both refuse with an error the model reads.
+  Three rails bound the worker tree: `max_agent_depth` (how deep delegation
+  may nest), `max_agents_per_run` (how many workers a whole run may spawn —
+  see `ExAthena.Agents.Quota`) and the write rail (a brief that orders a file
+  handed to a worker with no tool that can write one — see
+  `ExAthena.Agents.WriteBrief`). All three refuse with an error the model
+  reads, in `execute/2` and before any worker slot is claimed.
 
   Arguments:
 
@@ -50,7 +53,7 @@ defmodule ExAthena.Tools.SpawnAgent do
   """
 
   alias ExAthena.Agents
-  alias ExAthena.Agents.{Deadline, Journal, Quota, Sidechain, Worktree}
+  alias ExAthena.Agents.{Deadline, Journal, Quota, Sidechain, WriteBrief, Worktree}
   alias ExAthena.Loop.Terminations
   alias ExAthena.Orchestrator.AgentInfo
   alias ExAthena.Tuning
@@ -168,6 +171,10 @@ defmodule ExAthena.Tools.SpawnAgent do
   # config :ex_athena, :agents, digest_findings:.
   @default_digest_findings 3
 
+  # Write rail on/off. 1 = on, 0 = off (the settings modal's convention for a
+  # boolean). Tune via config :ex_athena, :agents, write_brief_rail:.
+  @default_write_brief_rail 1
+
   # How often `await_worker/3` re-reads the worker's accrued queue credit
   # while blocked on it. Only bounds how late a deadline extension is noticed.
   @poll_ms 1_000
@@ -215,7 +222,20 @@ defmodule ExAthena.Tools.SpawnAgent do
            "Build on the recorded findings and move to the next pending todo."}
 
       true ->
-        do_execute(fill_brief_defaults(args, ctx), prompt, ctx)
+        # The agent definition is resolved HERE, not at its old site inside
+        # `do_execute/6`, so the write rail below can read the worker's
+        # effective toolset before `Quota.claim/1` spends one of the run's 24
+        # slots — the quota has no release, so a refusal placed after it would
+        # burn a slot per repeat of the same brief. `resolve_agent/2` has no
+        # side effects; it may read the three agent directories when
+        # `assigns[:agents]` is unset, which is why the result is threaded
+        # down rather than resolved twice.
+        resolved = resolve_agent(args, ctx)
+
+        case write_brief_refusal(args, resolved, assigns) do
+          nil -> do_execute(fill_brief_defaults(args, ctx), prompt, ctx, resolved)
+          message -> {:error, message}
+        end
     end
   end
 
@@ -230,7 +250,42 @@ defmodule ExAthena.Tools.SpawnAgent do
     end)
   end
 
-  defp do_execute(args, prompt, ctx) do
+  # Write rail: a worker with no file-writing tool cannot deliver a brief that
+  # orders a file, and the pair is expensive to discover at runtime — live, a
+  # read-only `explore` spent 24.6 minutes and 540K input tokens on a report
+  # nobody could save (issue 217). Refuse here, before the claim, with an
+  # error naming the agent's real tools and the write-capable alternative.
+  #
+  # The detector is deliberately conservative; see `ExAthena.Agents.WriteBrief`
+  # for what it will and will not match. It is also the one rail here that
+  # reads English rather than a number, so it can be wrong in a way a depth
+  # or a deadline cannot — `config :ex_athena, :agents, write_brief_rail: 0`
+  # stands it down without waiting for a release.
+  defp write_brief_refusal(args, {agent_def, _base_opts}, assigns) do
+    if Tuning.get(:agents, :write_brief_rail, @default_write_brief_rail) == 0 do
+      nil
+    else
+      WriteBrief.refusal(
+        WriteBrief.brief(args),
+        effective_tools(args, agent_def, assigns),
+        agent_def && agent_def.name
+      )
+    end
+  end
+
+  # The toolset the worker will actually run with. Shared with `do_execute/6`
+  # so the rail can never judge a different toolset from the one granted.
+  defp effective_tools(args, agent_def, assigns) do
+    child_depth = Map.get(assigns, :agent_depth, 0) + 1
+
+    resolve_tools(
+      Map.get(args, "tools"),
+      agent_def && agent_def.tools,
+      child_depth < max_agent_depth(assigns)
+    )
+  end
+
+  defp do_execute(args, prompt, ctx, resolved) do
     assigns = ctx.assigns || %{}
     now = System.monotonic_time(:millisecond)
 
@@ -244,11 +299,11 @@ defmodule ExAthena.Tools.SpawnAgent do
            "Stop delegating and finish with what you already have."}
 
       {:ok, deadline} ->
-        claim_and_spawn(args, prompt, ctx, assigns, deadline, now)
+        claim_and_spawn(args, prompt, ctx, assigns, deadline, now, resolved)
     end
   end
 
-  defp claim_and_spawn(args, prompt, ctx, assigns, deadline, now) do
+  defp claim_and_spawn(args, prompt, ctx, assigns, deadline, now, resolved) do
     case Quota.claim(assigns) do
       :exhausted ->
         {:error,
@@ -257,7 +312,7 @@ defmodule ExAthena.Tools.SpawnAgent do
            "Do the remaining work yourself, or finish with what you already have."}
 
       {:ok, _spawned} ->
-        do_execute(args, prompt, ctx, deadline, deadline - now)
+        do_execute(args, prompt, ctx, deadline, deadline - now, resolved)
     end
   end
 
@@ -273,20 +328,17 @@ defmodule ExAthena.Tools.SpawnAgent do
     end
   end
 
-  defp do_execute(args, prompt, ctx, deadline, timeout) do
+  defp do_execute(args, prompt, ctx, deadline, timeout, {agent_def, base_opts}) do
     now = System.monotonic_time(:millisecond)
     wait_counter = Deadline.new_counter()
     prompt = compose_worker_prompt(prompt, args, ctx.cwd)
-
-    {agent_def, base_opts} = resolve_agent(args, ctx)
 
     sub_id = "subagent_" <> (:crypto.strong_rand_bytes(6) |> Base.url_encode64(padding: false))
 
     # The child sits one level below us; it may itself delegate only while it
     # stays under the cap (else its spawn_agent tool would just be a blocked
-    # schema burning prompt tokens).
+    # schema burning prompt tokens) — see `effective_tools/3`.
     child_depth = Map.get(ctx.assigns || %{}, :agent_depth, 0) + 1
-    child_can_nest? = child_depth < max_agent_depth(ctx.assigns || %{})
 
     sub_opts =
       base_opts
@@ -308,10 +360,7 @@ defmodule ExAthena.Tools.SpawnAgent do
       # the first streamed byte ("Stream failed: :timeout").
       |> Keyword.put_new(:timeout_ms, timeout)
       |> maybe_put(:system_prompt, Map.get(args, "system_prompt"))
-      |> Keyword.put(
-        :tools,
-        resolve_tools(Map.get(args, "tools"), agent_def && agent_def.tools, child_can_nest?)
-      )
+      |> Keyword.put(:tools, effective_tools(args, agent_def, ctx.assigns || %{}))
       |> apply_prompt_suffix(ctx)
       |> attribute_events(sub_id, ctx, args, agent_def, child_depth)
       |> put_deadline(deadline, wait_counter, now)
