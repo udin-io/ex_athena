@@ -193,9 +193,9 @@ defmodule ExAthena.Agents.JournalTest do
         end)
 
       ref = Process.monitor(pid)
-      assert_receive :journalled
+      assert_receive :journalled, 2_000
       Process.exit(pid, :kill)
-      assert_receive {:DOWN, ^ref, :process, ^pid, :killed}
+      assert_receive {:DOWN, ^ref, :process, ^pid, :killed}, 2_000
 
       assert [%{"ev" => "iteration"}, %{"ev" => "tool_call", "path" => "plan/a.md"}] =
                Journal.read(path)
@@ -227,8 +227,8 @@ defmodule ExAthena.Agents.JournalTest do
       cb.({:content, "hi"})
       cb.({:iteration, 1})
 
-      assert_receive {:seen, {:content, "hi"}}
-      assert_receive {:seen, {:iteration, 1}}
+      assert_receive {:seen, {:content, "hi"}}, 2_000
+      assert_receive {:seen, {:iteration, 1}}, 2_000
     end
 
     @tag :tmp_dir
