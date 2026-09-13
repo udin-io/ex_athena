@@ -80,6 +80,12 @@ defmodule ExAthena.Tools.SpawnAgentUncountedTest do
     end
   end
 
+  # Dies on its own process, not its clock or its counter. `Mock` rescues a
+  # raise, so an exit is the honest way to reach `Task.yield`'s `{:exit, _}`.
+  defp crashing_worker do
+    fn _req -> exit(:boom) end
+  end
+
   defp run(dir, spawns, worker_responder, worker_opts) do
     Loop.run("coordinate the work",
       provider: :mock,
@@ -144,6 +150,59 @@ defmodule ExAthena.Tools.SpawnAgentUncountedTest do
       assert tr.is_error == true
       assert tr.content =~ ~r/timed out|timeout/i
     end
+  end
+
+  # A dead process is the third way a worker can be lost without failing at the
+  # task, and it was the last one still charged to the parent (issue 221).
+  # Unbounded retry is not the risk it looks like: `Agents.Quota` claims one
+  # slot per spawn and never gives it back, so a brief that reliably kills its
+  # worker runs out of workers and then meets a COUNTED refusal.
+  @tag :capture_log
+  test "three consecutive worker crashes leave the orchestrator running", %{dir: dir} do
+    assert {:ok, result} = run(dir, 3, crashing_worker(), max_iterations: 5)
+
+    refute result.finish_reason == :error_consecutive_mistakes
+    assert result.finish_reason == :stop
+
+    results = spawn_results(result)
+    assert length(results) == 3
+
+    for tr <- results do
+      assert tr.is_error == true
+      assert tr.content =~ "crashed"
+    end
+  end
+
+  @tag :capture_log
+  test "a run that only ever crashes its workers still terminates", %{dir: dir} do
+    assert {:ok, result} =
+             Loop.run("coordinate the work",
+               provider: :mock,
+               mock: [responder: parent_responder(99)],
+               tools: [ExAthena.Tools.SpawnAgent],
+               cwd: dir,
+               memory: false,
+               max_iterations: 40,
+               max_consecutive_mistakes: 3,
+               assigns: %{
+                 max_agents_per_run: 3,
+                 spawn_agent_opts: [
+                   provider: :mock,
+                   mock: [responder: crashing_worker()],
+                   tools: [ExAthena.Tools.TodoWrite],
+                   memory: false,
+                   max_iterations: 5
+                 ]
+               }
+             )
+
+    # The quota is what stops it, not the mistake counter: three crashes cost
+    # nothing, the fourth spawn is refused, and three refusals end the run.
+    assert result.finish_reason == :error_consecutive_mistakes
+
+    contents = Enum.map(spawn_results(result), & &1.content)
+    assert Enum.count(contents, &(&1 =~ "crashed")) == 3
+    assert Enum.any?(contents, &(&1 =~ "full allowance"))
   end
 
   test "three workers that died on their OWN mistake counter still kill the parent", %{dir: dir} do

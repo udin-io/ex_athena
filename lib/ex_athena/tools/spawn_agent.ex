@@ -70,6 +70,10 @@ defmodule ExAthena.Tools.SpawnAgent do
   # orchestrator's largest turn.
   @default_result_chars 64_000
 
+  # How much of a lost worker's failure reason reaches the parent. Enough to
+  # name the exception and its message; short of the stacktrace behind it.
+  @failure_reason_chars 400
+
   @impl true
   def name, do: "spawn_agent"
 
@@ -488,7 +492,7 @@ defmodule ExAthena.Tools.SpawnAgent do
               isolation: finalized_isolation
             })
 
-          {:error, {:sub_agent_failed, reason}}
+          never_started(ctx, sub_id, reason)
 
         {:exit, reason} ->
           _ =
@@ -499,8 +503,7 @@ defmodule ExAthena.Tools.SpawnAgent do
               isolation: finalized_isolation
             })
 
-          notify_failure(ctx, sub_id, "crashed: #{inspect(reason)}")
-          {:error, {:sub_agent_crashed, reason}}
+          crashed(ctx, sub_id, reason, worker_cwd(sub_opts, ctx))
 
         nil ->
           _ =
@@ -574,6 +577,79 @@ defmodule ExAthena.Tools.SpawnAgent do
            "What it learned before stopping:\n#{body}\n" <>
            "Re-delegate a narrower slice building on those findings, or finish without it."}
     end
+  end
+
+  # `ExAthena.Loop.run/2` returns `{:error, reason}` from one place only: the
+  # `with` over `build_initial_state/2` and `mode.init/1`, before the first
+  # iteration. So this branch means the worker never ran a turn — an unusable
+  # tool spec, mode, or provider. There is no journal and no digest to hand
+  # back, because nothing happened.
+  #
+  # And unlike the other three, this one stays COUNTED. A setup failure is
+  # deterministic: re-delegating the same brief reproduces it exactly, which is
+  # the fault the mistake counter exists to stop (the same line
+  # `unfinished_error/2` draws). What it owed the parent was a sentence it can
+  # act on instead of an inspected tuple.
+  defp never_started(ctx, sub_id, reason) do
+    why = describe_reason(reason)
+    notify_failure(ctx, sub_id, "never started: #{why}")
+
+    {:error,
+     "worker never started (#{why}) — it ran no turns, so there is nothing to " <>
+       "build on. This is a setup fault, not a task failure: fix the spawn " <>
+       "(agent, tools, provider) or do the work yourself. Re-delegating the " <>
+       "same brief fails the same way."}
+  end
+
+  # A worker whose PROCESS died loses exactly what a brutal-killed one loses —
+  # its `Result`, and with it every finding — so it is handed back the same
+  # way: the Coordinator's observation where one is attached, the journal
+  # always, and `:uncounted`.
+  #
+  # Uncounted because a crash is a fact about the worker, not a mistake by the
+  # parent, the same argument `timed_out/5` and `unfinished_error/2` already
+  # make. The counter is not what bounds a parent that keeps re-spawning a
+  # brief that reliably kills its worker: `ExAthena.Agents.Quota` claims one
+  # slot per spawn and never releases it, so a crash loop runs out of workers
+  # (24 by default) and then meets a COUNTED refusal from `claim_and_spawn/6`.
+  # `ExAthena.Agents.Deadline` bounds it in time on the same terms.
+  defp crashed(ctx, sub_id, reason, worker_cwd) do
+    died = describe_reason(reason)
+
+    learned =
+      [progress_digest(ctx, sub_id), journal_footer(ctx, sub_id, worker_cwd)]
+      |> Enum.reject(&is_nil/1)
+
+    case learned do
+      [] ->
+        notify_failure(ctx, sub_id, "crashed (#{died}) — no progress recorded")
+
+        {:error, :uncounted,
+         "worker crashed (#{died}) with no progress recorded. " <>
+           "Re-delegate a smaller slice, or finish without it."}
+
+      parts ->
+        body = Enum.join(parts, "\n")
+        notify_failure(ctx, sub_id, "crashed (#{died}):\n#{body}")
+
+        {:error, :uncounted,
+         "worker crashed (#{died}). " <>
+           "What it produced before dying:\n#{body}\n" <>
+           "Re-delegate a narrower slice building on those findings, or finish without it."}
+    end
+  end
+
+  # An exit reason carries the stacktrace that caused it, which is longer than
+  # every other fact in the message put together. The parent needs the class of
+  # failure, not the frames — the frames are in the sidechain transcript.
+  # Flattened to one line so it cannot be mistaken for the message's own
+  # structure.
+  defp describe_reason(reason) do
+    text = reason |> Exception.format_exit() |> String.replace("\n", " ")
+
+    if String.length(text) > @failure_reason_chars,
+      do: String.slice(text, 0, @failure_reason_chars) <> "…",
+      else: text
   end
 
   # The one thing a brutal kill cannot destroy: the worker wrote this as it

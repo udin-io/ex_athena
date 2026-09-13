@@ -178,8 +178,8 @@ pattern recipes and worktree pitfalls.
 ## Sidechain transcripts
 
 The subagent's full transcript (every prompt, tool call, response, finish
-reason) is streamed to the parent's sidechain — under `parent_session_id` in the
-configured store.
+reason) is streamed to the parent's sidechain — under `parent_session_id`
+in the configured store.
 
 Stores that natively support multi-stream (e.g. `Jsonl` writing to a sub-file)
 keep these isolated. Others tag every event with `parent_session_id` and
@@ -227,9 +227,19 @@ Three properties are load-bearing:
   prefers its own `stat`, and falls back to the journalled number annotated
   `not re-checked`.
 
-The parent reads it in two places: automatically when a worker times out (the
-`[worker provenance]` footer it hands back is then rendered from the journal),
-and on demand via `read_worker_report` with `source: "journal"`.
+The parent reads it in two places: automatically when a worker is lost — it
+timed out, or its process crashed — where the `[worker provenance]` footer it
+hands back is rendered from the journal, and on demand via
+`read_worker_report` with `source: "journal"`.
+
+Both of those hand back `{:error, :uncounted, text}`: the parent must read
+that it lost the step, but a worker that ran out of clock or died on its own
+process did not make a mistake the parent should be charged for. So does a
+worker that stopped on its token budget. The one worker failure still charged
+to the parent is one that **never started** — an unusable tool spec, mode or
+provider — because re-issuing the same brief fails the same way. What stops a
+parent re-spawning a worker that crashes every time is `Agents.Quota`, which
+spends one of the run's 24 slots per spawn and never returns one.
 
 Capped by `config :ex_athena, :agents, journal_bytes` (0 disables) and
 `journal_line_chars`, both in the settings modal under **Workers**.
@@ -281,12 +291,12 @@ back. The parent stays in `:accept_edits` and applies the edits.
   subagents concurrently. They run in separate processes (the Loop is reentrant)
   under `Task.async_stream`.
 - **No infinite nesting**: the parent's `parent_session_id` becomes the
-  subagent's grandparent if it itself spawns. Two rails bound the tree —
-  `max_agent_depth` (default 2: orchestrator → worker → helper) caps how deep
-  delegation nests, and `max_agents_per_run` (default 24) caps how many workers
-  one run may spawn in total across every branch. Both are overridable per run
-  via `assigns`, and both refuse a spawn with an error telling the model to
-  finish with what it has rather than failing the run.
+  subagent's grandparent if it itself spawns. Two rails bound the tree.
+  `max_agent_depth` (default 2: orchestrator → worker → helper) caps how
+  deep delegation nests. `max_agents_per_run` (default 24) caps how many
+  workers one run may spawn across every branch. Both are overridable per
+  run via `assigns`, and both refuse a spawn with an error telling the model
+  to finish with what it has rather than failing the run.
 - **Worktree git safety**: `Agents.Worktree.create/2` refuses to create a
   worktree on a dirty branch (uncommitted changes) by default. Tests cover the
   safety checks. Don't bypass them.
@@ -302,8 +312,8 @@ back. The parent stays in `:accept_edits` and applies the edits.
   a top-level number.
 - **Cleanup is best-effort**: `WorktreeSweeper` is a GenServer that purges stale
   worktrees (no associated session, older than threshold). Don't rely on
-  `SpawnAgent.cleanup` alone — crashes leave worktrees that the sweeper picks up
-  later.
+  `SpawnAgent.cleanup` alone — crashes leave worktrees that the sweeper picks
+  up later.
 
 ---
 
