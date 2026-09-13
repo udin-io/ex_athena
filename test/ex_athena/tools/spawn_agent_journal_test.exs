@@ -9,6 +9,9 @@ defmodule ExAthena.Tools.SpawnAgentJournalTest do
 
   The journal is written by the worker as it works, so the parent can still say
   what its dead worker produced.
+
+  A worker whose PROCESS dies (issue 221) loses exactly the same things, by a
+  different route, so it is held to the same standard here.
   """
   use ExUnit.Case, async: true
 
@@ -30,6 +33,30 @@ defmodule ExAthena.Tools.SpawnAgentJournalTest do
     fn request ->
       if Enum.any?(request.messages, &(&1.role == :tool)) do
         Process.sleep(:infinity)
+      else
+        %Response{
+          text: "",
+          tool_calls: [
+            %ToolCall{
+              id: "w1",
+              name: "write",
+              arguments: %{"path" => "plan/extract.md", "content" => content}
+            }
+          ],
+          finish_reason: :tool_calls,
+          provider: :mock
+        }
+      end
+    end
+  end
+
+  # Writes its deliverable on the first turn, then kills its own process — the
+  # crash shape, as opposed to the hang above. `Mock` rescues a raise, so an
+  # exit is the honest way to reach `Task.yield`'s `{:exit, reason}`.
+  defp writes_then_crashes(content) do
+    fn request ->
+      if Enum.any?(request.messages, &(&1.role == :tool)) do
+        exit(:boom)
       else
         %Response{
           text: "",
@@ -137,5 +164,39 @@ defmodule ExAthena.Tools.SpawnAgentJournalTest do
 
     records = Journal.read(Path.join(journal_dir, file))
     assert Enum.any?(records, &match?(%{"ev" => "done", "finish_reason" => "stop"}, &1))
+  end
+
+  test "a crashed worker still reports the file it wrote, and its size", %{
+    dir: dir,
+    session: session
+  } do
+    content = String.duplicate("x", 85_043)
+
+    assert {:error, :uncounted, message} =
+             SpawnAgent.execute(
+               %{"prompt" => "extract the guides"},
+               ctx(dir, session, writes_then_crashes(content))
+             )
+
+    assert message =~ "crashed"
+    assert message =~ ":boom"
+    assert message =~ "[worker provenance]"
+    assert message =~ "plan/extract.md"
+    assert message =~ "85043 B"
+  end
+
+  test "a crashed worker that produced nothing still says so plainly", %{
+    dir: dir,
+    session: session
+  } do
+    assert {:error, :uncounted, message} =
+             SpawnAgent.execute(
+               %{"prompt" => "think about it"},
+               ctx(dir, session, fn _req -> exit(:boom) end)
+             )
+
+    assert message =~ "crashed"
+    assert message =~ "no progress recorded"
+    refute message =~ "[worker provenance]"
   end
 end
