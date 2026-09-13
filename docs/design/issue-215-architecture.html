@@ -456,3 +456,135 @@ it reintroduces the exact race the journal exists to remove in the case that mat
 <em>parent</em> dies, the journal process dies with it and every unflushed cast is a line that was never
 written. It buys back on the order of 100 microseconds per worker. Inline and synchronous wins.</p>
 </div>
+
+<h3>Q3 — cost, and the two <code>Tuning</code> knobs</h3>
+
+<p>Two keys, both integers, both under <code>:agents</code>. The repo's convention for "off" on an integer knob
+is <code>0</code>, so no boolean key is needed: <code>journal_bytes: 0</code> disables journalling entirely.</p>
+
+<div class="panel">
+<table>
+<thead><tr><th style="width:22%">Key</th><th style="width:10%">Default</th><th style="width:6%">Min</th><th>Settings-modal field and why the number</th></tr></thead>
+<tbody>
+<tr>
+  <td><code>:agents, :journal_line_chars</code></td><td>400</td><td>1</td>
+  <td><strong>"Worker journal line cap (characters)"</strong> — cap on the digested arguments in one journal
+      line. 400 is not a new judgement: it is <code>agents.transcript_entry_chars</code>, the existing cap on
+      the same information in <code>AgentInfo.append_transcript/2</code>. One number, two places.</td>
+</tr>
+<tr>
+  <td><code>:agents, :journal_bytes</code></td><td>2_000_000</td><td>0</td>
+  <td><strong>"Worker journal size cap (bytes)"</strong> — 0 disables journalling. A <code>write</code> line is
+      about 120 B; a <code>bash</code> line with a 400-char command digest about 500 B. A 25-iteration worker
+      making four calls per iteration writes roughly 100 lines, about 30 KB. 2 MB is a runaway guard at ~60x
+      the worst worker this session produced, not a budget.</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<p>Both keys need a field in <code>lib/ex_athena/web/settings.ex</code>. This is enforced, not conventional:
+<code>test/ex_athena/web/settings_test.exs:158</code> ("schema coverage") greps
+<code>Path.wildcard("lib/**/*.ex")</code> for literal <code>Tuning.get(:ns, :key</code> calls and fails on any
+that the schema does not declare. All twelve existing <code>:agents</code> keys are covered; these make
+fourteen.</p>
+
+<p>On reaching <code>journal_bytes</code> the writer stops and appends one final
+<code>{"ev":"journal_truncated"}</code> line so the reader knows it holds a prefix. <strong>Never rotate.</strong>
+A rotated journal throws away its beginning — which is the part naming what the worker built.</p>
+
+<h3>Q4 — the push summary</h3>
+
+<p><strong>Do not add a new <code>[worker evidence]</code> line.</strong> <code>Provenance.footer/1</code> is
+already the ~400-char derived summary, it already rides back on every successful hand-back, and
+<code>Provenance.scan/1</code> parses that exact text back out of a transcript — the moduledoc calls it "a
+parsing contract, not merely display". A second format for the same facts is a second contract to keep in sync.
+Extend the existing footer with byte sizes:</p>
+
+<pre><code>[worker provenance] files changed: plan/uat_testing/guides-96-114-extract.md (85,043 B) | commands run: mix test (failed), git status</code></pre>
+
+<ul>
+  <li><strong>Every hand-back, success and failure</strong> — not failures only. "The worker produced nothing"
+      is exactly as much a fact as "the worker produced 85 KB", and a footer that appears only on failure
+      teaches the model that its absence means success. It is already unconditional on the success path; layers
+      1a and 1c make it unconditional on the other three.</li>
+  <li><strong>Sizes come from <code>File.stat/1</code>, in the parent's cwd, at hand-back.</strong> That is what
+      makes it evidence: "wrote an 85 KB file" is checkable, "the file is structurally complete" is a claim.</li>
+  <li><strong>When the file is gone, say so — never omit the row.</strong> An omitted path reads as "the worker
+      wrote nothing", which is the failure this issue exists to stop. Two cases, two renderings:
+      <code>(missing)</code> when the path simply is not there, and
+      <code>(85,043 B journalled; worktree removed)</code> when the journal recorded a size and
+      <code>finalize_isolation/1</code> has since deleted the directory. For a <code>:worktree</code> worker the
+      second is the <em>normal</em> case, because <code>finalize_isolation/1</code> runs above the result
+      <code>case</code> — see the warning in section 3.</li>
+  <li><strong>No new cap key.</strong> The footer is already bounded by
+      <code>agents.provenance_max_listed</code> (15 paths) and <code>agents.provenance_command_chars</code>
+      (120). Sizes add about 10 characters per path.</li>
+</ul>
+
+<h3>Q5 — retention</h3>
+
+<p><strong>There is no pruning path.</strong> Not for the journal, and not for the sidechain transcripts that
+already exist: <code>.exathena/sessions/PARENT_ID/sidechains/*.jsonl</code> grows for the life of the checkout.
+The issue's "lives and is pruned with its session" describes a mechanism that was never built.</p>
+
+<p>The precedent to copy is <code>ExAthena.Checkpoint.Sweeper</code>: a one-shot boot <code>Task</code> under the
+application supervisor, <code>restart: :transient</code>, that <code>File.rm_rf</code>s
+<code>.exathena/file-history/SESSION_ID</code> directories older than 30 days, best-effort and logged at info
+level. Generalising it to take a list of <code>{subdir, max_age}</code> pairs and adding
+<code>.exathena/sessions</code> is a handful of lines.</p>
+
+<div class="note">
+<p><strong>It belongs in its own ticket.</strong> It fixes unbounded growth that predates this issue and applies
+to data this issue does not create, and bundling it here means this PR deletes files no reviewer asked it to
+touch. Ship 215 writing into an unpruned directory — as <code>Sidechain</code> already does — and prune both
+in one follow-up.</p>
+</div>
+
+<h2>6. Layer 3b — one tool, two sources</h2>
+
+<p><code>ReadWorkerReport</code> was built in PR 218 to be extended here. Its moduledoc says so: "add its source
+and the <code>filter:</code> / <code>tail:</code> options HERE rather than introducing a parallel path." The
+argument name, the id validation (<code>@id_re</code>, which refuses anything not matching
+<code>subagent_[A-Za-z0-9_-]{1,64}</code> rather than sanitising it) and the cwd/session path resolution are all
+shared. Add to the existing tool:</p>
+
+<ul>
+  <li><code>source</code> — <code>"report"</code> (default, unchanged behaviour) or <code>"journal"</code>.</li>
+  <li><code>filter</code> — <code>"writes"</code> / <code>"commands"</code> / <code>"errors"</code> /
+      <code>"tail"</code>, with <code>n</code> for <code>tail</code>. Journal source only.</li>
+  <li>The existing <code>from</code> / <code>max_chars</code> paging and the "no report on disk for ID" error
+      stay as they are.</li>
+</ul>
+
+<h3>Share the directory, not the file</h3>
+
+<p>Path: <code>.exathena/sessions/PARENT_ID/journal/SUBAGENT_ID.ndjson</code> — a sibling of
+<code>sidechains/</code>, resolved by the same cwd-plus-session-id join <code>report_path/2</code> already
+performs. (The issue's <code>&lt;run_dir&gt;/workers/</code> names a root that does not exist: <code>run_dir</code>
+appears nowhere in <code>lib/</code> or <code>test/</code>.)</p>
+
+<p>The repo's DRY rule demands asking whether <code>Sidechain</code> should simply be extended instead. It should
+not, and the reason is mechanical rather than aesthetic:</p>
+
+<div class="panel">
+<table>
+<thead><tr><th style="width:22%"></th><th style="width:39%">Sidechain</th><th>Journal</th></tr></thead>
+<tbody>
+<tr><td>Writer</td><td>the <strong>parent</strong>, once, after the worker is already gone</td><td>the <strong>worker</strong>, continuously, while it is alive</td></tr>
+<tr><td>Lifetime</td><td>a single line at the end of the spawn</td><td>the whole run of the worker</td></tr>
+<tr><td>Dies with</td><td>the parent</td><td>nothing — that is the point</td></tr>
+<tr><td>Content</td><td>the worker's prose report, untruncated</td><td>digested facts about what it did</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note warn">
+<p>And one hard blocker: <code>ReadWorkerReport.read_last_line/1</code> takes the <strong>last</strong> line of
+<code>sidechains/ID.jsonl</code> as the report. Appending journal events into the same file makes every
+<code>read_worker_report</code> call return a journal event instead of the report — silently breaking the tool
+PR 218 just shipped. Separate files, shared directory.</p>
+<p>The DRY-compliant outcome is smaller than merging them: <code>Sidechain</code> grows a public
+<code>session_dir/2</code>, and <code>Journal</code> and <code>ReadWorkerReport</code> both call it, so there is
+one definition of where a worker's artifacts live instead of the three string joins there are today.</p>
+</div>
