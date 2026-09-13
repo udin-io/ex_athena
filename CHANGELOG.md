@@ -9,6 +9,24 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **`.exathena/` history is swept at boot instead of growing forever.**
+  ([#220](https://github.com/udin-io/ex_athena/issues/220)) `.exathena/sessions`
+  had three writers and no reaper: session transcripts from
+  `Sessions.Stores.Jsonl`, worker reports from `Agents.Sidechain`, worker
+  journals from `Agents.Journal`. One session that spawns seventeen workers
+  leaves thirty-five files behind, and nothing ever deleted one.
+  `ExAthena.Storage.Sweeper` replaces `Checkpoint.Sweeper` and now sweeps both
+  `.exathena/file-history` and `.exathena/sessions` once at boot, each on its
+  own retention — 30 days by default, settable under **On-disk history** in
+  the settings modal, `0` to keep a directory forever. The boot flag is
+  `:enable_storage_sweeper` (was `:enable_checkpoint_sweeper`). Because this
+  deletes the user's own forensics, "old" is measured from the newest file
+  anywhere inside an entry rather than the directory's mtime, and `<id>.jsonl`
+  is kept or removed together with `<id>/`: a session resumed after a month
+  keeps the worker transcripts `ReadWorkerReport` reads. The web UI's saved
+  conversations live under `~/.ex_athena/web/sessions`, a different root, and
+  are never touched.
+
 - **CI, at last.** ([#171](https://github.com/udin-io/ex_athena/issues/171))
   The repo had no `.github/` at all: `credo` and `dialyxir` were declared in
   `mix.exs` and never run, and there was no dependency-advisory or static
