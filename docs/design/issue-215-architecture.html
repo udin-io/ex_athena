@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Issue 215 — the worker forensic journal</title>
+<style>
+  :root{
+    --bg:#f7f7f5; --panel:#fff; --ink:#1c1c1a; --muted:#6b6b66; --line:#d8d8d2;
+    --bad:#8f2f24; --bad-bg:#fbeae7;
+    --good:#1f6b45; --good-bg:#e6f3ec;
+    --accent:#2d4a7c; --accent-bg:#e8eef8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:1180px;margin:0 auto;padding:40px 24px 80px}
+  h1{font-size:30px;line-height:1.25;margin:0 0 14px;letter-spacing:-.01em}
+  .sub{color:var(--muted);max-width:78ch;margin:0 0 8px}
+  h2{font-size:20px;margin:44px 0 12px;padding-top:14px;border-top:1px solid var(--line)}
+  h3{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+     margin:22px 0 8px;font-weight:600}
+  p{margin:0 0 12px;max-width:82ch}
+  ul,ol{margin:0 0 12px;padding-left:20px;max-width:82ch}
+  li{margin:0 0 6px}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;
+       background:#efefea;border-radius:3px;padding:1px 4px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:20px;margin:0 0 18px}
+  .panel h3:first-child{margin-top:0}
+  .scroll{overflow-x:auto}
+  .note{border-left:3px solid var(--accent);background:var(--accent-bg);padding:12px 16px;
+        border-radius:0 6px 6px 0;margin:0 0 14px}
+  .note.warn{border-left-color:var(--bad);background:var(--bad-bg)}
+  .note.ok{border-left-color:var(--good);background:var(--good-bg)}
+  .note p:last-child{margin-bottom:0}
+  .tag{display:inline-block;font-size:11px;letter-spacing:.04em;text-transform:uppercase;
+       font-weight:600;padding:2px 7px;border-radius:10px;vertical-align:2px}
+  .t-bad{background:var(--bad-bg);color:var(--bad)}
+  .t-good{background:var(--good-bg);color:var(--good)}
+  .t-acc{background:var(--accent-bg);color:var(--accent)}
+  .legend{display:flex;flex-wrap:wrap;gap:18px;margin:10px 0 4px;font-size:13px;color:var(--muted)}
+  .legend span{display:flex;align-items:center;gap:7px}
+  .sw{width:13px;height:13px;border-radius:3px;border:1px solid var(--line);display:inline-block}
+  table{border-collapse:collapse;width:100%;font-size:13.5px}
+  th{text-align:left;text-transform:uppercase;letter-spacing:.06em;font-size:11px;color:var(--muted);
+     font-weight:600;padding:0 12px 8px 0;border-bottom:1px solid var(--line);vertical-align:bottom}
+  td{padding:9px 12px 9px 0;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  pre{background:#1c1c1a;color:#e8e8e2;padding:16px;border-radius:8px;overflow-x:auto;
+      font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.55}
+  pre code{background:none;color:inherit;padding:0;font-size:inherit}
+  .mermaid{background:var(--panel);text-align:center}
+  .mermaid svg{max-width:100%;height:auto;display:block;margin:0 auto}
+  .kv{font-size:13.5px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Issue 215 — a killed worker's evidence</h1>
+
+<p class="sub">Design pass for issue 215 in <code>udin-io/ex_athena</code>, written before any code, off
+<code>origin/main</code> at <code>fe2f5fb</code> (issue 216 merged as PR 218 an hour earlier). Session
+<code>5906635b743d</code> ran 3h36m over 17 workers and 9.1M input tokens and failed while all four of its
+deliverables sat finished on disk, because a worker's evidence dies with the worker. The issue proposes three
+layers — attach provenance to failures, write a per-worker NDJSON journal, push a derived summary and offer a
+pull tool. This page shows what the code already does, corrects six things the issue body gets wrong about it,
+and decides which of the three layers to build before any is written.</p>
+
+<div class="note warn">
+<p><strong>Headline.</strong> The incident the issue is named after does not need the journal. A worker that
+stops on <code>error_max_input_tokens</code> returns a complete <code>%Result{}</code> with its
+<code>messages</code> intact (<code>loop.ex:177</code>); <code>ExAthena.Provenance</code> can read it today and
+simply is not asked to. Layer 1 is one line and fixes the post-mortem in full. The journal is worth building
+for a <em>different</em> gap the issue does not name — see section 5, question 1.</p>
+</div>
+
+<h2>1. Verdict on the three layers</h2>
+
+<div class="panel">
+<table>
+<thead>
+<tr><th style="width:22%">Layer</th><th style="width:30%">As the issue proposes it</th><th>Verdict</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td><strong>1a</strong> provenance on the failure path</td>
+  <td>Call <code>append_provenance/2</code> on the unfinished branch.</td>
+  <td><span class="tag t-good">build</span> One line at <code>spawn_agent.ex:408</code>. The branch already
+      holds <code>sub_result</code>, and <code>%Result{}.messages</code> is populated on every loop
+      termination. This alone produces the message the issue asks for.</td>
+</tr>
+<tr>
+  <td><strong>1b</strong> provenance sees bash writes</td>
+  <td>Parse redirection and heredoc targets, or have <code>bash</code> report paths it touched.</td>
+  <td><span class="tag t-good">build</span> <span class="tag t-acc">narrowed</span> Conservative matcher for
+      <code>&gt;</code>, <code>&gt;&gt;</code> and <code>tee</code> only, every candidate verified by
+      <code>File.stat/1</code> before it is reported. Not a shell parser. See section 4.</td>
+</tr>
+<tr>
+  <td><strong>1c</strong> <em>(not in the issue)</em> salvage the deadline-kill digest</td>
+  <td>—</td>
+  <td><span class="tag t-good">build</span> <code>progress_digest/2</code> reads the Coordinator's
+      <code>%AgentInfo{}</code> and uses only <code>todos</code> and <code>conclusions</code>. The
+      <code>transcript_tail</code> it discards holds <code>{:tool_call, "write …"}</code> rows — the evidence,
+      already in memory, already surviving the kill.</td>
+</tr>
+<tr>
+  <td><strong>2</strong> the NDJSON journal</td>
+  <td>An <code>Agents.Journal</code> subscribed to the loop's <code>on_event</code> stream.</td>
+  <td><span class="tag t-good">build</span> <span class="tag t-acc">narrowed</span> There is no stream to
+      subscribe to and no new instrumentation is needed, but the composition point is not where the issue says.
+      Text and thinking events must be excluded. See sections 2 and 3.</td>
+</tr>
+<tr>
+  <td><strong>3a</strong> the ~400-char push summary</td>
+  <td>A new <code>[worker evidence]</code> line derived at hand-back.</td>
+  <td><span class="tag t-bad">drop as new</span> <code>Provenance.footer/1</code> is already this line, already
+      rides on every successful hand-back, and <code>Provenance.scan/1</code> parses it back out of a
+      transcript. Add file sizes to the existing footer; a second format is a second parsing contract for the
+      same facts.</td>
+</tr>
+<tr>
+  <td><strong>3b</strong> the <code>read_worker_log</code> pull tool</td>
+  <td>A new orchestrator-scoped tool taking <code>subagent_id</code> and a filter.</td>
+  <td><span class="tag t-bad">drop as new</span> <code>ReadWorkerReport</code>'s own moduledoc asks for this:
+      "add its source and the <code>filter:</code> / <code>tail:</code> options HERE rather than introducing a
+      parallel path." One tool, two sources.</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<h2>2. Where the journal actually sits</h2>
+
+<div class="panel">
+<h3>Module diagram — one worker, from spawn to hand-back</h3>
+<div class="scroll">
+<pre class="mermaid">
+flowchart TB
+  subgraph SETUP["parent loop setup · lib/ex_athena/loop.ex"]
+    ITU["inherit_tool_ui_forwarder/2 · loop.ex:1099<br/>puts an on_event into spawn_agent_opts<br/>that keeps tool_ui and DROPS every other event"]
+    WC["wire_coordinator/2 · loop.ex:960<br/>installs assigns.agent_event_sink<br/>only when a Coordinator was passed"]
+  end
+
+  subgraph SPAWN["Tools.SpawnAgent.do_execute/5 · spawn_agent.ex:272"]
+    AE["attribute_events/6 · spawn_agent.ex:843<br/>WITH a sink: REPLACES on_event with sink.(sub_id, event)<br/>WITHOUT one: leaves the tool_ui forwarder in place"]
+    JC["((NEW)) Agents.Journal.compose/3<br/>wraps whatever on_event ended up being:<br/>write the line first, then call the inner callback"]
+    AW["await_worker/3 · spawn_agent.ex:504<br/>Task.shutdown brutal_kill when the deadline passes"]
+    SC["Sidechain.write/1 · spawn_agent.ex:368<br/>ONE line, by the PARENT, after the worker is gone"]
+    FIN["finalize_isolation/1 · spawn_agent.ex:381<br/>git worktree remove --force"]
+    BOK["success branch · :447<br/>truncate_result/3 then append_provenance/2"]
+    BFAIL["unfinished branch · :408<br/>conclusions_digest/1 · NO provenance today"]
+    BTO["timeout branch · :533 timed_out/4<br/>progress_digest/2 · todos and conclusions only"]
+    BCR["crash branch · :489<br/>a bare error tuple · no digest at all"]
+  end
+
+  subgraph WORKER["worker run · its own Loop process"]
+    WL["ExAthena.Loop.run/2"]
+    EV["Events.emit/2 · inline, synchronous,<br/>in the worker's own process"]
+    RES["ExAthena.Result<br/>text · finish_reason · conclusions · todos · messages"]
+  end
+
+  subgraph DISK["parent cwd · .exathena/sessions/PARENT_ID/"]
+    DSC[("sidechains/SUBAGENT_ID.jsonl<br/>full untruncated report")]
+    DJ[("((NEW)) journal/SUBAGENT_ID.ndjson<br/>one line per event, appended and closed per line")]
+  end
+
+  subgraph READ["reading the evidence back"]
+    PROV["ExAthena.Provenance.events/2 and footer/1<br/>write_tools: write, edit · bash is commands only"]
+    PROVN["((NEW)) bash write targets, stat-verified<br/>((NEW)) byte sizes in the footer"]
+    RWR["Tools.ReadWorkerReport · merged in PR 218<br/>((NEW)) source: journal · filter: writes, commands, errors, tail"]
+    COORD["Orchestrator.Coordinator and AgentInfo<br/>in memory, web runs ONLY, 30 transcript rows"]
+  end
+
+  ITU --> AE
+  WC --> AE
+  AE --> JC
+  JC -- "sub_opts on_event" --> WL
+  WL --> EV
+  EV -- "((NEW)) iteration, tool_call, tool_result, usage,<br/>subagent_spawn, subagent_result — never content or thinking" --> DJ
+  EV -- "every event, tagged by sub_id" --> COORD
+  WL --> RES
+  RES -- "only when the worker lives to return" --> AW
+  AW --> SC
+  SC --> DSC
+  AW --> FIN
+  AW --> BOK
+  AW --> BFAIL
+  AW --> BTO
+  AW --> BCR
+  BOK --> PROV
+  BFAIL -. "((NEW)) layer 1a: same call, failure branch" .-> PROV
+  BTO -. "((NEW)) layer 1c: read transcript_tail" .-> COORD
+  BTO -. "((NEW)) layer 2: read the journal" .-> DJ
+  BCR -. "((NEW)) same two reads" .-> DJ
+  PROV --> PROVN
+  DJ -- "on demand, never pushed" --> RWR
+  DSC --> RWR
+</pre>
+</div>
+
+<div class="legend">
+  <span><span class="sw" style="background:var(--panel)"></span> exists on <code>main</code> at <code>fe2f5fb</code></span>
+  <span><span class="sw" style="background:var(--good-bg)"></span> <code>((NEW))</code> — added by issue 215</span>
+  <span><span class="sw" style="background:var(--bad-bg)"></span> dashed arrow — a read that does not happen today</span>
+</div>
+</div>
+
+<div class="note">
+<p><strong>The composition point is <code>SpawnAgent</code>, not the loop.</strong> The issue says the journal
+"subscribes to the loop's existing <code>on_event</code> stream — the same stream the Coordinator already
+consumes". There is no stream. <code>on_event</code> is a single 1-arity callback with exactly one holder, and
+<code>attribute_events/6</code> <em>overwrites</em> it with <code>fn event -&gt; sink.(sub_id, event) end</code>
+whenever the parent carries an <code>:agent_event_sink</code>. So the journal is <em>composed</em>, not
+subscribed, and it must be composed in <code>do_execute/5</code> after <code>attribute_events/6</code> has had
+its say — that is also the only place that knows the <code>sub_id</code> the journal is named after. The
+issue's real economy ("no new instrumentation in the loop") survives intact: <code>loop.ex</code> is untouched.</p>
+</div>
