@@ -70,9 +70,9 @@ defmodule ExAthena.Tools.SpawnAgent do
   # orchestrator's largest turn.
   @default_result_chars 64_000
 
-  # How much of a dead worker's exit reason reaches the parent. Enough to name
-  # the exception and its message; short of the stacktrace behind it.
-  @crash_reason_chars 400
+  # How much of a lost worker's failure reason reaches the parent. Enough to
+  # name the exception and its message; short of the stacktrace behind it.
+  @failure_reason_chars 400
 
   @impl true
   def name, do: "spawn_agent"
@@ -492,7 +492,7 @@ defmodule ExAthena.Tools.SpawnAgent do
               isolation: finalized_isolation
             })
 
-          {:error, {:sub_agent_failed, reason}}
+          never_started(ctx, sub_id, reason)
 
         {:exit, reason} ->
           _ =
@@ -579,6 +579,28 @@ defmodule ExAthena.Tools.SpawnAgent do
     end
   end
 
+  # `ExAthena.Loop.run/2` returns `{:error, reason}` from one place only: the
+  # `with` over `build_initial_state/2` and `mode.init/1`, before the first
+  # iteration. So this branch means the worker never ran a turn — an unusable
+  # tool spec, mode, or provider. There is no journal and no digest to hand
+  # back, because nothing happened.
+  #
+  # And unlike the other three, this one stays COUNTED. A setup failure is
+  # deterministic: re-delegating the same brief reproduces it exactly, which is
+  # the fault the mistake counter exists to stop (the same line
+  # `unfinished_error/2` draws). What it owed the parent was a sentence it can
+  # act on instead of an inspected tuple.
+  defp never_started(ctx, sub_id, reason) do
+    why = describe_reason(reason)
+    notify_failure(ctx, sub_id, "never started: #{why}")
+
+    {:error,
+     "worker never started (#{why}) — it ran no turns, so there is nothing to " <>
+       "build on. This is a setup fault, not a task failure: fix the spawn " <>
+       "(agent, tools, provider) or do the work yourself. Re-delegating the " <>
+       "same brief fails the same way."}
+  end
+
   # A worker whose PROCESS died loses exactly what a brutal-killed one loses —
   # its `Result`, and with it every finding — so it is handed back the same
   # way: the Coordinator's observation where one is attached, the journal
@@ -592,7 +614,7 @@ defmodule ExAthena.Tools.SpawnAgent do
   # (24 by default) and then meets a COUNTED refusal from `claim_and_spawn/6`.
   # `ExAthena.Agents.Deadline` bounds it in time on the same terms.
   defp crashed(ctx, sub_id, reason, worker_cwd) do
-    died = describe_crash(reason)
+    died = describe_reason(reason)
 
     learned =
       [progress_digest(ctx, sub_id), journal_footer(ctx, sub_id, worker_cwd)]
@@ -618,13 +640,15 @@ defmodule ExAthena.Tools.SpawnAgent do
   end
 
   # An exit reason carries the stacktrace that caused it, which is longer than
-  # every other fact in this message put together. The parent needs the class
-  # of death, not the frames — the frames are in the sidechain transcript.
-  defp describe_crash(reason) do
+  # every other fact in the message put together. The parent needs the class of
+  # failure, not the frames — the frames are in the sidechain transcript.
+  # Flattened to one line so it cannot be mistaken for the message's own
+  # structure.
+  defp describe_reason(reason) do
     text = reason |> Exception.format_exit() |> String.replace("\n", " ")
 
-    if String.length(text) > @crash_reason_chars,
-      do: String.slice(text, 0, @crash_reason_chars) <> "…",
+    if String.length(text) > @failure_reason_chars,
+      do: String.slice(text, 0, @failure_reason_chars) <> "…",
       else: text
   end
 
