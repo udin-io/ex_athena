@@ -69,8 +69,11 @@ defmodule ExAthena.Tool do
       every respect except that it does not advance the mistake counter (nor
       reset it). For a failure that is a fact about the world rather than a
       mistake by the calling model — a delegated worker running out of its
-      token budget, say. Use it only when repeating the call would NOT repeat
-      the fault.
+      token budget, say. Use it when repeating the call would NOT repeat the
+      fault, or when some OTHER rail bounds the repetition: `SpawnAgent`
+      reports a crashed worker this way, and a brief that kills its worker
+      every time still terminates because `ExAthena.Agents.Quota` spends one
+      of the run's worker slots per spawn and never returns one.
     * `{:halt, reason}` — end the run.
   """
   @callback execute(arguments :: map(), ctx :: ToolContext.t()) ::
