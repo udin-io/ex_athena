@@ -126,6 +126,54 @@ defmodule ExAthena.Storage.SweeperTest do
     end
   end
 
+  describe "targets/0" do
+    test "keeps 30 days of both .exathena history directories by default" do
+      assert Sweeper.targets() == [
+               {".exathena/file-history", 30 * @day},
+               {".exathena/sessions", 30 * @day}
+             ]
+    end
+  end
+
+  describe "run/1" do
+    @tag :tmp_dir
+    test "sweeps both .exathena history directories under the given cwd", %{tmp_dir: tmp} do
+      sessions = session_tree(Path.join(tmp, ".exathena/sessions"), "stale", 45)
+      history = session_tree(Path.join(tmp, ".exathena/file-history"), "stale", 45)
+      live = session_tree(Path.join(tmp, ".exathena/sessions"), "live", 1)
+
+      assert :ok = Sweeper.run(cwd: tmp)
+
+      refute File.exists?(sessions)
+      refute File.exists?(history)
+      assert File.exists?(live)
+    end
+
+    # The web UI's saved conversations live under ~/.ex_athena/web/sessions —
+    # a different root, spelled differently, and not the sweeper's to touch.
+    # Nothing here may ever reach them, however old they are.
+    @tag :tmp_dir
+    test "cannot reach the web UI's session store", %{tmp_dir: tmp} do
+      saved = Path.join(tmp, ".ex_athena/web/sessions/abc.session")
+      File.mkdir_p!(Path.dirname(saved))
+      File.write!(saved, :erlang.term_to_binary(%{}))
+      age(saved, 400)
+      age(Path.dirname(saved), 400)
+
+      reaped = session_tree(Path.join(tmp, ".exathena/sessions"), "abc", 400)
+
+      assert :ok = Sweeper.run(cwd: tmp)
+
+      assert File.exists?(saved)
+      refute File.exists?(reaped)
+    end
+
+    @tag :tmp_dir
+    test "survives a cwd with no .exathena directory at all", %{tmp_dir: tmp} do
+      assert :ok = Sweeper.run(cwd: tmp)
+    end
+  end
+
   # A session tree as the writers build it: worker transcripts under
   # `sidechains/`, worker journals under `journal/`. Every entry is aged
   # `days` old, deepest first so no later write refreshes a parent.

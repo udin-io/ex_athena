@@ -40,6 +40,72 @@ defmodule ExAthena.Storage.Sweeper do
 
   require Logger
 
+  alias ExAthena.Tuning
+
+  @day_seconds 24 * 60 * 60
+  @default_retention_days 30
+
+  @doc false
+  def child_spec(_arg) do
+    %{
+      id: __MODULE__,
+      start: {Task, :start_link, [__MODULE__, :run, [[]]]},
+      restart: :transient,
+      type: :worker
+    }
+  end
+
+  @doc """
+  Sweep every configured directory under the checkout.
+
+  Options:
+
+    * `:cwd` — checkout root the targets are relative to. Defaults to
+      `File.cwd!/0`.
+
+  Always returns `:ok`. A sweep that raises is logged at info level and
+  swallowed: this runs in the boot path, and a GC failure is not a reason to
+  refuse to start.
+  """
+  @spec run(keyword()) :: :ok
+  def run(opts \\ []) do
+    cwd = Keyword.get_lazy(opts, :cwd, &File.cwd!/0)
+
+    Enum.each(targets(), fn {subdir, max_age_seconds} ->
+      {:ok, removed} = sweep(Path.join(cwd, subdir), max_age_seconds)
+
+      if removed != [] do
+        Logger.info("Storage.Sweeper removed #{length(removed)} stale entries from #{subdir}")
+      end
+    end)
+
+    :ok
+  rescue
+    e ->
+      Logger.info("Storage.Sweeper failed: #{Exception.message(e)}")
+      :ok
+  end
+
+  @doc """
+  The directories to sweep and how long each keeps its entries, in seconds.
+
+  Both retentions are user-settable in the settings modal. `0` means keep
+  forever, for a user who wants the forensics kept indefinitely.
+  """
+  @spec targets() :: [{Path.t(), non_neg_integer()}]
+  def targets do
+    [
+      {".exathena/file-history", retention(:file_history_retention_days)},
+      {".exathena/sessions", retention(:session_retention_days)}
+    ]
+  end
+
+  defp retention(key) do
+    :storage
+    |> Tuning.get(key, @default_retention_days)
+    |> Kernel.*(@day_seconds)
+  end
+
   @doc """
   Remove every group under `root` untouched for longer than `max_age_seconds`.
 
