@@ -133,8 +133,12 @@ defmodule ExAthena.Tools.SpawnAgentSubtreeTest do
       {elapsed_us, result} =
         :timer.tc(fn -> SpawnAgent.execute(%{"prompt" => "work"}, ctx) end)
 
-      assert {:error, {:sub_agent_timeout, timeout}} = result
-      assert timeout <= 2_000
+      # `:uncounted` — a worker killed at its deadline ran out of room; it did
+      # not make a mistake the parent should be charged for.
+      assert {:error, :uncounted, message} = result
+      assert message =~ "timed out after"
+      assert [timeout] = Regex.run(~r/after (\d+)ms/, message, capture: :all_but_first)
+      assert String.to_integer(timeout) <= 2_000
       assert div(elapsed_us, 1_000) < 20_000
     end
 
@@ -234,9 +238,12 @@ defmodule ExAthena.Tools.SpawnAgentSubtreeTest do
           }
         )
 
-      assert {:error, message} = SpawnAgent.execute(%{"prompt" => "work"}, ctx)
+      # Budget exhaustion comes back `:uncounted`: the parent must READ the
+      # failure and re-plan, but must not be charged a mistake for a worker
+      # that ran out of tokens.
+      assert {:error, :uncounted, message} = SpawnAgent.execute(%{"prompt" => "work"}, ctx)
       assert is_binary(message)
-      assert message =~ "did not finish"
+      assert message =~ "stopped on its budget"
       assert message =~ "error_max_input_tokens"
       # The point of stopping early is that the parent still gets the work.
       assert message =~ "the engine lives in llama_cpp.ex"
@@ -310,7 +317,7 @@ defmodule ExAthena.Tools.SpawnAgentSubtreeTest do
           }
         )
 
-      assert {:error, message} = SpawnAgent.execute(%{"prompt" => "work"}, ctx)
+      assert {:error, :uncounted, message} = SpawnAgent.execute(%{"prompt" => "work"}, ctx)
       assert is_binary(message)
       assert message =~ "timed out"
       assert message =~ "routes live in router.ex"
@@ -335,7 +342,7 @@ defmodule ExAthena.Tools.SpawnAgentSubtreeTest do
 
       ctx = timeout_ctx(dir, fn _id -> {:ok, info} end)
 
-      assert {:error, message} = SpawnAgent.execute(%{"prompt" => "work"}, ctx)
+      assert {:error, :uncounted, message} = SpawnAgent.execute(%{"prompt" => "work"}, ctx)
       assert message =~ "No stated findings"
       assert message =~ "leads, not facts"
       assert message =~ "Let me check how the response body is parsed"
@@ -353,7 +360,7 @@ defmodule ExAthena.Tools.SpawnAgentSubtreeTest do
 
       ctx = timeout_ctx(dir, fn _id -> {:ok, info} end)
 
-      assert {:error, message} = SpawnAgent.execute(%{"prompt" => "work"}, ctx)
+      assert {:error, :uncounted, message} = SpawnAgent.execute(%{"prompt" => "work"}, ctx)
       assert message =~ "Findings:"
       assert message =~ "routes live in router.ex"
       refute message =~ "leads, not facts"
@@ -376,8 +383,14 @@ defmodule ExAthena.Tools.SpawnAgentSubtreeTest do
           }
         )
 
-      assert {:error, {:sub_agent_timeout, 1_000}} =
+      # Was `{:error, {:sub_agent_timeout, 1000}}` — an Elixir tuple the model
+      # saw as `error: {:sub_agent_timeout, 1000}`. It now says what happened
+      # and what to do about it, and is `:uncounted` like every other timeout.
+      assert {:error, :uncounted, message} =
                SpawnAgent.execute(%{"prompt" => "work"}, ctx)
+
+      assert message =~ "timed out after 1000ms"
+      assert message =~ "no progress recorded"
     end
   end
 end

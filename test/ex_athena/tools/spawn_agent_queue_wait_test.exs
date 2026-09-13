@@ -111,7 +111,8 @@ defmodule ExAthena.Tools.SpawnAgentQueueWaitTest do
 
     {elapsed_us, result} = :timer.tc(fn -> SpawnAgent.execute(%{"prompt" => "work"}, ctx) end)
 
-    assert {:error, {:sub_agent_timeout, 1_000}} = result
+    assert {:error, :uncounted, message} = result
+    assert message =~ "timed out after 1000ms"
     assert div(elapsed_us, 1_000) < 10_000
   end
 end

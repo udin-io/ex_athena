@@ -51,6 +51,7 @@ defmodule ExAthena.Tools.SpawnAgent do
 
   alias ExAthena.Agents
   alias ExAthena.Agents.{Deadline, Quota, Sidechain, Worktree}
+  alias ExAthena.Loop.Terminations
   alias ExAthena.Orchestrator.AgentInfo
   alias ExAthena.Tuning
 
@@ -418,10 +419,7 @@ defmodule ExAthena.Tools.SpawnAgent do
               :ok
           end
 
-          {:error,
-           "worker did not finish (#{sub_result.finish_reason}). " <>
-             "What it learned before stopping:\n#{digest}\n" <>
-             "Re-delegate with a narrower or clearer brief, building on those findings."}
+          unfinished_error(sub_result.finish_reason, digest)
 
         {:ok, {:ok, %{text: text} = sub_result}} ->
           # A thinking-model worker often ends with a BLANK text channel —
@@ -523,7 +521,9 @@ defmodule ExAthena.Tools.SpawnAgent do
   end
 
   # A timed-out worker is brutal-killed, so its `Result` — and with it every
-  # finding — dies with the process. The observer (Coordinator) has been
+  # finding — dies with the process. It comes back `:uncounted` for the same
+  # reason a token-capped worker does (see `unfinished_error/2`): running out of
+  # clock is a fact about the worker, not a mistake by the parent. The observer (Coordinator) has been
   # accumulating the same todos and conclusions all along, so the digest is
   # rebuilt from there and handed back the way the `error_max_turns` path
   # already does. Live, one worker was killed at its 30 minute mark after 19
@@ -535,12 +535,15 @@ defmodule ExAthena.Tools.SpawnAgent do
     case progress_digest(ctx, sub_id) do
       nil ->
         notify_failure(ctx, sub_id, "timed out after #{spent} — no progress recorded")
-        {:error, {:sub_agent_timeout, timeout}}
+
+        {:error, :uncounted,
+         "worker timed out after #{spent} with no progress recorded. " <>
+           "Re-delegate a smaller slice, or finish without it."}
 
       digest ->
         notify_failure(ctx, sub_id, "timed out after #{spent}:\n#{digest}")
 
-        {:error,
+        {:error, :uncounted,
          "worker timed out after #{spent}. " <>
            "What it learned before stopping:\n#{digest}\n" <>
            "Re-delegate a narrower slice building on those findings, or finish without it."}
@@ -896,6 +899,40 @@ defmodule ExAthena.Tools.SpawnAgent do
   end
 
   defp append_cwd_line(brief, _cwd), do: brief
+
+  # How an unfinished worker reaches the parent.
+  #
+  # Always a tool ERROR: the parent has to know it lost the step and re-plan,
+  # and returning the worker's (usually empty) text as a success left the
+  # orchestrator blind to the failure.
+  #
+  # But a worker that ran out of BUDGET is a fact about that worker, not a
+  # mistake by the parent, so it comes back `:uncounted` — read by the model,
+  # not scored by the loop (see `ExAthena.Tool`'s execute contract). Session
+  # 5906635b743d died on `error_consecutive_mistakes` after three workers were
+  # cut off, with all four of its deliverables already complete on disk;
+  # orchestrate mode sets `max_iterations: :infinity`, so that counter was the
+  # only turn-based guard it had.
+  #
+  # A worker that hallucinated, went in circles, or could not produce parseable
+  # output keeps counting: re-delegating the same brief reproduces the fault,
+  # which is exactly what the counter is for. See
+  # `ExAthena.Loop.Terminations.budget_exhaustion?/1` for why this is not
+  # `category/1 == :capacity`.
+  defp unfinished_error(finish_reason, digest) do
+    if Terminations.budget_exhaustion?(finish_reason) do
+      {:error, :uncounted,
+       "worker stopped on its budget (#{finish_reason}) before reporting — " <>
+         "it did not fail at the task, it ran out of room. " <>
+         "What it learned before stopping:\n#{digest}\n" <>
+         "Re-delegate a SMALLER slice building on those findings, or finish without it."}
+    else
+      {:error,
+       "worker did not finish (#{finish_reason}). " <>
+         "What it learned before stopping:\n#{digest}\n" <>
+         "Re-delegate with a narrower or clearer brief, building on those findings."}
+    end
+  end
 
   # Salvage an unfinished worker's learnings: its conclusions ledger (and
   # any final text) as a compact digest the orchestrator can build on.
