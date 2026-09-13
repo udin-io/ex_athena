@@ -204,6 +204,17 @@ defmodule ExAthena.Web.Settings do
               "used was 702k; two that delivered nothing used 920k and 1.99M."
         },
         %{
+          key: :write_brief_rail,
+          label: "Write-brief rail",
+          default: 1,
+          type: :integer,
+          min: 0,
+          help:
+            "Refuse a spawn whose brief orders a file when the worker has no tool that can " <>
+              "write one. 0 disables. It reads the brief's English, so it can be wrong; " <>
+              "it is built to under-fire."
+        },
+        %{
           key: :digest_findings,
           label: "Handoff findings kept",
           default: 3,

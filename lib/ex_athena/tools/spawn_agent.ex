@@ -168,6 +168,10 @@ defmodule ExAthena.Tools.SpawnAgent do
   # config :ex_athena, :agents, digest_findings:.
   @default_digest_findings 3
 
+  # Write rail on/off. 1 = on, 0 = off (the settings modal's convention for a
+  # boolean). Tune via config :ex_athena, :agents, write_brief_rail:.
+  @default_write_brief_rail 1
+
   # How often `await_worker/3` re-reads the worker's accrued queue credit
   # while blocked on it. Only bounds how late a deadline extension is noticed.
   @poll_ms 1_000
@@ -250,13 +254,20 @@ defmodule ExAthena.Tools.SpawnAgent do
   # error naming the agent's real tools and the write-capable alternative.
   #
   # The detector is deliberately conservative; see `ExAthena.Agents.WriteBrief`
-  # for what it will and will not match.
+  # for what it will and will not match. It is also the one rail here that
+  # reads English rather than a number, so it can be wrong in a way a depth
+  # or a deadline cannot — `config :ex_athena, :agents, write_brief_rail: 0`
+  # stands it down without waiting for a release.
   defp write_brief_refusal(args, {agent_def, _base_opts}, assigns) do
-    WriteBrief.refusal(
-      WriteBrief.brief(args),
-      effective_tools(args, agent_def, assigns),
-      agent_def && agent_def.name
-    )
+    if Tuning.get(:agents, :write_brief_rail, @default_write_brief_rail) == 0 do
+      nil
+    else
+      WriteBrief.refusal(
+        WriteBrief.brief(args),
+        effective_tools(args, agent_def, assigns),
+        agent_def && agent_def.name
+      )
+    end
   end
 
   # The toolset the worker will actually run with. Shared with `do_execute/6`
