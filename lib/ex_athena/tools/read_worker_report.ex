@@ -23,14 +23,17 @@ defmodule ExAthena.Tools.ReadWorkerReport do
   parent reads only when the summary surprises it, and pays a context cost
   proportional to its confusion.
 
-  ## Relationship to the forensic journal (issue 215)
+  ## Two sources
 
-  Issue 215 adds a per-worker NDJSON journal (`workers/<id>.ndjson`) and wants a
-  `read_worker_log(subagent_id, filter)` to query it. That is this tool with
-  more sources, not a second tool: the argument, the id validation and the path
-  resolution below are the parts they share. When the journal lands, add its
-  source and the `filter:` / `tail:` options HERE rather than introducing a
-  parallel path.
+  `source: "report"` (the default) reads the worker's own prose — what it said.
+  `source: "journal"` reads `ExAthena.Agents.Journal`, written by the worker as
+  it worked — what it did. The journal is the only source that survives a worker
+  killed outright, which returns no report at all.
+
+  One tool, because the argument, the id validation and the path resolution are
+  the same for both. Issue 215 sketched a separate `read_worker_log`; a second
+  tool would have duplicated all three and cost every orchestrator another tool
+  schema in its prompt.
 
   ## Offsets are characters
 
@@ -42,6 +45,8 @@ defmodule ExAthena.Tools.ReadWorkerReport do
 
   @behaviour ExAthena.Tool
 
+  alias ExAthena.Agents.{Journal, Sidechain}
+  alias ExAthena.Provenance
   alias ExAthena.ToolContext
 
   # Matches the ids SpawnAgent generates: "subagent_" plus url-safe base64.
@@ -54,16 +59,23 @@ defmodule ExAthena.Tools.ReadWorkerReport do
   # pages with `from:` when it genuinely needs more.
   @default_max_chars 8_000
 
+  # A tail is for "what was it doing when it stopped", not for reading the run
+  # back. Everything else is a filter.
+  @default_tail 20
+
+  @filters ~w(writes commands errors tail)
+
   @impl true
   def name, do: "read_worker_report"
 
   @impl true
   def description do
-    "Fetch the full, untruncated report of a worker you previously spawned, " <>
-      "when the tool result you received was cut short. Takes the subagent_id " <>
-      "named in the truncation notice. Use `from` to continue from where the " <>
-      "truncation stopped rather than re-reading what you already have. Never " <>
-      "re-run a worker just to see its report again."
+    "Fetch what a worker you previously spawned said or did. `source: \"report\"` " <>
+      "returns its full untruncated summary when the tool result you received was " <>
+      "cut short; `source: \"journal\"` returns the record it wrote as it worked — " <>
+      "files with sizes, commands with exit codes — which survives even a worker " <>
+      "that was killed and reported nothing. Takes the subagent_id named in the " <>
+      "truncation notice. Never re-run a worker just to see what it did."
   end
 
   @impl true
@@ -82,6 +94,26 @@ defmodule ExAthena.Tools.ReadWorkerReport do
         max_chars: %{
           type: "integer",
           description: "Characters to return. Defaults to #{@default_max_chars}."
+        },
+        source: %{
+          type: "string",
+          enum: ["report", "journal"],
+          description:
+            "\"report\" (default) is what the worker SAID — its own summary. " <>
+              "\"journal\" is what it DID — files written with their sizes, commands " <>
+              "run with their exit codes. Use the journal when a worker was killed " <>
+              "before it could report, or when its report does not match what you expected."
+        },
+        filter: %{
+          type: "string",
+          enum: ["writes", "commands", "errors", "tail"],
+          description:
+            "Journal only. \"writes\" for files it changed, \"commands\" for what it " <>
+              "ran, \"errors\" for what failed, \"tail\" (default) for its last steps."
+        },
+        n: %{
+          type: "integer",
+          description: "Journal tail length. Defaults to #{@default_tail}."
         }
       },
       required: ["subagent_id"]
@@ -108,6 +140,13 @@ defmodule ExAthena.Tools.ReadWorkerReport do
   def execute(_args, _ctx), do: {:error, "subagent_id is required"}
 
   defp fetch(id, args, ctx) do
+    case Map.get(args, "source") do
+      "journal" -> fetch_journal(id, args, ctx)
+      _ -> fetch_report(id, args, ctx)
+    end
+  end
+
+  defp fetch_report(id, args, ctx) do
     path = report_path(ctx, id)
 
     with {:ok, raw} <- read_last_line(path),
@@ -117,20 +156,146 @@ defmodule ExAthena.Tools.ReadWorkerReport do
       _ ->
         {:error,
          "no report on disk for #{id}. Either the worker was never spawned in " <>
-           "this session, or it was killed before it returned anything."}
+           "this session, or it was killed before it returned anything." <>
+           journal_hint(ctx, id)}
     end
   end
 
-  defp report_path(%ToolContext{cwd: cwd, session_id: session_id}, id) do
+  defp fetch_journal(id, args, ctx) do
+    filter = Map.get(args, "filter") || "tail"
+
+    with true <- filter in @filters,
+         [_ | _] = records <- Journal.read(journal_path(ctx, id)) do
+      {:ok,
+       records
+       |> render(filter, offset(args, "n", @default_tail))
+       |> slice(offset(args, "from", 0), offset(args, "max_chars", @default_max_chars))}
+    else
+      false ->
+        {:error, "filter must be one of: #{Enum.join(@filters, ", ")}."}
+
+      [] ->
+        {:error,
+         "no journal on disk for #{id}. Either the worker was never spawned in " <>
+           "this session, or journalling is switched off (Workers → journal size cap)."}
+    end
+  end
+
+  # A worker killed before it could report has no sidechain but usually has a
+  # journal. Saying so costs one line and saves a re-delegation.
+  defp journal_hint(ctx, id) do
+    case Journal.read(journal_path(ctx, id)) do
+      [] -> ""
+      _ -> " It did leave a journal: call this again with source: \"journal\"."
+    end
+  end
+
+  # Call order, not map order: "wrote the test, ran it, then edited source" and
+  # the reverse carry different meanings, which is why Provenance preserves
+  # order in the first place. A map's enumeration order would also vary with its
+  # size.
+  defp render(records, "writes", _n) do
+    sizes = Journal.sizes(records)
+    paths = records |> Journal.provenance_events() |> Provenance.changed_files()
+
+    case paths do
+      [] ->
+        "This worker changed no files."
+
+      _ ->
+        header(records, "wrote #{length(paths)} file(s)") <>
+          Enum.map_join(paths, "\n", fn path ->
+            case Map.get(sizes, path) do
+              bytes when is_integer(bytes) -> "wrote #{path} (#{bytes} B)"
+              _ -> "wrote #{path}"
+            end
+          end)
+    end
+  end
+
+  defp render(records, "commands", _n) do
+    case commands(records) do
+      [] -> "This worker ran no commands."
+      lines -> header(records, "ran #{length(lines)} command(s)") <> Enum.join(lines, "\n")
+    end
+  end
+
+  defp render(records, "errors", _n) do
+    case Enum.flat_map(records, &error_line/1) do
+      [] -> "Nothing this worker did reported a failure."
+      lines -> header(records, "#{length(lines)} failure(s)") <> Enum.join(lines, "\n")
+    end
+  end
+
+  defp render(records, "tail", n) do
+    tail = Enum.take(records, -max(n, 1))
+
+    header(records, "last #{length(tail)} of #{length(records)} entries") <>
+      Enum.map_join(tail, "\n", &describe/1)
+  end
+
+  defp header(records, what) do
+    "Worker journal — #{what}, from #{length(records)} recorded steps.\n"
+  end
+
+  defp commands(records) do
+    for %{"ev" => "tool_result", "cmd" => cmd} = record <- records, is_binary(cmd) do
+      "ran #{cmd} (exit #{Map.get(record, "exit_code", "?")})"
+    end
+  end
+
+  defp error_line(%{"ev" => "tool_result", "cmd" => cmd, "exit_code" => code})
+       when is_integer(code) and code != 0,
+       do: ["failed: #{cmd} (exit #{code})"]
+
+  defp error_line(%{"ev" => "tool_result", "ok" => false, "id" => id} = record) do
+    if Map.has_key?(record, "cmd"), do: [], else: ["tool call #{id} returned an error"]
+  end
+
+  defp error_line(%{"ev" => "done", "finish_reason" => reason})
+       when reason not in ~w(stop submitted),
+       do: ["the worker stopped on #{reason}"]
+
+  defp error_line(_record), do: []
+
+  defp describe(%{"ev" => "iteration", "i" => i}), do: "iteration #{i}"
+
+  defp describe(%{"ev" => "tool_call", "name" => name} = record) do
+    case record["path"] do
+      path when is_binary(path) -> "calls #{name} on #{path}"
+      _ -> "calls #{name}"
+    end
+  end
+
+  defp describe(%{"ev" => "tool_result"} = record) do
+    cond do
+      is_binary(record["cmd"]) -> "  exit #{Map.get(record, "exit_code", "?")}"
+      is_integer(record["bytes"]) -> "  wrote #{record["bytes"]} B"
+      record["ok"] == false -> "  failed"
+      true -> "  ok"
+    end
+  end
+
+  defp describe(%{"ev" => "conclusion", "text" => text}), do: "concludes: #{text}"
+  defp describe(%{"ev" => "usage", "in" => input}), do: "(#{input} input tokens so far)"
+  defp describe(%{"ev" => "done", "finish_reason" => reason}), do: "stopped: #{reason}"
+  defp describe(%{"ev" => "journal_truncated"}), do: "[journal reached its size cap here]"
+  defp describe(%{"ev" => ev}), do: ev
+  defp describe(_record), do: "?"
+
+  defp report_path(%ToolContext{} = ctx, id) do
     Path.join([
-      cwd || File.cwd!(),
-      ".exathena",
-      "sessions",
-      session_id || "unknown",
+      Sidechain.session_dir(cwd(ctx), ctx.session_id || "unknown"),
       "sidechains",
       "#{id}.jsonl"
     ])
   end
+
+  defp journal_path(%ToolContext{} = ctx, id) do
+    Journal.path(cwd(ctx), ctx.session_id || "unknown", id)
+  end
+
+  defp cwd(%ToolContext{cwd: cwd}), do: cwd || File.cwd!()
 
   # Sidechain appends, so the newest record for a worker is the last line.
   defp read_last_line(path) do

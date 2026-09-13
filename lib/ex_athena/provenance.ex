@@ -21,6 +21,25 @@ defmodule ExAthena.Provenance do
       returns `{:ok, …}` whatever the exit code, so without this a worker
       could watch the suite go red and still satisfy a rail asking whether
       the change was exercised.
+    * `{:bash_write, path}` — a path a shell command *appears* to have
+      written. A candidate, never evidence: `changed_files/1` ignores it and
+      `footer/1` never renders it until `verify/2` has found it on disk.
+
+  ## Why bash writes are candidates and not facts
+
+  Worker `T2cuzVsh` wrote a 113 KB file with a bash heredoc and its footer
+  read `files changed: none`, because `bash` was only ever classified as a
+  command. Closing that gap means guessing what a shell command touched, and
+  the guess cannot be allowed to be wrong: the whole value of this module is
+  that an orchestrator can check its claims, so a fabricated path is worse
+  than a missing one.
+
+  So the matcher recognises only unambiguous forms — `> path`, `>> path`,
+  `tee path` — refuses any target carrying a shell metacharacter it would
+  have to expand (`$`, `~`, `*`, a quote), and emits a distinct event kind
+  that only becomes a `{:write, _}` once `verify/2` has stat'd it. Misses are
+  expected and acceptable: `sed -i`, a Python heredoc opening its own file,
+  and redirection into a variable are all invisible here by design.
 
   Order is preserved because it carries information a set cannot: "wrote a
   test, ran it, then edited source" and "edited source, then added a test"
@@ -42,10 +61,29 @@ defmodule ExAthena.Provenance do
   @max_listed 15
   @max_command_chars 120
 
+  # `>` / `>>` that is not part of `2>`, `&>` or `>&`. The target runs to the
+  # next shell separator; `@safe_target` then decides whether it is a path we
+  # are willing to claim.
+  @redirect_re ~r/(?<![0-9&>])>>?\s*([^\s;|&<>()]+)/
+  @tee_re ~r/\btee\s+(?:-a\s+)?([^\s;|&<>()]+)/
+
+  # Everything a POSIX shell would leave alone. Anything else — `$VAR`, `~`,
+  # a glob, a quote — means the literal text is not the path that was written,
+  # so the candidate is dropped rather than guessed at.
+  @safe_target ~r|^[A-Za-z0-9._/+-]+$|
+
+  # `scan/1` has to read a footer this module wrote, so the annotations
+  # `annotate/2` adds are stripped back off. Deliberately an exact list rather
+  # than "any trailing parenthesis": commands carry a ` (failed)` suffix
+  # through the same splitter, and eating that would silently turn a red test
+  # suite into a green one.
+  @annotation_re ~r/\s*\((?:\d+ B(?:, not re-checked)?|missing|written, not re-checked)\)$/
+
   @type event ::
           {:write, String.t()}
           | {:command, String.t()}
           | {:failed_command, String.t()}
+          | {:bash_write, String.t()}
 
   @doc """
   Ordered events derived from a run's messages.
@@ -69,9 +107,34 @@ defmodule ExAthena.Provenance do
     |> Enum.flat_map(&classify(&1, extra, results[&1.id]))
   end
 
-  @doc "Distinct files the run mutated, in first-seen order."
+  @doc """
+  Distinct files the run mutated, in first-seen order.
+
+  Unverified `{:bash_write, _}` candidates are deliberately absent — a rail
+  asking "what did this change?" must not be answered with a guess. Run the
+  events through `verify/2` first to include the ones that are really there.
+  """
   @spec changed_files([event()]) :: [String.t()]
   def changed_files(events), do: for({:write, p} <- events, do: p) |> Enum.uniq()
+
+  @doc """
+  Promote every `{:bash_write, _}` candidate that is on disk, and drop the rest.
+
+  Resolution is against `cwd`, so this has to run while the worker's directory
+  still exists. A `nil` cwd drops every candidate: with nothing to check
+  against, a claim cannot be made checkable, and an unverifiable claim is
+  exactly what this module refuses to emit.
+
+  Everything that is already evidence — tool writes, commands — passes through
+  untouched.
+  """
+  @spec verify([event()], String.t() | nil) :: [event()]
+  def verify(events, cwd) do
+    Enum.flat_map(events, fn
+      {:bash_write, path} -> if on_disk?(path, cwd), do: [{:write, path}], else: []
+      other -> [other]
+    end)
+  end
 
   @doc """
   Distinct commands the run executed, in first-seen order — including ones
@@ -103,11 +166,44 @@ defmodule ExAthena.Provenance do
 
   The literal `none` matters: it is what makes an unverified change visible
   instead of something a summary can paper over.
-  """
-  @spec footer([event()]) :: String.t() | nil
-  def footer([]), do: nil
 
-  def footer(events) do
+  ## Options
+
+    * `:cwd` — the directory the worker actually ran in. Given one, bash write
+      candidates are verified against it (`verify/2`) and every changed file is
+      `stat`ed so the footer carries a byte count. "Wrote an 85 KB file" is
+      checkable; "the file is structurally complete" is a claim, and the size
+      is what separates them.
+    * `:sizes` — a `path => bytes` map measured earlier, used only where the
+      `stat` fails. `ExAthena.Agents.Journal` supplies it for a worker whose
+      directory has since been removed; the annotation then says the number was
+      not re-checked, so a measurement taken elsewhere is never passed off as
+      one taken here.
+
+  A path that cannot be sized is never dropped, because an absent path reads as
+  "the worker wrote nothing" — the exact failure this module exists to prevent.
+  It is annotated instead, and the two reasons are distinguished because they
+  mean different things: `(missing)` is a file that is not there in a directory
+  that is, and `(written, not re-checked)` is a directory that has itself been
+  removed. The second is the normal case for a `:worktree` worker, whose
+  directory `SpawnAgent.finalize_isolation/1` deletes before the parent reaches
+  this code.
+  """
+  @spec footer([event()], keyword()) :: String.t() | nil
+  def footer(events, opts \\ [])
+
+  def footer([], _opts), do: nil
+
+  def footer(events, opts) do
+    cwd = Keyword.get(opts, :cwd)
+    events = verify(events, cwd)
+
+    do_footer(events, cwd, Keyword.get(opts, :sizes, %{}))
+  end
+
+  defp do_footer([], _cwd, _sizes), do: nil
+
+  defp do_footer(events, cwd, sizes) do
     failed = MapSet.new(failed_commands(events))
 
     rendered_commands =
@@ -117,8 +213,10 @@ defmodule ExAthena.Provenance do
           else: truncate(cmd)
       end)
 
+    rendered_files = Enum.map(changed_files(events), &annotate(&1, cwd, sizes))
+
     facts =
-      "[worker provenance] files changed: #{render(changed_files(events))}" <>
+      "[worker provenance] files changed: #{render(rendered_files)}" <>
         " | commands run: #{render(rendered_commands)}"
 
     # Advisory, on its own line so it never disturbs `scan/1` of the facts.
@@ -126,6 +224,29 @@ defmodule ExAthena.Provenance do
       do: facts,
       else: facts <> "\n[worker provenance] source was edited before any test was written."
   end
+
+  @doc """
+  Paths a shell command unambiguously names as write targets.
+
+  Only the forms a reader can resolve without running a shell: `> path`,
+  `>> path`, `tee path`. Targets carrying anything the shell would expand — a
+  variable, a tilde, a glob, a quote — are refused rather than guessed at, and
+  so are `/dev/*` sinks. Callers must still confirm the path exists before
+  treating it as evidence (`verify/2` does this for events; the worker journal
+  does it at write time, while the file is certain to be there).
+
+  Returns `[]` for anything that is not a binary.
+  """
+  @spec write_targets(String.t()) :: [String.t()]
+  def write_targets(cmd) when is_binary(cmd) do
+    (Regex.scan(@redirect_re, cmd, capture: :all_but_first) ++
+       Regex.scan(@tee_re, cmd, capture: :all_but_first))
+    |> List.flatten()
+    |> Enum.filter(&safe_target?/1)
+    |> Enum.uniq()
+  end
+
+  def write_targets(_), do: []
 
   @doc """
   Whether a test file was written before the first source file.
@@ -217,7 +338,12 @@ defmodule ExAthena.Provenance do
   defp split_list(rendered) do
     rendered
     |> String.split(", ")
-    |> Enum.map(&(&1 |> String.replace(~r/\s*\(\+\d+ more\)$/, "") |> String.trim()))
+    |> Enum.map(fn item ->
+      item
+      |> String.replace(~r/\s*\(\+\d+ more\)$/, "")
+      |> String.replace(@annotation_re, "")
+      |> String.trim()
+    end)
     |> Enum.reject(&(&1 == ""))
   end
 
@@ -234,7 +360,13 @@ defmodule ExAthena.Provenance do
     case arg(args, "command") do
       cmd when is_binary(cmd) ->
         cmd = String.trim(cmd)
-        if failed_exit?(result), do: [{:failed_command, cmd}], else: [{:command, cmd}]
+
+        # A command that exited non-zero proves nothing about what it wrote —
+        # a failed heredoc leaves a truncated file or none at all — so only a
+        # clean exit contributes candidates.
+        if failed_exit?(result),
+          do: [{:failed_command, cmd}],
+          else: [{:command, cmd} | write_candidates(cmd)]
 
       _ ->
         []
@@ -307,6 +439,37 @@ defmodule ExAthena.Provenance do
   end
 
   defp arg(_args, _key), do: nil
+
+  defp write_candidates(cmd), do: Enum.map(write_targets(cmd), &{:bash_write, &1})
+
+  # /dev/null and friends are not deliverables, and reporting one as a changed
+  # file is the same lie as reporting a path that was never written.
+  defp safe_target?(target) do
+    Regex.match?(@safe_target, target) and not String.starts_with?(target, "/dev/")
+  end
+
+  defp on_disk?(_path, nil), do: false
+
+  defp on_disk?(path, cwd) when is_binary(cwd) do
+    File.regular?(Path.expand(path, cwd))
+  end
+
+  defp on_disk?(_path, _cwd), do: false
+
+  # A size, or the reason there isn't one. Never nothing: see footer/2.
+  defp annotate(path, nil, _sizes), do: path
+
+  defp annotate(path, cwd, sizes) do
+    case File.stat(Path.expand(path, cwd)) do
+      {:ok, %File.Stat{size: size}} -> "#{path} (#{size} B)"
+      _ -> "#{path} (#{unverifiable_reason(cwd, Map.get(sizes, path))})"
+    end
+  end
+
+  defp unverifiable_reason(_cwd, bytes) when is_integer(bytes), do: "#{bytes} B, not re-checked"
+
+  defp unverifiable_reason(cwd, _bytes),
+    do: if(File.dir?(cwd), do: "missing", else: "written, not re-checked")
 
   defp render([]), do: "none"
 

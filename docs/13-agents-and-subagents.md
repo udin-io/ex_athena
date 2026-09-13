@@ -1,7 +1,9 @@
 # 13 · Agents & Subagents — Composition
 
-> **What this answers:** how does one agent spawn another? How are subagent tools / permissions / mode chosen? How does worktree isolation work?
-> **Audience:** consumers building multi-agent workflows; contributors maintaining `Tools.SpawnAgent` and worktree scaffolding.
+> **What this answers:** how does one agent spawn another? How are subagent
+> tools / permissions / mode chosen? How does worktree isolation work?
+> **Audience:** consumers building multi-agent workflows; contributors
+> maintaining `Tools.SpawnAgent` and worktree scaffolding.
 
 ---
 
@@ -40,8 +42,10 @@ Sources:
 - Tool: [`Tools.SpawnAgent`](../lib/ex_athena/tools/spawn_agent.ex)
 - Definition: [`Agents.Definition`](../lib/ex_athena/agents/definition.ex)
 - Registry: [`Agents`](../lib/ex_athena/agents.ex)
-- Worktree: [`Agents.Worktree`](../lib/ex_athena/agents/worktree.ex), [`Agents.WorktreeSweeper`](../lib/ex_athena/agents/worktree_sweeper.ex)
+- Worktree: [`Agents.Worktree`](../lib/ex_athena/agents/worktree.ex),
+  [`Agents.WorktreeSweeper`](../lib/ex_athena/agents/worktree_sweeper.ex)
 - Sidechain: [`Agents.Sidechain`](../lib/ex_athena/agents/sidechain.ex)
+- Journal: [`Agents.Journal`](../lib/ex_athena/agents/journal.ex)
 
 ---
 
@@ -68,16 +72,17 @@ You are a code reviewer. Read the diff, identify issues, return a structured
 critique. Never modify files. Be concise — one paragraph per issue.
 ```
 
-The Markdown body becomes the subagent's `system_prompt`. Frontmatter fields override the parent's `Loop.run` opts — within the guardrail bounds below.
+The Markdown body becomes the subagent's `system_prompt`. Frontmatter fields
+override the parent's `Loop.run` opts — within the guardrail bounds below.
 
 ---
 
 ## Guardrail inheritance — a child is never more privileged than its parent
 
 `Tools.SpawnAgent` clamps every spawn (model-initiated *and* the orchestrate
-runtime's auto-delegation) against the parent run's effective settings.
-Agent definitions and model-supplied args may **narrow** these; nothing they
-say can **widen** them:
+runtime's auto-delegation) against the parent run's effective settings. Agent
+definitions and model-supplied args may **narrow** these; nothing they say can
+**widen** them:
 
 | Setting | Combination rule |
 |---|---|
@@ -88,9 +93,15 @@ say can **widen** them:
 | `phase` | Clamped to the more restrictive of parent's and requested (`:plan` < `:default` < `:accept_edits` < `:trusted` < `:bypass_permissions`). A `:plan` parent only ever spawns `:plan` children; a definition may still narrow (`:default` parent → `permissions: plan` child). Unknown phase atoms are treated as maximally permissive, so they always lose to the parent's phase. |
 | `hooks` | Only the parent's **`PreToolUse`** groups are inherited (they are part of the permission gate, so the parent's deny hooks protect subagent tool calls too). Other hook events are deliberately not inherited — they may assume parent context (Stop hooks persisting parent session state, SessionEnd cleanup). Hosts wanting more can pass a full hooks table via `spawn_agent_opts[:hooks]`. |
 
-Source: `inherit_guardrails/2` in [`Tools.SpawnAgent`](../lib/ex_athena/tools/spawn_agent.ex); phase ranking in [`Permissions.most_restrictive_phase/2`](../lib/ex_athena/permissions.ex). The parent's guardrails reach the tool via `ToolContext` (`allowed_roots`, `phase`) and `assigns[:run_permissions]` (set by `Loop.run` for every run, so the clamp recurses correctly for grandchildren).
+Source: `inherit_guardrails/2` in
+[`Tools.SpawnAgent`](../lib/ex_athena/tools/spawn_agent.ex); phase ranking in
+[`Permissions.most_restrictive_phase/2`](../lib/ex_athena/permissions.ex). The
+parent's guardrails reach the tool via `ToolContext` (`allowed_roots`, `phase`)
+and `assigns[:run_permissions]` (set by `Loop.run` for every run, so the clamp
+recurses correctly for grandchildren).
 
-Source: [`Agents.Definition`](../lib/ex_athena/agents/definition.ex). The loader is in [`Agents.load!/2`](../lib/ex_athena/agents.ex).
+Source: [`Agents.Definition`](../lib/ex_athena/agents/definition.ex). The loader
+is in [`Agents.load!/2`](../lib/ex_athena/agents.ex).
 
 ### Recognised frontmatter
 
@@ -124,13 +135,17 @@ flowchart LR
 
 ### `:in_process` (default)
 
-Cheap. Subagent runs in the same process tree, same `cwd`. Tools see the same filesystem; mutations are immediately visible to the parent.
+Cheap. Subagent runs in the same process tree, same `cwd`. Tools see the same
+filesystem; mutations are immediately visible to the parent.
 
-Best for: investigations, summarisations, anything read-only or whose writes the parent wants visible immediately.
+Best for: investigations, summarisations, anything read-only or whose writes the
+parent wants visible immediately.
 
 ### `:worktree`
 
-Source: [`Agents.Worktree.create/2`](../lib/ex_athena/agents/worktree.ex). Calls `git worktree add` rooted at `.exathena/worktrees/<sid>-<agent_name>` and points the subagent's `ctx.cwd` there.
+Source: [`Agents.Worktree.create/2`](../lib/ex_athena/agents/worktree.ex). Calls
+`git worktree add` rooted at `.exathena/worktrees/<sid>-<agent_name>` and points
+the subagent's `ctx.cwd` there.
 
 ```mermaid
 sequenceDiagram
@@ -152,21 +167,74 @@ sequenceDiagram
   end
 ```
 
-Best for: multi-agent workflows where each agent should mutate independently, then the parent decides which changes to merge.
+Best for: multi-agent workflows where each agent should mutate independently,
+then the parent decides which changes to merge.
 
-Cross-link: [`guides/agents_subagents.md`](../guides/agents_subagents.md) — pattern recipes and worktree pitfalls.
+Cross-link: [`guides/agents_subagents.md`](../guides/agents_subagents.md) —
+pattern recipes and worktree pitfalls.
 
 ---
 
 ## Sidechain transcripts
 
-The subagent's full transcript (every prompt, tool call, response, finish reason) is streamed to the parent's sidechain — under `parent_session_id` in the configured store.
+The subagent's full transcript (every prompt, tool call, response, finish
+reason) is streamed to the parent's sidechain — under `parent_session_id` in the
+configured store.
 
-Stores that natively support multi-stream (e.g. `Jsonl` writing to a sub-file) keep these isolated. Others tag every event with `parent_session_id` and discriminate on read.
+Stores that natively support multi-stream (e.g. `Jsonl` writing to a sub-file)
+keep these isolated. Others tag every event with `parent_session_id` and
+discriminate on read.
 
 Source: [`Agents.Sidechain`](../lib/ex_athena/agents/sidechain.ex).
 
-The parent doesn't *see* sidechain events in its message history (only the final summary tool_result). But debug UIs and post-hoc auditing can pull the full subagent trace.
+The parent doesn't *see* sidechain events in its message history (only the final
+summary tool_result). But debug UIs and post-hoc auditing can pull the full
+subagent trace.
+
+---
+
+## The worker journal
+
+The sidechain is written by the **parent**, once, after the worker is already
+gone. So is everything else a parent learns about a worker — its report, its
+conclusions ledger, the `Provenance` footer are all derived from the `Result`
+the worker hands back.
+
+A worker that is killed outright hands back no `Result`, so all of it is lost
+at the same moment. The journal exists for that case: the **worker** writes it,
+continuously, while it is alive.
+
+    <parent cwd>/.exathena/sessions/<parent_session_id>/journal/<subagent_id>.ndjson
+
+One JSON object per line — iterations, tool calls with the paths they named,
+tool results with exit codes and byte counts, usage, conclusions, and the
+finish reason. Streamed `:content` and `:thinking` are refused: they arrive one
+delta per token, and the journal records what a worker *did*, never a second
+copy of what it said.
+
+Three properties are load-bearing:
+
+- **Stateless writer.** `on_event` is invoked from inside `Task.async_stream`
+  tasks when tool calls run concurrently, so there is no single process to hang
+  a counter or a call-id map on. Every line is derived from its own event, and
+  correlating a `tool_result` back to the `tool_call` that named the path is the
+  reader's job.
+- **No `:delayed_write`.** The parent reads this file microseconds after
+  brutal-killing the worker, and a buffer is a thing the reader cannot see.
+- **Sizes measured in the worker.** A `:worktree` worker's directory is deleted
+  by `finalize_isolation/1` before the parent could stat anything, so the byte
+  count is taken where and when the file certainly exists. The parent still
+  prefers its own `stat`, and falls back to the journalled number annotated
+  `not re-checked`.
+
+The parent reads it in two places: automatically when a worker times out (the
+`[worker provenance]` footer it hands back is then rendered from the journal),
+and on demand via `read_worker_report` with `source: "journal"`.
+
+Capped by `config :ex_athena, :agents, journal_bytes` (0 disables) and
+`journal_line_chars`, both in the settings modal under **Workers**.
+
+Source: [`Agents.Journal`](../lib/ex_athena/agents/journal.ex).
 
 ---
 
@@ -202,24 +270,47 @@ flowchart LR
   parent --> change[Edit CHANGELOG.md based on critique]
 ```
 
-The subagent is read-only (`phase: :plan`), uses a different model, and reports back. The parent stays in `:accept_edits` and applies the edits.
+The subagent is read-only (`phase: :plan`), uses a different model, and reports
+back. The parent stays in `:accept_edits` and applies the edits.
 
 ---
 
 ## Contributor notes
 
-- **`SpawnAgent` is `parallel_safe?: true`**: a parent can spawn multiple subagents concurrently. They run in separate processes (the Loop is reentrant) under `Task.async_stream`.
-- **No infinite nesting**: the parent's `parent_session_id` becomes the subagent's grandparent if it itself spawns. Two rails bound the tree — `max_agent_depth` (default 2: orchestrator → worker → helper) caps how deep delegation nests, and `max_agents_per_run` (default 24) caps how many workers one run may spawn in total across every branch. Both are overridable per run via `assigns`, and both refuse a spawn with an error telling the model to finish with what it has rather than failing the run.
-- **Worktree git safety**: `Agents.Worktree.create/2` refuses to create a worktree on a dirty branch (uncommitted changes) by default. Tests cover the safety checks. Don't bypass them.
-- **Hooks on subagents**: only the parent's `PreToolUse` groups are inherited (see "Guardrail inheritance" above) — they gate tool calls, so dropping them would let a worker bypass the parent's deny hooks. All other hook events are *not* inherited: subagents shouldn't be implicitly bound to parent-specific side effects (Stop/SessionEnd hooks often assume parent context). Pass a hooks table via `spawn_agent_opts[:hooks]` to opt in explicitly.
-- **Budget accounting**: the subagent's `usage` and `cost_usd` accrue against the parent? No — they're separate `Result`s. The parent sees the subagent's cost in the `ui_payload` returned by SpawnAgent. Tally externally if you want a top-level number.
-- **Cleanup is best-effort**: `WorktreeSweeper` is a GenServer that purges stale worktrees (no associated session, older than threshold). Don't rely on `SpawnAgent.cleanup` alone — crashes leave worktrees that the sweeper picks up later.
+- **`SpawnAgent` is `parallel_safe?: true`**: a parent can spawn multiple
+  subagents concurrently. They run in separate processes (the Loop is reentrant)
+  under `Task.async_stream`.
+- **No infinite nesting**: the parent's `parent_session_id` becomes the
+  subagent's grandparent if it itself spawns. Two rails bound the tree —
+  `max_agent_depth` (default 2: orchestrator → worker → helper) caps how deep
+  delegation nests, and `max_agents_per_run` (default 24) caps how many workers
+  one run may spawn in total across every branch. Both are overridable per run
+  via `assigns`, and both refuse a spawn with an error telling the model to
+  finish with what it has rather than failing the run.
+- **Worktree git safety**: `Agents.Worktree.create/2` refuses to create a
+  worktree on a dirty branch (uncommitted changes) by default. Tests cover the
+  safety checks. Don't bypass them.
+- **Hooks on subagents**: only the parent's `PreToolUse` groups are inherited
+  (see "Guardrail inheritance" above) — they gate tool calls, so dropping them
+  would let a worker bypass the parent's deny hooks. All other hook events are
+  *not* inherited: subagents shouldn't be implicitly bound to parent-specific
+  side effects (Stop/SessionEnd hooks often assume parent context). Pass a hooks
+  table via `spawn_agent_opts[:hooks]` to opt in explicitly.
+- **Budget accounting**: the subagent's `usage` and `cost_usd` accrue against
+  the parent? No — they're separate `Result`s. The parent sees the subagent's
+  cost in the `ui_payload` returned by SpawnAgent. Tally externally if you want
+  a top-level number.
+- **Cleanup is best-effort**: `WorktreeSweeper` is a GenServer that purges stale
+  worktrees (no associated session, older than threshold). Don't rely on
+  `SpawnAgent.cleanup` alone — crashes leave worktrees that the sweeper picks up
+  later.
 
 ---
 
 ## Where to go next
 
-- [`guides/agents_subagents.md`](../guides/agents_subagents.md) — full recipe book.
+- [`guides/agents_subagents.md`](../guides/agents_subagents.md) — full recipe
+  book.
 - [11 · Sessions](11-sessions.md) — sidechain transcripts and parent linkage.
 - [08 · Permissions](08-permissions.md) — phase overrides per subagent.
 - [09 · Hooks](09-hooks.md) — `SubagentStart` / `SubagentStop` events.

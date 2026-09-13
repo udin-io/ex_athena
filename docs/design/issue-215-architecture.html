@@ -1,0 +1,762 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Issue 215 — the worker forensic journal</title>
+<style>
+  :root{
+    --bg:#f7f7f5; --panel:#fff; --ink:#1c1c1a; --muted:#6b6b66; --line:#d8d8d2;
+    --bad:#8f2f24; --bad-bg:#fbeae7;
+    --good:#1f6b45; --good-bg:#e6f3ec;
+    --accent:#2d4a7c; --accent-bg:#e8eef8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:1180px;margin:0 auto;padding:40px 24px 80px}
+  h1{font-size:30px;line-height:1.25;margin:0 0 14px;letter-spacing:-.01em}
+  .sub{color:var(--muted);max-width:78ch;margin:0 0 8px}
+  h2{font-size:20px;margin:44px 0 12px;padding-top:14px;border-top:1px solid var(--line)}
+  h3{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+     margin:22px 0 8px;font-weight:600}
+  p{margin:0 0 12px;max-width:82ch}
+  ul,ol{margin:0 0 12px;padding-left:20px;max-width:82ch}
+  li{margin:0 0 6px}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;
+       background:#efefea;border-radius:3px;padding:1px 4px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:20px;margin:0 0 18px}
+  .panel h3:first-child{margin-top:0}
+  .scroll{overflow-x:auto}
+  .note{border-left:3px solid var(--accent);background:var(--accent-bg);padding:12px 16px;
+        border-radius:0 6px 6px 0;margin:0 0 14px}
+  .note.warn{border-left-color:var(--bad);background:var(--bad-bg)}
+  .note.ok{border-left-color:var(--good);background:var(--good-bg)}
+  .note p:last-child{margin-bottom:0}
+  .tag{display:inline-block;font-size:11px;letter-spacing:.04em;text-transform:uppercase;
+       font-weight:600;padding:2px 7px;border-radius:10px;vertical-align:2px}
+  .t-bad{background:var(--bad-bg);color:var(--bad)}
+  .t-good{background:var(--good-bg);color:var(--good)}
+  .t-acc{background:var(--accent-bg);color:var(--accent)}
+  .legend{display:flex;flex-wrap:wrap;gap:18px;margin:10px 0 4px;font-size:13px;color:var(--muted)}
+  .legend span{display:flex;align-items:center;gap:7px}
+  .sw{width:13px;height:13px;border-radius:3px;border:1px solid var(--line);display:inline-block}
+  table{border-collapse:collapse;width:100%;font-size:13.5px}
+  th{text-align:left;text-transform:uppercase;letter-spacing:.06em;font-size:11px;color:var(--muted);
+     font-weight:600;padding:0 12px 8px 0;border-bottom:1px solid var(--line);vertical-align:bottom}
+  td{padding:9px 12px 9px 0;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  pre{background:#1c1c1a;color:#e8e8e2;padding:16px;border-radius:8px;overflow-x:auto;
+      font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.55}
+  pre code{background:none;color:inherit;padding:0;font-size:inherit}
+  .mermaid{background:var(--panel);text-align:center}
+  .mermaid svg{max-width:100%;height:auto;display:block;margin:0 auto}
+  .kv{font-size:13.5px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Issue 215 — a killed worker's evidence</h1>
+
+<p class="sub">Design pass for issue 215 in <code>udin-io/ex_athena</code>, written before any code, off
+<code>origin/main</code> at <code>fe2f5fb</code> (issue 216 merged as PR 218 an hour earlier). Session
+<code>5906635b743d</code> ran 3h36m over 17 workers and 9.1M input tokens and failed while all four of its
+deliverables sat finished on disk, because a worker's evidence dies with the worker. The issue proposes three
+layers — attach provenance to failures, write a per-worker NDJSON journal, push a derived summary and offer a
+pull tool. This page shows what the code already does, corrects six things the issue body gets wrong about it,
+and decides which of the three layers to build before any is written.</p>
+
+<div class="note warn">
+<p><strong>Headline.</strong> The incident the issue is named after does not need the journal. A worker that
+stops on <code>error_max_input_tokens</code> returns a complete <code>%Result{}</code> with its
+<code>messages</code> intact (<code>loop.ex:177</code>); <code>ExAthena.Provenance</code> can read it today and
+simply is not asked to. Layer 1 is one line and fixes the post-mortem in full. The journal is worth building
+for a <em>different</em> gap the issue does not name — see section 5, question 1.</p>
+</div>
+
+<h2>1. Verdict on the three layers</h2>
+
+<div class="panel">
+<table>
+<thead>
+<tr><th style="width:22%">Layer</th><th style="width:30%">As the issue proposes it</th><th>Verdict</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td><strong>1a</strong> provenance on the failure path</td>
+  <td>Call <code>append_provenance/2</code> on the unfinished branch.</td>
+  <td><span class="tag t-good">build</span> One line at <code>spawn_agent.ex:408</code>. The branch already
+      holds <code>sub_result</code>, and <code>%Result{}.messages</code> is populated on every loop
+      termination. This alone produces the message the issue asks for.</td>
+</tr>
+<tr>
+  <td><strong>1b</strong> provenance sees bash writes</td>
+  <td>Parse redirection and heredoc targets, or have <code>bash</code> report paths it touched.</td>
+  <td><span class="tag t-good">build</span> <span class="tag t-acc">narrowed</span> Conservative matcher for
+      <code>&gt;</code>, <code>&gt;&gt;</code> and <code>tee</code> only, every candidate verified by
+      <code>File.stat/1</code> before it is reported. Not a shell parser. See section 4.</td>
+</tr>
+<tr>
+  <td><strong>1c</strong> <em>(not in the issue)</em> salvage the deadline-kill digest</td>
+  <td>—</td>
+  <td><span class="tag t-good">build</span> <code>progress_digest/2</code> reads the Coordinator's
+      <code>%AgentInfo{}</code> and uses only <code>todos</code> and <code>conclusions</code>. The
+      <code>transcript_tail</code> it discards holds <code>{:tool_call, "write …"}</code> rows — the evidence,
+      already in memory, already surviving the kill.</td>
+</tr>
+<tr>
+  <td><strong>2</strong> the NDJSON journal</td>
+  <td>An <code>Agents.Journal</code> subscribed to the loop's <code>on_event</code> stream.</td>
+  <td><span class="tag t-good">build</span> <span class="tag t-acc">narrowed</span> There is no stream to
+      subscribe to and no new instrumentation is needed, but the composition point is not where the issue says.
+      Text and thinking events must be excluded. See sections 2 and 3.</td>
+</tr>
+<tr>
+  <td><strong>3a</strong> the ~400-char push summary</td>
+  <td>A new <code>[worker evidence]</code> line derived at hand-back.</td>
+  <td><span class="tag t-bad">drop as new</span> <code>Provenance.footer/1</code> is already this line, already
+      rides on every successful hand-back, and <code>Provenance.scan/1</code> parses it back out of a
+      transcript. Add file sizes to the existing footer; a second format is a second parsing contract for the
+      same facts.</td>
+</tr>
+<tr>
+  <td><strong>3b</strong> the <code>read_worker_log</code> pull tool</td>
+  <td>A new orchestrator-scoped tool taking <code>subagent_id</code> and a filter.</td>
+  <td><span class="tag t-bad">drop as new</span> <code>ReadWorkerReport</code>'s own moduledoc asks for this:
+      "add its source and the <code>filter:</code> / <code>tail:</code> options HERE rather than introducing a
+      parallel path." One tool, two sources.</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<h2>2. Where the journal actually sits</h2>
+
+<div class="panel">
+<h3>Module diagram — one worker, from spawn to hand-back</h3>
+<div class="scroll">
+<pre class="mermaid">
+flowchart TB
+  subgraph SETUP["parent loop setup · lib/ex_athena/loop.ex"]
+    ITU["inherit_tool_ui_forwarder/2 · loop.ex:1099<br/>puts an on_event into spawn_agent_opts<br/>that keeps tool_ui and DROPS every other event"]
+    WC["wire_coordinator/2 · loop.ex:944<br/>installs assigns.agent_event_sink<br/>only when a Coordinator was passed"]
+  end
+
+  subgraph SPAWN["Tools.SpawnAgent.do_execute/5 · spawn_agent.ex:272"]
+    AE["attribute_events/6 · spawn_agent.ex:843<br/>WITH a sink: REPLACES on_event with sink.(sub_id, event)<br/>WITHOUT one: leaves the tool_ui forwarder in place"]
+    JC["((NEW)) Agents.Journal.compose/3<br/>wraps whatever on_event ended up being:<br/>write the line first, then call the inner callback"]
+    AW["await_worker/3 · spawn_agent.ex:504<br/>Task.shutdown brutal_kill when the deadline passes"]
+    SC["Sidechain.write/1 · spawn_agent.ex:377<br/>ONE line, by the PARENT, after the worker is gone"]
+    FIN["finalize_isolation/1 · spawn_agent.ex:390<br/>git worktree remove --force"]
+    BOK["success branch · :447<br/>truncate_result/3 then append_provenance/2"]
+    BFAIL["unfinished branch · :408<br/>conclusions_digest/1 · NO provenance today"]
+    BTO["timeout branch · :533 timed_out/4<br/>progress_digest/2 · todos and conclusions only"]
+    BCR["crash branch · :489<br/>a bare error tuple · no digest at all"]
+  end
+
+  subgraph WORKER["worker run · its own Loop process"]
+    WL["ExAthena.Loop.run/2"]
+    EV["Events.emit/2 · inline, synchronous,<br/>in the worker's own process"]
+    RES["ExAthena.Result<br/>text · finish_reason · conclusions · todos · messages"]
+  end
+
+  subgraph DISK["parent cwd · .exathena/sessions/PARENT_ID/"]
+    DSC[("sidechains/SUBAGENT_ID.jsonl<br/>full untruncated report")]
+    DJ[("((NEW)) journal/SUBAGENT_ID.ndjson<br/>one line per event, appended and closed per line")]
+  end
+
+  subgraph READ["reading the evidence back"]
+    PROV["ExAthena.Provenance.events/2 and footer/1<br/>write_tools: write, edit · bash is commands only"]
+    PROVN["((NEW)) bash write targets, stat-verified<br/>((NEW)) byte sizes in the footer"]
+    RWR["Tools.ReadWorkerReport · merged in PR 218<br/>((NEW)) source: journal · filter: writes, commands, errors, tail"]
+    COORD["Orchestrator.Coordinator and AgentInfo<br/>in memory, web runs ONLY, 30 transcript rows"]
+  end
+
+  ITU --> AE
+  WC --> AE
+  AE --> JC
+  JC -- "sub_opts on_event" --> WL
+  WL --> EV
+  EV -- "((NEW)) iteration, tool_call, tool_result, usage,<br/>subagent_spawn, subagent_result — never content or thinking" --> DJ
+  EV -- "every event, tagged by sub_id" --> COORD
+  WL --> RES
+  RES -- "only when the worker lives to return" --> AW
+  AW --> SC
+  SC --> DSC
+  AW --> FIN
+  AW --> BOK
+  AW --> BFAIL
+  AW --> BTO
+  AW --> BCR
+  BOK --> PROV
+  BFAIL -. "((NEW)) layer 1a: same call, failure branch" .-> PROV
+  BTO -. "((NEW)) layer 1c: read transcript_tail" .-> COORD
+  BTO -. "((NEW)) layer 2: read the journal" .-> DJ
+  BCR -. "((NEW)) same two reads" .-> DJ
+  PROV --> PROVN
+  DJ -- "on demand, never pushed" --> RWR
+  DSC --> RWR
+</pre>
+</div>
+
+<div class="legend">
+  <span><span class="sw" style="background:var(--panel)"></span> exists on <code>main</code> at <code>fe2f5fb</code></span>
+  <span><span class="sw" style="background:var(--good-bg)"></span> <code>((NEW))</code> — added by issue 215</span>
+  <span><span class="sw" style="background:var(--bad-bg)"></span> dashed arrow — a read that does not happen today</span>
+</div>
+</div>
+
+<div class="note">
+<p><strong>The composition point is <code>SpawnAgent</code>, not the loop.</strong> The issue says the journal
+"subscribes to the loop's existing <code>on_event</code> stream — the same stream the Coordinator already
+consumes". There is no stream. <code>on_event</code> is a single 1-arity callback with exactly one holder, and
+<code>attribute_events/6</code> <em>overwrites</em> it with <code>fn event -&gt; sink.(sub_id, event) end</code>
+whenever the parent carries an <code>:agent_event_sink</code>. So the journal is <em>composed</em>, not
+subscribed, and it must be composed in <code>do_execute/5</code> after <code>attribute_events/6</code> has had
+its say — that is also the only place that knows the <code>sub_id</code> the journal is named after. The
+issue's real economy ("no new instrumentation in the loop") survives intact: <code>loop.ex</code> is untouched.</p>
+</div>
+
+<h2>3. The kill, step by step</h2>
+
+<p>A module diagram cannot show order, and order is the whole problem: the file was written 90 seconds before
+the worker died, and every mechanism that could have reported it runs after the death. Both diagrams show the
+same worker — <code>T2cuzVsh</code>-shaped: writes a large file, starts a verification pass, is cut off.</p>
+
+<div class="panel">
+<h3>As-is — the evidence is destroyed by the kill</h3>
+<div class="scroll">
+<pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant O as orchestrator loop
+  participant SA as SpawnAgent.do_execute/5
+  participant DL as await_worker/3 — the killer
+  participant W as worker Loop process
+  participant FS as filesystem
+  participant CO as Coordinator — web runs only
+
+  O->>SA: spawn_agent with the brief
+  SA->>W: Loop.run/2 under a linked Task.Supervisor
+  W->>FS: bash heredoc writes guides-96-114-extract.md
+  FS-->>W: ok, 85043 bytes
+  W-)CO: tool_call bash, cast, coalesced into transcript_tail
+  Note over W: 90 seconds of verification pass, iterations 19 to 21
+  DL->>W: Task.shutdown brutal_kill, the deadline passed
+  Note over W,FS: the Result was never built. text, messages,<br/>conclusions and todos all die with the process
+  SA->>FS: Sidechain.write/1 with result nil
+  SA->>SA: timed_out/4 calls progress_digest/2
+  alt a Coordinator is attached — web UI only
+    CO-->>SA: todos and conclusions
+    Note over CO,SA: transcript_tail holds the tool_call row<br/>naming the file. progress_digest/2 never reads it
+  else no Coordinator — mix athena.chat, headless, tests
+    CO-->>SA: nil, agent_progress_reader was never installed
+  end
+  SA-->>O: timed out after 1800000ms with no progress recorded
+  Note over O: re-delegates the same brief.<br/>The 85 KB file is on disk and nothing says so
+</pre>
+</div>
+</div>
+
+<div class="panel">
+<h3>As-designed — the evidence is on disk before the kill lands</h3>
+<div class="scroll">
+<pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant O as orchestrator loop
+  participant SA as SpawnAgent.do_execute/5
+  participant DL as await_worker/3 — the killer
+  participant W as worker Loop process
+  participant J as Journal.compose/3 — inline in W
+  participant FS as filesystem
+
+  O->>SA: spawn_agent with the brief
+  SA->>SA: ((NEW)) compose the journal over sub_opts on_event
+  SA->>W: Loop.run/2
+  W->>J: tool_call bash, emitted inline by Events.emit/2
+  J->>FS: File.write append, open write close, one line
+  W->>FS: bash heredoc writes guides-96-114-extract.md
+  FS-->>W: ok, 85043 bytes
+  W->>J: tool_result ok
+  J->>FS: File.write append, one line
+  Note over J,FS: no delayed_write and no held handle.<br/>Every returned write is visible to any other process
+  Note over W: 90 seconds of verification pass
+  DL->>W: Task.shutdown brutal_kill
+  Note over W,FS: the final line may be torn.<br/>The reader drops an undecodable last line, never crashes
+  SA->>FS: ((NEW)) stat each journalled write path — BEFORE finalize_isolation/1
+  FS-->>SA: 85043 bytes, mtime 90s ago
+  SA->>FS: read journal, 47 lines, 3 writes, 31 commands, 2 failed
+  SA-->>O: worker provenance — files changed plan/uat_testing/guides-96-114-extract.md 85,043 B<br/>commands run 31, 2 failed. Stopped on its deadline
+  Note over O: reads the file. Does not re-delegate
+</pre>
+</div>
+</div>
+
+<div class="note warn">
+<p><strong>Ordering trap found while reading, not in the issue.</strong> In <code>do_execute/5</code>,
+<code>finalize_isolation/1</code> runs <em>above</em> the result <code>case</code>, so a
+<code>:worktree</code> worker's directory is already <code>git worktree remove --force</code>'d by the time the
+success branch calls <code>append_provenance/2</code>. Any <code>stat</code> the footer performs against a
+worktree worker's paths therefore finds nothing. Either the sizing moves ahead of
+<code>finalize_isolation/1</code>, or the footer falls back to the size the journal recorded at write time and
+labels it as such: <code>85,043 B (journalled; worktree removed)</code>. That is a second argument for the
+journal the issue does not make.</p>
+</div>
+
+<h2>4. What the issue gets wrong about the code</h2>
+
+<p>Every row was checked against <code>fe2f5fb</code> in a fresh worktree. The issue was written from a
+post-mortem, and a post-mortem describes the failure, not the machinery.</p>
+
+<div class="panel">
+<table>
+<thead>
+<tr><th style="width:30%">The issue says</th><th style="width:38%">The code does</th><th>So</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td>"subscribe a small <code>Agents.Journal</code> to the loop's existing <code>on_event</code> stream — the
+      same stream the Coordinator already consumes"</td>
+  <td>There is no stream and no subscription. <code>on_event</code> is one 1-arity function.
+      <code>attribute_events/6</code> (<code>spawn_agent.ex:843</code>) does
+      <code>Keyword.put(:on_event, tagged_on_event)</code>, discarding whatever was there.</td>
+  <td>Compose in <code>do_execute/5</code>, after <code>attribute_events/6</code>. Only that scope knows the
+      <code>sub_id</code>.</td>
+</tr>
+<tr>
+  <td><em>(my brief to the agent)</em> "the composition point is
+      <code>Loop.inherit_tool_ui_forwarder/2</code>"</td>
+  <td>That function runs once per <em>parent</em> loop setup, before any worker exists, so it cannot know a
+      <code>subagent_id</code>. Its output is then thrown away on every coordinator run.</td>
+  <td>Also wrong. It is only the <em>default</em> the journal composes over when no Coordinator is attached.</td>
+</tr>
+<tr>
+  <td>Journal "<code>:thinking</code>" alongside <code>:iteration</code> and <code>:tool_call</code></td>
+  <td><code>Events.provider_stream_callback/2</code> emits <code>{:thinking, delta}</code> per streamed
+      reasoning delta, exactly like <code>{:content, delta}</code>. The Coordinator survives this only because
+      it <code>cast</code>s and coalesces consecutive text into one entry.</td>
+  <td>One filesystem write per token. <strong>Exclude <code>:content</code> and <code>:thinking</code>
+      entirely.</strong> Conclusions are already durable in the Result and the Coordinator.</td>
+</tr>
+<tr>
+  <td>"Retention: lives and is pruned with its session."</td>
+  <td>Nothing prunes <code>.exathena/sessions/</code>. The only sweeper in the tree is
+      <code>Checkpoint.Sweeper</code>, which GCs <code>.exathena/file-history/SESSION_ID</code> after 30 days
+      at boot. Sidechain JSONL already grows without bound.</td>
+  <td>There is no pruning to inherit. See question 5.</td>
+</tr>
+<tr>
+  <td>"A brutal kill … returns nothing at all", implying total loss</td>
+  <td>True of the <code>%Result{}</code>. But <code>Sidechain.write/1</code> still runs (with
+      <code>result: nil</code>), and <code>timed_out/4</code> already rebuilds a digest from the Coordinator's
+      surviving <code>%AgentInfo{}</code>.</td>
+  <td>The hole is narrower and sharper than stated — and in a place the issue never looks. Next row.</td>
+</tr>
+<tr>
+  <td>The journal is needed because a killed worker leaves nothing</td>
+  <td><code>Coordinator.start_for/2</code> has <strong>exactly one caller</strong>:
+      <code>web/live/chat_live.ex:3039</code>. Every non-web run — <code>mix athena.chat</code>, headless
+      <code>Loop.run/2</code>, tests — has no Coordinator, so <code>progress_digest/2</code> returns
+      <code>nil</code> and the salvage path is dead code there.</td>
+  <td>This, not the web case, is the journal's real job. Say so in the ticket.</td>
+</tr>
+<tr>
+  <td>The motivating incident needs the journal</td>
+  <td><code>:error_max_input_tokens</code> is an ordinary loop termination (<code>loop.ex:177</code>) returning
+      a full <code>%Result{}</code> with <code>messages</code>. <code>Provenance.events/2</code> reads it
+      today.</td>
+  <td>Layer 1a alone fixes the named post-mortem. The journal is justified by other cases or not at all.</td>
+</tr>
+<tr>
+  <td><em>(not mentioned at all)</em></td>
+  <td>The crash branch (<code>spawn_agent.ex:489</code>) returns a bare
+      <code>{:error, {:sub_agent_crashed, reason}}</code> — no digest, no provenance, and not
+      <code>:uncounted</code>, so a crashed worker still bumps the mistake counter PR 218 just taught to
+      ignore budget exhaustion. Nothing in <code>test/</code> mentions either crash atom.</td>
+  <td>A real bug adjacent to this issue. Separate ticket — see section 7.</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<h2>5. The five design questions</h2>
+
+<h3>Q1 — does the journal need to exist at all?</h3>
+
+<p>Yes, but narrowly, and only after layer 1. There are four distinct ways a worker's evidence is lost today and
+the journal is the right answer to exactly one of them.</p>
+
+<div class="panel">
+<table>
+<thead><tr><th style="width:34%">Loss mode</th><th style="width:33%">What survives today</th><th>Cheapest fix</th></tr></thead>
+<tbody>
+<tr><td>Worker returns a <code>%Result{}</code> with an error <code>finish_reason</code> — the reported
+    incident</td>
+    <td>Everything: <code>messages</code>, <code>conclusions</code>, <code>todos</code>.</td>
+    <td><span class="tag t-good">layer 1a</span> one line</td></tr>
+<tr><td>Deadline kill, Coordinator attached (web UI)</td>
+    <td><code>%AgentInfo{}</code> in memory: todos, conclusions, and a 30-row
+        <code>transcript_tail</code> whose <code>tool_call</code> rows name the files.</td>
+    <td><span class="tag t-good">layer 1c</span> read the rows <code>progress_digest/2</code> throws away</td></tr>
+<tr><td>Deadline kill or crash, <strong>no Coordinator</strong> (CLI, headless, tests)</td>
+    <td><strong>Nothing.</strong> A <code>Sidechain</code> line reading <code>result: nil</code>.</td>
+    <td><span class="tag t-acc">layer 2</span> — the journal, and nothing else reaches this case</td></tr>
+<tr><td>The parent itself dies — its linked <code>Task.Supervisor</code> collapses the whole subtree</td>
+    <td>Nothing. <code>Sidechain.write/1</code> never runs; the Coordinator marks agents failed and retires
+        after 5 minutes.</td>
+    <td><span class="tag t-acc">layer 2</span> — and here the reader is a human, not an orchestrator</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note ok">
+<p>The fourth row is the honest case for building it. Every fact in this document was recovered by reading
+source, because session <code>5906635b743d</code> left no machine-readable record of what its seventeen workers
+touched. A journal's first customer is the post-mortem; the orchestrator is its second. That is still worth
+building — but it argues for a small, boring, durable file, not for a rich event log.</p>
+</div>
+
+<h3>Q2 — write-path safety: what is actually guaranteed</h3>
+
+<p>The issue's conclusion is right and its reason is not. Three separate things get conflated as "flushing".</p>
+
+<ul>
+  <li><strong><code>File.write(path, line, [:append])</code> opens, writes and closes per call.</strong> When it
+      returns, the bytes are in the OS page cache and visible to every other process on the machine. Losing them
+      needs a machine crash or power loss, not a process kill and not a BEAM exit. There is no
+      <code>fsync</code> — state that plainly rather than implying durability the code does not buy.</li>
+  <li><strong><code>:delayed_write</code> does not simply lose data on kill.</strong> The buffer lives behind
+      the file handle and is flushed on close, at 64 KB, or after 2 seconds; killing the owner closes the port,
+      which attempts that flush. The real defect is different and worse for this use: <em>a reader cannot see
+      the buffer</em>. The parent reads the journal microseconds after
+      <code>Task.shutdown(task, :brutal_kill)</code> returns, and any write error at close is discarded because
+      nobody holds the handle to observe it. So: no <code>:delayed_write</code> — but for visibility and
+      ordering, not for flushing.</li>
+  <li><strong>A torn final line is possible either way.</strong> <code>:kill</code> lands between reductions, so
+      a BIF already inside <code>write(2)</code> completes; but a process killed between formatting a line and
+      writing it loses that line outright. NDJSON is the right format precisely because it degrades one line at
+      a time. <strong>The reader must <code>Jason.decode</code> line by line and drop an undecodable last line
+      without raising.</strong> That is a testable requirement, not a caveat.</li>
+</ul>
+
+<p>Cost of writing this way: two extra syscalls per line, on the worker's own scheduler, inside its
+<code>on_event</code> callback — which is called <em>synchronously, in the worker process</em>
+(<code>Events.emit/2</code>). At roughly four journalled events per iteration over a 25-iteration budget that is
+about 100 writes per worker. Negligible, <em>provided</em> <code>:content</code> and <code>:thinking</code> are
+excluded. And because the callback runs in the worker, the writer must be
+<code>try/rescue</code>-guarded — a filesystem boundary, the same exemption <code>Sidechain.write/1</code>
+already takes.</p>
+
+<div class="note">
+<p><strong>Rejected: a separate journal GenServer fed by <code>cast</code>.</strong> It would take the
+filesystem off the worker's scheduler, and it survives the worker's death well enough to drain its mailbox. But
+it reintroduces the exact race the journal exists to remove in the case that matters most: when the
+<em>parent</em> dies, the journal process dies with it and every unflushed cast is a line that was never
+written. It buys back on the order of 100 microseconds per worker. Inline and synchronous wins.</p>
+</div>
+
+<h3>Q3 — cost, and the two <code>Tuning</code> knobs</h3>
+
+<p>Two keys, both integers, both under <code>:agents</code>. The repo's convention for "off" on an integer knob
+is <code>0</code>, so no boolean key is needed: <code>journal_bytes: 0</code> disables journalling entirely.</p>
+
+<div class="panel">
+<table>
+<thead><tr><th style="width:22%">Key</th><th style="width:10%">Default</th><th style="width:6%">Min</th><th>Settings-modal field and why the number</th></tr></thead>
+<tbody>
+<tr>
+  <td><code>:agents, :journal_line_chars</code></td><td>400</td><td>1</td>
+  <td><strong>"Worker journal line cap (characters)"</strong> — cap on the digested arguments in one journal
+      line. 400 is not a new judgement: it is <code>agents.transcript_entry_chars</code>, the existing cap on
+      the same information in <code>AgentInfo.append_transcript/2</code>. One number, two places.</td>
+</tr>
+<tr>
+  <td><code>:agents, :journal_bytes</code></td><td>2_000_000</td><td>0</td>
+  <td><strong>"Worker journal size cap (bytes)"</strong> — 0 disables journalling. A <code>write</code> line is
+      about 120 B; a <code>bash</code> line with a 400-char command digest about 500 B. A 25-iteration worker
+      making four calls per iteration writes roughly 100 lines, about 30 KB. 2 MB is a runaway guard at ~60x
+      the worst worker this session produced, not a budget.</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<p>Both keys need a field in <code>lib/ex_athena/web/settings.ex</code>. This is enforced, not conventional:
+<code>test/ex_athena/web/settings_test.exs:158</code> ("schema coverage") greps
+<code>Path.wildcard("lib/**/*.ex")</code> for literal <code>Tuning.get(:ns, :key</code> calls and fails on any
+that the schema does not declare. All twelve existing <code>:agents</code> keys are covered; these make
+fourteen.</p>
+
+<p>On reaching <code>journal_bytes</code> the writer stops and appends one final
+<code>{"ev":"journal_truncated"}</code> line so the reader knows it holds a prefix. <strong>Never rotate.</strong>
+A rotated journal throws away its beginning — which is the part naming what the worker built.</p>
+
+<h3>Q4 — the push summary</h3>
+
+<p><strong>Do not add a new <code>[worker evidence]</code> line.</strong> <code>Provenance.footer/1</code> is
+already the ~400-char derived summary, it already rides back on every successful hand-back, and
+<code>Provenance.scan/1</code> parses that exact text back out of a transcript — the moduledoc calls it "a
+parsing contract, not merely display". A second format for the same facts is a second contract to keep in sync.
+Extend the existing footer with byte sizes:</p>
+
+<pre><code>[worker provenance] files changed: plan/uat_testing/guides-96-114-extract.md (85,043 B) | commands run: mix test (failed), git status</code></pre>
+
+<ul>
+  <li><strong>Every hand-back, success and failure</strong> — not failures only. "The worker produced nothing"
+      is exactly as much a fact as "the worker produced 85 KB", and a footer that appears only on failure
+      teaches the model that its absence means success. It is already unconditional on the success path; layers
+      1a and 1c make it unconditional on the other three.</li>
+  <li><strong>Sizes come from <code>File.stat/1</code>, in the parent's cwd, at hand-back.</strong> That is what
+      makes it evidence: "wrote an 85 KB file" is checkable, "the file is structurally complete" is a claim.</li>
+  <li><strong>When the file is gone, say so — never omit the row.</strong> An omitted path reads as "the worker
+      wrote nothing", which is the failure this issue exists to stop. Two cases, two renderings:
+      <code>(missing)</code> when the path simply is not there, and
+      <code>(85,043 B journalled; worktree removed)</code> when the journal recorded a size and
+      <code>finalize_isolation/1</code> has since deleted the directory. For a <code>:worktree</code> worker the
+      second is the <em>normal</em> case, because <code>finalize_isolation/1</code> runs above the result
+      <code>case</code> — see the warning in section 3.</li>
+  <li><strong>No new cap key.</strong> The footer is already bounded by
+      <code>agents.provenance_max_listed</code> (15 paths) and <code>agents.provenance_command_chars</code>
+      (120). Sizes add about 10 characters per path.</li>
+</ul>
+
+<h3>Q5 — retention</h3>
+
+<p><strong>There is no pruning path.</strong> Not for the journal, and not for the sidechain transcripts that
+already exist: <code>.exathena/sessions/PARENT_ID/sidechains/*.jsonl</code> grows for the life of the checkout.
+The issue's "lives and is pruned with its session" describes a mechanism that was never built.</p>
+
+<p>The precedent to copy is <code>ExAthena.Checkpoint.Sweeper</code>: a one-shot boot <code>Task</code> under the
+application supervisor, <code>restart: :transient</code>, that <code>File.rm_rf</code>s
+<code>.exathena/file-history/SESSION_ID</code> directories older than 30 days, best-effort and logged at info
+level. Generalising it to take a list of <code>{subdir, max_age}</code> pairs and adding
+<code>.exathena/sessions</code> is a handful of lines.</p>
+
+<div class="note">
+<p><strong>It belongs in its own ticket.</strong> It fixes unbounded growth that predates this issue and applies
+to data this issue does not create, and bundling it here means this PR deletes files no reviewer asked it to
+touch. Ship 215 writing into an unpruned directory — as <code>Sidechain</code> already does — and prune both
+in one follow-up.</p>
+</div>
+
+<h2>6. Layer 3b — one tool, two sources</h2>
+
+<p><code>ReadWorkerReport</code> was built in PR 218 to be extended here. Its moduledoc says so: "add its source
+and the <code>filter:</code> / <code>tail:</code> options HERE rather than introducing a parallel path." The
+argument name, the id validation (<code>@id_re</code>, which refuses anything not matching
+<code>subagent_[A-Za-z0-9_-]{1,64}</code> rather than sanitising it) and the cwd/session path resolution are all
+shared. Add to the existing tool:</p>
+
+<ul>
+  <li><code>source</code> — <code>"report"</code> (default, unchanged behaviour) or <code>"journal"</code>.</li>
+  <li><code>filter</code> — <code>"writes"</code> / <code>"commands"</code> / <code>"errors"</code> /
+      <code>"tail"</code>, with <code>n</code> for <code>tail</code>. Journal source only.</li>
+  <li>The existing <code>from</code> / <code>max_chars</code> paging and the "no report on disk for ID" error
+      stay as they are.</li>
+</ul>
+
+<h3>Share the directory, not the file</h3>
+
+<p>Path: <code>.exathena/sessions/PARENT_ID/journal/SUBAGENT_ID.ndjson</code> — a sibling of
+<code>sidechains/</code>, resolved by the same cwd-plus-session-id join <code>report_path/2</code> already
+performs. (The issue's <code>&lt;run_dir&gt;/workers/</code> names a root that does not exist: <code>run_dir</code>
+appears nowhere in <code>lib/</code> or <code>test/</code>.)</p>
+
+<p>The repo's DRY rule demands asking whether <code>Sidechain</code> should simply be extended instead. It should
+not, and the reason is mechanical rather than aesthetic:</p>
+
+<div class="panel">
+<table>
+<thead><tr><th style="width:22%"></th><th style="width:39%">Sidechain</th><th>Journal</th></tr></thead>
+<tbody>
+<tr><td>Writer</td><td>the <strong>parent</strong>, once, after the worker is already gone</td><td>the <strong>worker</strong>, continuously, while it is alive</td></tr>
+<tr><td>Lifetime</td><td>a single line at the end of the spawn</td><td>the whole run of the worker</td></tr>
+<tr><td>Dies with</td><td>the parent</td><td>nothing — that is the point</td></tr>
+<tr><td>Content</td><td>the worker's prose report, untruncated</td><td>digested facts about what it did</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note warn">
+<p>And one hard blocker: <code>ReadWorkerReport.read_last_line/1</code> takes the <strong>last</strong> line of
+<code>sidechains/ID.jsonl</code> as the report. Appending journal events into the same file makes every
+<code>read_worker_report</code> call return a journal event instead of the report — silently breaking the tool
+PR 218 just shipped. Separate files, shared directory.</p>
+<p>The DRY-compliant outcome is smaller than merging them: <code>Sidechain</code> grows a public
+<code>session_dir/2</code>, and <code>Journal</code> and <code>ReadWorkerReport</code> both call it, so there is
+one definition of where a worker's artifacts live instead of the three string joins there are today.</p>
+</div>
+
+<h2>7. The journal record</h2>
+
+<div class="panel">
+<h3>Which events are written, and which are refused</h3>
+<table>
+<thead><tr><th style="width:22%">Event</th><th style="width:14%">Rate</th><th>Journalled as</th></tr></thead>
+<tbody>
+<tr><td><code>{:iteration, n}</code></td><td>1 per turn</td><td><code>{"ev":"iteration","i":14}</code> — the clock everything else hangs off.</td></tr>
+<tr><td><code>{:tool_call, %ToolCall{}}</code></td><td>1 per call</td><td><code>id</code>, <code>name</code>, and arguments digested to <code>journal_line_chars</code>. For <code>write</code>/<code>edit</code>/<code>apply_patch</code> the <code>path</code> is lifted to its own field so the reader never parses a digest.</td></tr>
+<tr><td><code>{:tool_result, %ToolResult{}}</code></td><td>1 per call</td><td><code>id</code>, <code>is_error</code>, <code>exit_code</code> when the <code>ui_payload</code> carries one, and <code>bytes</code> from a <code>File.stat/1</code> of the path the matching call named.</td></tr>
+<tr><td><code>{:usage, map}</code></td><td>1 per turn</td><td><code>input_tokens</code> / <code>output_tokens</code>. Emitted once per turn from the final <code>Response</code>, not per delta.</td></tr>
+<tr><td><code>{:conclusion, …}</code></td><td>1 per turn</td><td><code>text</code> and <code>source</code>. Cheap, and it is what makes the file readable to a human six hours later.</td></tr>
+<tr><td><code>{:subagent_spawn, …}</code> / <code>{:subagent_result, …}</code></td><td>rare</td><td>child <code>id</code> only. The child has its own journal; duplicating its text here would nest transcripts.</td></tr>
+<tr><td><code>{:done, %Result{}}</code></td><td>1, terminal</td><td><code>finish_reason</code>. Its absence is itself the evidence that the worker was killed.</td></tr>
+<tr><td><code>{:content, _}</code>, <code>{:thinking, _}</code></td><td><strong>per delta</strong></td><td><span class="tag t-bad">refused</span> One filesystem write per token. The issue lists <code>:thinking</code>; it must not be journalled.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>Correlation happens at read time, not write time</h3>
+
+<p><code>%ToolResult{}</code> carries <code>tool_call_id</code> and <strong>no tool name</strong>
+(<code>lib/ex_athena/messages.ex:36</code>). The issue's sample line puts <code>"name":"write"</code> on the
+result, which the writer cannot know without holding per-worker state across callback invocations. Write
+<code>id</code> on both lines and let the reader join them. A stateless closure is a closure that cannot lose
+state when the worker dies.</p>
+
+<p>The one derivation worth doing at write time is the byte count: the journal runs <em>in the worker's own
+process and cwd</em>, so a <code>File.stat/1</code> on the path a successful write just named is taken at the one
+moment the file certainly exists — including inside a <code>:worktree</code> worker's directory, which
+<code>finalize_isolation/1</code> deletes before the parent could ever stat it.</p>
+
+<pre><code>{"t":1789248701201,"ev":"iteration","i":14}
+{"t":1789248701432,"ev":"tool_call","id":"call_7f","name":"bash","path":null,
+ "args":"%{\"command\" =&gt; \"cat &gt; plan/uat_testing/guides-96-114-extract.md &lt;&lt;'EOF'…\"}"}
+{"t":1789248701998,"ev":"tool_result","id":"call_7f","ok":true,"exit_code":0,
+ "cmd":"cat &gt; plan/uat_testing/guides-96-114-extract.md &lt;&lt;'EOF'…",
+ "writes":[{"path":"plan/uat_testing/guides-96-114-extract.md","bytes":85043}]}</code></pre>
+
+<p class="kv">No <code>"i"</code> outside the <code>iteration</code> line, and no tool name on the result — see
+section 10. <code>writes</code> is empty unless the path was found on disk at the moment the command finished.</p>
+
+<h2>8. Scope — what this ticket is, and what it is not</h2>
+
+<div class="panel">
+<table>
+<thead><tr><th style="width:30%">Work</th><th style="width:14%">Where</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td><strong>1a</strong> <code>append_provenance/2</code> on the unfinished branch</td><td><span class="tag t-good">this ticket, first commit</span></td><td>One line. It is the entire fix for the incident the issue is named after, and it should be reviewable on its own.</td></tr>
+<tr><td><strong>1b</strong> bash write targets in <code>Provenance</code>, <code>stat</code>-verified</td><td><span class="tag t-good">this ticket</span></td><td>Self-contained in one module with a pure test surface.</td></tr>
+<tr><td><strong>1c</strong> <code>progress_digest/2</code> reads <code>transcript_tail</code></td><td><span class="tag t-good">this ticket</span></td><td>Same module, same failure, and it is what covers the web case while the journal covers the rest.</td></tr>
+<tr><td><strong>2</strong> <code>Agents.Journal</code> plus the <code>compose/3</code> wiring</td><td><span class="tag t-good">this ticket</span></td><td>The mechanism the issue is for.</td></tr>
+<tr><td><strong>3a</strong> byte sizes in <code>Provenance.footer/1</code></td><td><span class="tag t-good">this ticket</span></td><td>Small, and it is what turns the footer into evidence rather than a list.</td></tr>
+<tr><td><strong>3b</strong> <code>source:</code> / <code>filter:</code> on <code>ReadWorkerReport</code></td><td><span class="tag t-good">this ticket</span></td><td>Already designed for in PR 218.</td></tr>
+<tr><td>Pruning <code>.exathena/sessions</code> — generalise <code>Checkpoint.Sweeper</code></td><td><span class="tag t-acc">separate ticket</span></td><td>Fixes unbounded growth that predates this issue and deletes data this issue does not create.</td></tr>
+<tr><td>The crash branch: no digest, no provenance, not <code>:uncounted</code></td><td><span class="tag t-acc">separate ticket</span></td><td>A crashed worker still bumps the mistake counter PR 218 just taught to spare budget exhaustion. It is a bug with its own reproduction, not a layer of this design.</td></tr>
+<tr><td>Having <code>bash</code> itself report the paths it touched</td><td><span class="tag t-acc">only if 1b proves insufficient</span></td><td>See below.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>Why 1b is a stat, not a parser</h3>
+
+<p>The issue offers two routes for bash-written files and prefers "have the bash tool report the paths it
+touched". That is more robust <em>if the tool can know</em>, and it cannot without paying for it: discovering
+what an arbitrary command touched means an <code>strace</code>, a directory scan, or a
+<code>git status --porcelain</code> before and after every single <code>bash</code> call. The
+<code>ui_payload</code> at <code>bash.ex:405</code> is a clean place to put the answer; nothing cheap produces
+one.</p>
+
+<p>Parsing shell syntax to find write targets is the other rabbit hole, and it is worse, because a wrong answer
+here is a fabricated fact in a footer whose entire value is that its facts are checkable. Redirection into a
+variable, <code>tee</code> behind a pipe, <code>sed -i</code>, a Python heredoc that opens its own file — the
+tail is endless and every miss is silent.</p>
+
+<div class="note ok">
+<p><strong>The narrow version keeps the property that matters.</strong> Match only unambiguous forms —
+<code>&gt; path</code>, <code>&gt;&gt; path</code>, <code>tee path</code> — then <code>File.stat/1</code> every
+candidate and report only the ones that exist with a size. False negatives stay possible and are acceptable: a
+footer reading <code>files changed: none</code> is the status quo. False positives become impossible, because a
+path that does not exist is never reported. A parse that must survive a <code>stat</code> cannot invent
+evidence.</p>
+</div>
+
+<h2>9. Answered: build only the journal</h2>
+
+<div class="note ok">
+<p>The open question was whether to build layer 1c (read the Coordinator's <code>transcript_tail</code>) as well
+as the journal. <strong>Decision: only the journal.</strong> 1c covers one entry point of four and is dead code
+in <code>mix athena.chat</code>, headless <code>Loop.run/2</code> and tests — two salvage paths overlapping on
+web runs and diverging everywhere else is the duplicate-path case the repo's DRY rule names. One path, all four
+entry points, and the web case reads the same file as everyone else.</p>
+<p>Consequence: the journal defaults <strong>on</strong>, because it is now the only thing standing between a
+killed worker and lost evidence. <code>journal_bytes</code> bounds the cost without making survival opt-in.</p>
+</div>
+
+<h2>10. What the code changed about this design</h2>
+
+<p>Three things were wrong in the approved design, all found by reading the code while implementing it. They are
+recorded here because the diagrams above still describe the shape, and someone will read them before the
+source.</p>
+
+<div class="panel">
+<table>
+<thead><tr><th style="width:26%">The design said</th><th style="width:37%">The code required</th><th>Consequence</th></tr></thead>
+<tbody>
+<tr>
+  <td>The writer holds per-worker state (iteration, a call-id to path map, a byte counter) in the process
+      dictionary, as <code>Events.provider_stream_callback/2</code> does for its fence filter.</td>
+  <td><code>on_event</code> is invoked from inside <code>Task.async_stream</code> tasks whenever tool calls run
+      concurrently (<code>lib/ex_athena/loop/parallel.ex:97</code> calling
+      <code>ReAct.run_single_tool_call/2</code>, which emits both <code>:tool_call</code> and
+      <code>:tool_result</code>). There is no single process to hang state on.</td>
+  <td><strong>The writer is stateless.</strong> Which turned out to be free: <code>write</code> and
+      <code>edit</code> both report the resolved path in their <code>:diff</code> ui payload, and
+      <code>bash</code> reports the full command in its <code>:process</code> payload, so every line is derived
+      from its own event. Correlation is a read-time join, as section 7 already wanted.</td>
+</tr>
+<tr>
+  <td>Every line carries <code>"i"</code>, the iteration it belongs to.</td>
+  <td>Same reason — the current iteration is state.</td>
+  <td>Only <code>iteration</code> and <code>conclusion</code> records carry <code>i</code>; the reader carries it
+      forward. One less thing to be wrong.</td>
+</tr>
+<tr>
+  <td>The footer stats at hand-back; the worktree case is covered by an honest
+      <code>(written, not re-checked)</code> caveat.</td>
+  <td>That works, but throws away a number the journal already measured correctly, in the worker, while the
+      file existed.</td>
+  <td><code>Provenance.footer/2</code> gained a <code>:sizes</code> fallback used only where the
+      <code>stat</code> fails, rendering <code>(85043 B, not re-checked)</code>. Still one footer format — the
+      constraint section 3a insisted on — and no measurement taken elsewhere is passed off as one taken here.</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<div class="note">
+<p><strong>Also confirmed while implementing:</strong> the <code>schema coverage</code> test really does enforce
+the settings fields. <code>test/ex_athena/web/settings_test.exs:158</code> greps
+<code>Path.wildcard("lib/**/*.ex")</code> for literal <code>Tuning.get(:ns, :key</code> calls and fails on any
+the schema omits — so <code>journal_bytes</code> and <code>journal_line_chars</code> could not have been added
+without their modal fields.</p>
+</div>
+
+<h2>11. Mermaid sources</h2>
+
+<p class="kv">Kept verbatim so the same pictures can go in the PR body under an "## Architecture" heading, where
+GitHub renders them natively.</p>
+
+<h3>Module diagram</h3>
+<pre><code id="src-module"></code></pre>
+<h3>Timing — as-is</h3>
+<pre><code id="src-asis"></code></pre>
+<h3>Timing — as-designed</h3>
+<pre><code id="src-asdesigned"></code></pre>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  const blocks = document.querySelectorAll("pre.mermaid");
+  const ids = ["src-module","src-asis","src-asdesigned"];
+  blocks.forEach((b, i) => {
+    const el = document.getElementById(ids[i]);
+    if (el) el.textContent = b.textContent.trim();
+  });
+  mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose" });
+</script>
+
+</div>
+</body>
+</html>

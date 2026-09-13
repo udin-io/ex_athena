@@ -33,6 +33,90 @@ defmodule ExAthena.ProvenanceTest do
     }
   end
 
+  # Worker T2cuzVsh wrote a 113 KB file with a bash heredoc and its footer read
+  # "files changed: none". Provenance only ever classified `bash` as a command,
+  # never as a change, so an orchestrator reading the footer concluded the
+  # worker had produced nothing.
+  #
+  # The matcher is deliberately narrow. Discovering what an arbitrary shell
+  # command touched is unbounded, and a WRONG entry is worse than a missing
+  # one: the entire value of this footer is that its claims are checkable. So
+  # candidates are only unambiguous forms, they are a distinct event kind until
+  # verified, and `verify/2` drops every one that is not on disk.
+  describe "bash write targets" do
+    defp bash(cmd, id \\ "1") do
+      [assistant([call(id, "bash", %{"command" => cmd})]), results([{id, {:exit, 0}}])]
+    end
+
+    test "a heredoc redirect is a write candidate, not a write" do
+      assert Provenance.events(bash("cat > plan/extract.md <<'EOF'\nhello\nEOF")) ==
+               [
+                 {:command, "cat > plan/extract.md <<'EOF'\nhello\nEOF"},
+                 {:bash_write, "plan/extract.md"}
+               ]
+    end
+
+    test "recognises append and tee" do
+      assert {:bash_write, "log.txt"} in Provenance.events(bash("echo hi >> log.txt"))
+      assert {:bash_write, "out.json"} in Provenance.events(bash("curl -s x | tee out.json"))
+      assert {:bash_write, "out.json"} in Provenance.events(bash("gen | tee -a out.json"))
+    end
+
+    test "an unverified candidate is not a changed file" do
+      events = Provenance.events(bash("echo hi > log.txt"))
+      assert Provenance.changed_files(events) == []
+    end
+
+    test "misses rather than guesses on ambiguous forms" do
+      for cmd <- [
+            "echo hi > $OUT",
+            "echo hi > ~/notes.md",
+            "echo hi > *.txt",
+            "mix test 2>&1",
+            "diff a b > /dev/null",
+            "sed -i s/a/b/ lib/a.ex",
+            "python - <<'PY'\nopen('x.txt','w')\nPY"
+          ] do
+        assert Enum.filter(Provenance.events(bash(cmd)), &match?({:bash_write, _}, &1)) == [],
+               "should not have guessed a write target from: #{cmd}"
+      end
+    end
+
+    test "a command that failed contributes no write candidate" do
+      msgs = [
+        assistant([call("1", "bash", %{"command" => "gen > out.txt"})]),
+        results([{"1", {:exit, 1}}])
+      ]
+
+      assert Enum.filter(Provenance.events(msgs), &match?({:bash_write, _}, &1)) == []
+    end
+  end
+
+  describe "verify/2 — a candidate that is not on disk never becomes evidence" do
+    @tag :tmp_dir
+    test "promotes a candidate whose file exists", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "out.txt"), "hello")
+
+      assert Provenance.verify([{:bash_write, "out.txt"}], dir) == [{:write, "out.txt"}]
+    end
+
+    @tag :tmp_dir
+    test "drops a candidate whose file does not exist", %{tmp_dir: dir} do
+      assert Provenance.verify([{:bash_write, "ghost.txt"}], dir) == []
+    end
+
+    @tag :tmp_dir
+    test "leaves tool writes and commands untouched", %{tmp_dir: dir} do
+      events = [{:write, "lib/a.ex"}, {:command, "mix test"}, {:failed_command, "mix compile"}]
+      assert Provenance.verify(events, dir) == events
+    end
+
+    test "drops every candidate when there is no cwd to check against" do
+      assert Provenance.verify([{:bash_write, "out.txt"}, {:command, "ls"}], nil) ==
+               [{:command, "ls"}]
+    end
+  end
+
   describe "events/1 — what the worker actually did" do
     test "records file writes from write and edit, in call order" do
       msgs = [
@@ -377,6 +461,87 @@ defmodule ExAthena.ProvenanceTest do
       assert Provenance.test_first?([{:write, "test/a_test.exs"}])
       assert Provenance.test_first?([{:command, "mix test"}])
       assert Provenance.test_first?([])
+    end
+  end
+
+  # "wrote an 85 KB file" is checkable; "the file is structurally complete" is
+  # a claim. The size is what turns the footer from a list into evidence, and
+  # it is read off the disk at hand-back rather than taken from the worker's
+  # word.
+  describe "footer/2 — sizes read from disk" do
+    @tag :tmp_dir
+    test "names the size of a file that is there", %{tmp_dir: dir} do
+      File.mkdir_p!(Path.join(dir, "plan"))
+      File.write!(Path.join(dir, "plan/extract.md"), String.duplicate("x", 85_043))
+
+      footer = Provenance.footer([{:write, "plan/extract.md"}], cwd: dir)
+
+      assert footer =~ "plan/extract.md (85043 B)"
+    end
+
+    @tag :tmp_dir
+    test "keeps a path the worker wrote and that is now gone, and says so", %{tmp_dir: dir} do
+      footer = Provenance.footer([{:write, "plan/gone.md"}], cwd: dir)
+
+      assert footer =~ "plan/gone.md (missing)"
+    end
+
+    # A :worktree worker's directory is removed by finalize_isolation/1 before
+    # the parent ever gets here, so this is the NORMAL case for isolated
+    # workers — exactly the ones whose evidence is worth most. Dropping the
+    # entry would read as "the worker wrote nothing", which is the failure this
+    # whole module exists to prevent.
+    test "says a file could not be re-checked when the directory itself is gone" do
+      dir = Path.join(System.tmp_dir!(), "prov_gone_#{System.unique_integer([:positive])}")
+      refute File.dir?(dir)
+
+      footer = Provenance.footer([{:write, "plan/extract.md"}], cwd: dir)
+
+      assert footer =~ "plan/extract.md (written, not re-checked)"
+      refute footer =~ "(missing)"
+    end
+
+    @tag :tmp_dir
+    test "promotes a verified bash write and sizes it", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "out.json"), "{}")
+
+      footer =
+        Provenance.footer([{:command, "gen | tee out.json"}, {:bash_write, "out.json"}], cwd: dir)
+
+      assert footer =~ "files changed: out.json (2 B)"
+    end
+
+    @tag :tmp_dir
+    test "an unverified bash candidate never reaches the footer", %{tmp_dir: dir} do
+      footer =
+        Provenance.footer([{:command, "gen > ghost.json"}, {:bash_write, "ghost.json"}], cwd: dir)
+
+      assert footer =~ "files changed: none"
+    end
+
+    test "annotates nothing when the caller has no cwd to check against" do
+      assert Provenance.footer([{:write, "lib/a.ex"}]) =~ "files changed: lib/a.ex |"
+    end
+
+    @tag :tmp_dir
+    test "scan/1 reads its own annotated footer back", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "a.ex"), "x")
+
+      footer =
+        Provenance.footer([{:write, "a.ex"}, {:failed_command, "mix test"}], cwd: dir)
+
+      assert Provenance.scan(footer) == [{:write, "a.ex"}, {:failed_command, "mix test"}]
+    end
+
+    @tag :tmp_dir
+    test "scan/1 survives an annotation sitting next to the cap suffix", %{tmp_dir: dir} do
+      for i <- 1..40, do: File.write!(Path.join(dir, "f#{i}.ex"), "x")
+      events = for i <- 1..40, do: {:write, "f#{i}.ex"}
+
+      scanned = Provenance.scan(Provenance.footer(events, cwd: dir))
+
+      assert {:write, "f15.ex"} in scanned
+      refute Enum.any?(scanned, fn {_, p} -> p =~ "more" or p =~ " B" end)
     end
   end
 

@@ -284,6 +284,28 @@ defmodule ExAthena.Web.Settings do
           type: :integer,
           min: 1,
           help: "Conclusions retained per agent."
+        },
+        %{
+          key: :journal_bytes,
+          label: "Worker journal size cap (bytes)",
+          default: 2_000_000,
+          type: :integer,
+          min: 0,
+          help:
+            "Every worker records what it did to disk as it works, so a worker that is " <>
+              "killed before it can report still leaves evidence behind. 0 disables it. " <>
+              "The default is about 60x the largest worker observed; it is a runaway " <>
+              "guard, not a budget."
+        },
+        %{
+          key: :journal_line_chars,
+          label: "Worker journal line cap (characters)",
+          default: 400,
+          type: :integer,
+          min: 1,
+          help:
+            "Cap on the digested tool arguments in one journal line. The journal records " <>
+              "what a worker did, never a second copy of its transcript."
         }
       ]
     },

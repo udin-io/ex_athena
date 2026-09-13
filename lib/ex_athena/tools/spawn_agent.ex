@@ -50,7 +50,7 @@ defmodule ExAthena.Tools.SpawnAgent do
   """
 
   alias ExAthena.Agents
-  alias ExAthena.Agents.{Deadline, Quota, Sidechain, Worktree}
+  alias ExAthena.Agents.{Deadline, Journal, Quota, Sidechain, Worktree}
   alias ExAthena.Loop.Terminations
   alias ExAthena.Orchestrator.AgentInfo
   alias ExAthena.Tuning
@@ -319,6 +319,11 @@ defmodule ExAthena.Tools.SpawnAgent do
     # to the parent's cwd transparently if any safety check fails.
     {sub_opts, isolation_info} = apply_isolation(agent_def, sub_opts, ctx)
 
+    # After isolation, so the journal stats the directory the worker really
+    # runs in; the FILE stays under our cwd, because a worktree worker's own
+    # directory is deleted moments after it finishes.
+    sub_opts = install_journal(sub_opts, ctx, sub_id)
+
     parent_hooks = Map.get(ctx.assigns || %{}, :hooks, %{})
 
     emit_event(ctx, {:subagent_spawn, %{id: sub_id, prompt: prompt}})
@@ -405,7 +410,16 @@ defmodule ExAthena.Tools.SpawnAgent do
               isolation: finalized_isolation
             })
 
-          digest = conclusions_digest(sub_result)
+          # The worker's own account of itself, plus what its tool calls prove.
+          # A cut-off worker's conclusions are usually intentions ("one final
+          # spot-check, then I'll report"); the footer is the only part of this
+          # message that is checkable. Session 5906635b743d re-delegated three
+          # workers whose files were already on disk because this branch
+          # reported the prose and not the facts.
+          digest =
+            sub_result
+            |> conclusions_digest()
+            |> append_provenance(sub_result, worker_cwd(sub_opts, ctx))
 
           # Surface the failure digest on the agent's Overview entry too.
           case Map.get(ctx.assigns || %{}, :agent_event_sink) do
@@ -444,7 +458,7 @@ defmodule ExAthena.Tools.SpawnAgent do
                 Tuning.get(:agents, :result_chars, @default_result_chars),
               sub_id
             )
-            |> append_provenance(sub_result)
+            |> append_provenance(sub_result, worker_cwd(sub_opts, ctx))
 
           emit_event(ctx, {:subagent_result, %{id: sub_id, text: text}})
 
@@ -496,7 +510,13 @@ defmodule ExAthena.Tools.SpawnAgent do
               isolation: finalized_isolation
             })
 
-          timed_out(ctx, sub_id, timeout, Deadline.waited(%{agent_wait_counters: [wait_counter]}))
+          timed_out(
+            ctx,
+            sub_id,
+            timeout,
+            Deadline.waited(%{agent_wait_counters: [wait_counter]}),
+            worker_cwd(sub_opts, ctx)
+          )
       end
 
     result
@@ -530,25 +550,70 @@ defmodule ExAthena.Tools.SpawnAgent do
   # already does. Live, one worker was killed at its 30 minute mark after 19
   # iterations and 555k input tokens, and returned literally nothing; the
   # orchestrator re-delegated the same ground twice.
-  defp timed_out(ctx, sub_id, timeout, queued_ms) do
+  defp timed_out(ctx, sub_id, timeout, queued_ms, worker_cwd) do
     spent = describe_budget(timeout, queued_ms)
 
-    case progress_digest(ctx, sub_id) do
-      nil ->
+    learned =
+      [progress_digest(ctx, sub_id), journal_footer(ctx, sub_id, worker_cwd)]
+      |> Enum.reject(&is_nil/1)
+
+    case learned do
+      [] ->
         notify_failure(ctx, sub_id, "timed out after #{spent} — no progress recorded")
 
         {:error, :uncounted,
          "worker timed out after #{spent} with no progress recorded. " <>
            "Re-delegate a smaller slice, or finish without it."}
 
-      digest ->
-        notify_failure(ctx, sub_id, "timed out after #{spent}:\n#{digest}")
+      parts ->
+        body = Enum.join(parts, "\n")
+        notify_failure(ctx, sub_id, "timed out after #{spent}:\n#{body}")
 
         {:error, :uncounted,
          "worker timed out after #{spent}. " <>
-           "What it learned before stopping:\n#{digest}\n" <>
+           "What it learned before stopping:\n#{body}\n" <>
            "Re-delegate a narrower slice building on those findings, or finish without it."}
     end
+  end
+
+  # The one thing a brutal kill cannot destroy: the worker wrote this as it
+  # worked. The Coordinator's observation above is prose about the work and
+  # exists only on web runs; this is the evidence, and it exists everywhere.
+  # Rendered through Provenance so a dead worker's facts reach the parent in
+  # exactly the format a live one's do.
+  defp journal_footer(ctx, sub_id, worker_cwd) do
+    records = ctx |> journal_path(sub_id) |> Journal.read()
+
+    ExAthena.Provenance.footer(Journal.provenance_events(records),
+      cwd: worker_cwd,
+      sizes: Journal.sizes(records)
+    )
+  end
+
+  # Journalling is an observation wrapped around whatever callback the spawn
+  # already had — the Coordinator's per-agent sink when one is attached, the
+  # tool_ui forwarder when not. Both are wrapped, because the loop reaches the
+  # worker through `:on_event` and the worker's own tools reach it through
+  # `assigns`.
+  defp install_journal(sub_opts, ctx, sub_id) do
+    path = journal_path(ctx, sub_id)
+    opts = [cwd: worker_cwd(sub_opts, ctx)]
+    assigns = Keyword.get(sub_opts, :assigns, %{})
+
+    sub_opts
+    |> Keyword.update(
+      :on_event,
+      Journal.compose(nil, path, opts),
+      &Journal.compose(&1, path, opts)
+    )
+    |> Keyword.put(
+      :assigns,
+      Map.put(assigns, :on_event, Journal.compose(assigns[:on_event], path, opts))
+    )
+  end
+
+  defp journal_path(ctx, sub_id) do
+    Journal.path(ctx.cwd || File.cwd!(), ctx.session_id || "unknown", sub_id)
   end
 
   # Naming the queue time keeps the orchestrator from reading a slow worker as
@@ -1049,14 +1114,27 @@ defmodule ExAthena.Tools.SpawnAgent do
   # never did ("the app compiles cleanly" for a run that never built anything).
   # This appends what the worker's own tool calls prove — nothing for a purely
   # read-only worker, so explorers stay noise-free.
-  defp append_provenance(text, %ExAthena.Result{messages: messages}) when is_list(messages) do
-    case messages |> ExAthena.Provenance.events() |> ExAthena.Provenance.footer() do
+  #
+  # `cwd` is the WORKER's directory, not ours: it is what its relative paths
+  # resolve against, and what Provenance stats to turn "wrote a file" into
+  # "wrote 85043 bytes". For a `:worktree` worker that directory is already
+  # gone by the time we get here (`finalize_isolation/1` runs above the result
+  # branches), and the footer says so rather than dropping the path.
+  defp append_provenance(text, sub_result, cwd)
+
+  defp append_provenance(text, %ExAthena.Result{messages: messages}, cwd)
+       when is_list(messages) do
+    case messages |> ExAthena.Provenance.events() |> ExAthena.Provenance.footer(cwd: cwd) do
       nil -> text
       footer -> String.trim_trailing(text) <> "\n\n" <> footer
     end
   end
 
-  defp append_provenance(text, _sub_result), do: text
+  defp append_provenance(text, _sub_result, _cwd), do: text
+
+  # Host overrides and worktree isolation both land in sub_opts[:cwd]; a plain
+  # in-process worker inherits ours.
+  defp worker_cwd(sub_opts, ctx), do: Keyword.get(sub_opts, :cwd) || ctx.cwd
 
   # Worker iteration caps chosen by the model are floored at the default —
   # live testing showed an orchestrator starving its worker with
