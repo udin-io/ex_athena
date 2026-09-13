@@ -161,11 +161,18 @@ defmodule ExAthena.Agents.WriteBrief do
   defp message(brief, tools, agent_name) do
     "not started: " <>
       subject(agent_name) <>
-      " has tools #{Enum.join(tools, ", ")} — none of which can write a file, " <>
+      " has tools #{Enum.join(named_tools(tools), ", ")} — none of which can write a file, " <>
       "and your brief asks for one (#{inspect(offending_phrase(brief))}). " <>
       "Delegate this step to \"implementer\" (or another write-capable agent), " <>
       "or drop the file requirement and ask for the content in the reply."
   end
+
+  # Every worker is granted these three regardless of what its definition
+  # declares, so they are not what the parent chose and listing them only
+  # muddies the claim — `todo_write` in particular reads as a write tool.
+  @always_granted ~w(todo_write spawn_agent read_worker_report)
+
+  defp named_tools(tools), do: Enum.reject(tools, &(&1 in @always_granted))
 
   defp subject(nil), do: "this spawn's toolset"
   defp subject(name), do: "agent #{inspect(name)}"
