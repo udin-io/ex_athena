@@ -217,3 +217,90 @@ subscribed, and it must be composed in <code>do_execute/5</code> after <code>att
 its say — that is also the only place that knows the <code>sub_id</code> the journal is named after. The
 issue's real economy ("no new instrumentation in the loop") survives intact: <code>loop.ex</code> is untouched.</p>
 </div>
+
+<h2>3. The kill, step by step</h2>
+
+<p>A module diagram cannot show order, and order is the whole problem: the file was written 90 seconds before
+the worker died, and every mechanism that could have reported it runs after the death. Both diagrams show the
+same worker — <code>T2cuzVsh</code>-shaped: writes a large file, starts a verification pass, is cut off.</p>
+
+<div class="panel">
+<h3>As-is — the evidence is destroyed by the kill</h3>
+<div class="scroll">
+<pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant O as orchestrator loop
+  participant SA as SpawnAgent.do_execute/5
+  participant DL as await_worker/3 — the killer
+  participant W as worker Loop process
+  participant FS as filesystem
+  participant CO as Coordinator — web runs only
+
+  O->>SA: spawn_agent with the brief
+  SA->>W: Loop.run/2 under a linked Task.Supervisor
+  W->>FS: bash heredoc writes guides-96-114-extract.md
+  FS-->>W: ok, 85043 bytes
+  W-)CO: tool_call bash, cast, coalesced into transcript_tail
+  Note over W: 90 seconds of verification pass, iterations 19 to 21
+  DL->>W: Task.shutdown brutal_kill, the deadline passed
+  Note over W,FS: the Result was never built. text, messages,<br/>conclusions and todos all die with the process
+  SA->>FS: Sidechain.write/1 with result nil
+  SA->>SA: timed_out/4 calls progress_digest/2
+  alt a Coordinator is attached — web UI only
+    CO-->>SA: todos and conclusions
+    Note over CO,SA: transcript_tail holds the tool_call row<br/>naming the file. progress_digest/2 never reads it
+  else no Coordinator — mix athena.chat, headless, tests
+    CO-->>SA: nil, agent_progress_reader was never installed
+  end
+  SA-->>O: timed out after 1800000ms with no progress recorded
+  Note over O: re-delegates the same brief.<br/>The 85 KB file is on disk and nothing says so
+</pre>
+</div>
+</div>
+
+<div class="panel">
+<h3>As-designed — the evidence is on disk before the kill lands</h3>
+<div class="scroll">
+<pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant O as orchestrator loop
+  participant SA as SpawnAgent.do_execute/5
+  participant DL as await_worker/3 — the killer
+  participant W as worker Loop process
+  participant J as Journal.compose/3 — inline in W
+  participant FS as filesystem
+
+  O->>SA: spawn_agent with the brief
+  SA->>SA: ((NEW)) compose the journal over sub_opts on_event
+  SA->>W: Loop.run/2
+  W->>J: tool_call bash, emitted inline by Events.emit/2
+  J->>FS: File.write append, open write close, one line
+  W->>FS: bash heredoc writes guides-96-114-extract.md
+  FS-->>W: ok, 85043 bytes
+  W->>J: tool_result ok
+  J->>FS: File.write append, one line
+  Note over J,FS: no delayed_write and no held handle.<br/>Every returned write is visible to any other process
+  Note over W: 90 seconds of verification pass
+  DL->>W: Task.shutdown brutal_kill
+  Note over W,FS: the final line may be torn.<br/>The reader drops an undecodable last line, never crashes
+  SA->>FS: ((NEW)) stat each journalled write path — BEFORE finalize_isolation/1
+  FS-->>SA: 85043 bytes, mtime 90s ago
+  SA->>FS: read journal, 47 lines, 3 writes, 31 commands, 2 failed
+  SA-->>O: worker provenance — files changed plan/uat_testing/guides-96-114-extract.md 85,043 B<br/>commands run 31, 2 failed. Stopped on its deadline
+  Note over O: reads the file. Does not re-delegate
+</pre>
+</div>
+</div>
+
+<div class="note warn">
+<p><strong>Ordering trap found while reading, not in the issue.</strong> In <code>do_execute/5</code>,
+<code>finalize_isolation/1</code> runs <em>above</em> the result <code>case</code>, so a
+<code>:worktree</code> worker's directory is already <code>git worktree remove --force</code>'d by the time the
+success branch calls <code>append_provenance/2</code>. Any <code>stat</code> the footer performs against a
+worktree worker's paths therefore finds nothing. Either the sizing moves ahead of
+<code>finalize_isolation/1</code>, or the footer falls back to the size the journal recorded at write time and
+labels it as such: <code>85,043 B (journalled; worktree removed)</code>. That is a second argument for the
+journal the issue does not make.</p>
+</div>
