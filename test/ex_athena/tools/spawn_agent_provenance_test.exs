@@ -132,6 +132,20 @@ defmodule ExAthena.Tools.SpawnAgentProvenanceTest do
     assert report =~ "commands run: none"
   end
 
+  # The size is read off the disk at hand-back, not taken from the worker's
+  # word, which is what makes the footer evidence rather than a second claim.
+  test "sizes what the worker wrote, from disk", %{dir: dir} do
+    content = String.duplicate("x", 1234)
+
+    calls = [
+      %ToolCall{id: "w1", name: "write", arguments: %{"path" => "lib/a.ex", "content" => content}}
+    ]
+
+    assert {:ok, result} = run(calls, [ExAthena.Tools.Write], dir)
+
+    assert report(result) =~ "lib/a.ex (1234 B)"
+  end
+
   test "a read-only worker gets no provenance line at all", %{dir: dir} do
     File.write!(Path.join(dir, "a.ex"), "defmodule A do\nend\n")
 

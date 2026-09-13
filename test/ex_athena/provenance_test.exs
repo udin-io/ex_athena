@@ -464,6 +464,87 @@ defmodule ExAthena.ProvenanceTest do
     end
   end
 
+  # "wrote an 85 KB file" is checkable; "the file is structurally complete" is
+  # a claim. The size is what turns the footer from a list into evidence, and
+  # it is read off the disk at hand-back rather than taken from the worker's
+  # word.
+  describe "footer/2 — sizes read from disk" do
+    @tag :tmp_dir
+    test "names the size of a file that is there", %{tmp_dir: dir} do
+      File.mkdir_p!(Path.join(dir, "plan"))
+      File.write!(Path.join(dir, "plan/extract.md"), String.duplicate("x", 85_043))
+
+      footer = Provenance.footer([{:write, "plan/extract.md"}], cwd: dir)
+
+      assert footer =~ "plan/extract.md (85043 B)"
+    end
+
+    @tag :tmp_dir
+    test "keeps a path the worker wrote and that is now gone, and says so", %{tmp_dir: dir} do
+      footer = Provenance.footer([{:write, "plan/gone.md"}], cwd: dir)
+
+      assert footer =~ "plan/gone.md (missing)"
+    end
+
+    # A :worktree worker's directory is removed by finalize_isolation/1 before
+    # the parent ever gets here, so this is the NORMAL case for isolated
+    # workers — exactly the ones whose evidence is worth most. Dropping the
+    # entry would read as "the worker wrote nothing", which is the failure this
+    # whole module exists to prevent.
+    test "says a file could not be re-checked when the directory itself is gone" do
+      dir = Path.join(System.tmp_dir!(), "prov_gone_#{System.unique_integer([:positive])}")
+      refute File.dir?(dir)
+
+      footer = Provenance.footer([{:write, "plan/extract.md"}], cwd: dir)
+
+      assert footer =~ "plan/extract.md (written, not re-checked)"
+      refute footer =~ "(missing)"
+    end
+
+    @tag :tmp_dir
+    test "promotes a verified bash write and sizes it", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "out.json"), "{}")
+
+      footer =
+        Provenance.footer([{:command, "gen | tee out.json"}, {:bash_write, "out.json"}], cwd: dir)
+
+      assert footer =~ "files changed: out.json (2 B)"
+    end
+
+    @tag :tmp_dir
+    test "an unverified bash candidate never reaches the footer", %{tmp_dir: dir} do
+      footer =
+        Provenance.footer([{:command, "gen > ghost.json"}, {:bash_write, "ghost.json"}], cwd: dir)
+
+      assert footer =~ "files changed: none"
+    end
+
+    test "annotates nothing when the caller has no cwd to check against" do
+      assert Provenance.footer([{:write, "lib/a.ex"}]) =~ "files changed: lib/a.ex |"
+    end
+
+    @tag :tmp_dir
+    test "scan/1 reads its own annotated footer back", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "a.ex"), "x")
+
+      footer =
+        Provenance.footer([{:write, "a.ex"}, {:failed_command, "mix test"}], cwd: dir)
+
+      assert Provenance.scan(footer) == [{:write, "a.ex"}, {:failed_command, "mix test"}]
+    end
+
+    @tag :tmp_dir
+    test "scan/1 survives an annotation sitting next to the cap suffix", %{tmp_dir: dir} do
+      for i <- 1..40, do: File.write!(Path.join(dir, "f#{i}.ex"), "x")
+      events = for i <- 1..40, do: {:write, "f#{i}.ex"}
+
+      scanned = Provenance.scan(Provenance.footer(events, cwd: dir))
+
+      assert {:write, "f15.ex"} in scanned
+      refute Enum.any?(scanned, fn {_, p} -> p =~ "more" or p =~ " B" end)
+    end
+  end
+
   describe "footer/1 — the test-first advisory" do
     test "flags source edited with no test written first" do
       footer = Provenance.footer([{:write, "lib/a.ex"}, {:command, "npm test"}])

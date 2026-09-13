@@ -411,7 +411,10 @@ defmodule ExAthena.Tools.SpawnAgent do
           # message that is checkable. Session 5906635b743d re-delegated three
           # workers whose files were already on disk because this branch
           # reported the prose and not the facts.
-          digest = sub_result |> conclusions_digest() |> append_provenance(sub_result)
+          digest =
+            sub_result
+            |> conclusions_digest()
+            |> append_provenance(sub_result, worker_cwd(sub_opts, ctx))
 
           # Surface the failure digest on the agent's Overview entry too.
           case Map.get(ctx.assigns || %{}, :agent_event_sink) do
@@ -450,7 +453,7 @@ defmodule ExAthena.Tools.SpawnAgent do
                 Tuning.get(:agents, :result_chars, @default_result_chars),
               sub_id
             )
-            |> append_provenance(sub_result)
+            |> append_provenance(sub_result, worker_cwd(sub_opts, ctx))
 
           emit_event(ctx, {:subagent_result, %{id: sub_id, text: text}})
 
@@ -1055,14 +1058,27 @@ defmodule ExAthena.Tools.SpawnAgent do
   # never did ("the app compiles cleanly" for a run that never built anything).
   # This appends what the worker's own tool calls prove — nothing for a purely
   # read-only worker, so explorers stay noise-free.
-  defp append_provenance(text, %ExAthena.Result{messages: messages}) when is_list(messages) do
-    case messages |> ExAthena.Provenance.events() |> ExAthena.Provenance.footer() do
+  #
+  # `cwd` is the WORKER's directory, not ours: it is what its relative paths
+  # resolve against, and what Provenance stats to turn "wrote a file" into
+  # "wrote 85043 bytes". For a `:worktree` worker that directory is already
+  # gone by the time we get here (`finalize_isolation/1` runs above the result
+  # branches), and the footer says so rather than dropping the path.
+  defp append_provenance(text, sub_result, cwd)
+
+  defp append_provenance(text, %ExAthena.Result{messages: messages}, cwd)
+       when is_list(messages) do
+    case messages |> ExAthena.Provenance.events() |> ExAthena.Provenance.footer(cwd: cwd) do
       nil -> text
       footer -> String.trim_trailing(text) <> "\n\n" <> footer
     end
   end
 
-  defp append_provenance(text, _sub_result), do: text
+  defp append_provenance(text, _sub_result, _cwd), do: text
+
+  # Host overrides and worktree isolation both land in sub_opts[:cwd]; a plain
+  # in-process worker inherits ours.
+  defp worker_cwd(sub_opts, ctx), do: Keyword.get(sub_opts, :cwd) || ctx.cwd
 
   # Worker iteration caps chosen by the model are floored at the default —
   # live testing showed an orchestrator starving its worker with

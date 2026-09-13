@@ -72,6 +72,13 @@ defmodule ExAthena.Provenance do
   # so the candidate is dropped rather than guessed at.
   @safe_target ~r|^[A-Za-z0-9._/+-]+$|
 
+  # `scan/1` has to read a footer this module wrote, so the annotations
+  # `annotate/2` adds are stripped back off. Deliberately an exact list rather
+  # than "any trailing parenthesis": commands carry a ` (failed)` suffix
+  # through the same splitter, and eating that would silently turn a red test
+  # suite into a green one.
+  @annotation_re ~r/\s*\((?:\d+ B|missing|written, not re-checked)\)$/
+
   @type event ::
           {:write, String.t()}
           | {:command, String.t()}
@@ -159,11 +166,39 @@ defmodule ExAthena.Provenance do
 
   The literal `none` matters: it is what makes an unverified change visible
   instead of something a summary can paper over.
-  """
-  @spec footer([event()]) :: String.t() | nil
-  def footer([]), do: nil
 
-  def footer(events) do
+  ## Options
+
+    * `:cwd` — the directory the worker actually ran in. Given one, bash write
+      candidates are verified against it (`verify/2`) and every changed file is
+      `stat`ed so the footer carries a byte count. "Wrote an 85 KB file" is
+      checkable; "the file is structurally complete" is a claim, and the size
+      is what separates them.
+
+  A path that cannot be sized is never dropped, because an absent path reads as
+  "the worker wrote nothing" — the exact failure this module exists to prevent.
+  It is annotated instead, and the two reasons are distinguished because they
+  mean different things: `(missing)` is a file that is not there in a directory
+  that is, and `(written, not re-checked)` is a directory that has itself been
+  removed. The second is the normal case for a `:worktree` worker, whose
+  directory `SpawnAgent.finalize_isolation/1` deletes before the parent reaches
+  this code.
+  """
+  @spec footer([event()], keyword()) :: String.t() | nil
+  def footer(events, opts \\ [])
+
+  def footer([], _opts), do: nil
+
+  def footer(events, opts) do
+    cwd = Keyword.get(opts, :cwd)
+    events = verify(events, cwd)
+
+    do_footer(events, cwd)
+  end
+
+  defp do_footer([], _cwd), do: nil
+
+  defp do_footer(events, cwd) do
     failed = MapSet.new(failed_commands(events))
 
     rendered_commands =
@@ -173,8 +208,10 @@ defmodule ExAthena.Provenance do
           else: truncate(cmd)
       end)
 
+    rendered_files = Enum.map(changed_files(events), &annotate(&1, cwd))
+
     facts =
-      "[worker provenance] files changed: #{render(changed_files(events))}" <>
+      "[worker provenance] files changed: #{render(rendered_files)}" <>
         " | commands run: #{render(rendered_commands)}"
 
     # Advisory, on its own line so it never disturbs `scan/1` of the facts.
@@ -273,7 +310,12 @@ defmodule ExAthena.Provenance do
   defp split_list(rendered) do
     rendered
     |> String.split(", ")
-    |> Enum.map(&(&1 |> String.replace(~r/\s*\(\+\d+ more\)$/, "") |> String.trim()))
+    |> Enum.map(fn item ->
+      item
+      |> String.replace(~r/\s*\(\+\d+ more\)$/, "")
+      |> String.replace(@annotation_re, "")
+      |> String.trim()
+    end)
     |> Enum.reject(&(&1 == ""))
   end
 
@@ -393,6 +435,20 @@ defmodule ExAthena.Provenance do
   end
 
   defp on_disk?(_path, _cwd), do: false
+
+  # A size, or the reason there isn't one. Never nothing: see footer/2.
+  defp annotate(path, nil), do: path
+
+  defp annotate(path, cwd) do
+    case File.stat(Path.expand(path, cwd)) do
+      {:ok, %File.Stat{size: size}} -> "#{path} (#{size} B)"
+      _ -> "#{path} (#{unverifiable_reason(cwd)})"
+    end
+  end
+
+  defp unverifiable_reason(cwd) do
+    if File.dir?(cwd), do: "missing", else: "written, not re-checked"
+  end
 
   defp render([]), do: "none"
 
