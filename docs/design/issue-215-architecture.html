@@ -140,15 +140,15 @@ for a <em>different</em> gap the issue does not name — see section 5, question
 flowchart TB
   subgraph SETUP["parent loop setup · lib/ex_athena/loop.ex"]
     ITU["inherit_tool_ui_forwarder/2 · loop.ex:1099<br/>puts an on_event into spawn_agent_opts<br/>that keeps tool_ui and DROPS every other event"]
-    WC["wire_coordinator/2 · loop.ex:960<br/>installs assigns.agent_event_sink<br/>only when a Coordinator was passed"]
+    WC["wire_coordinator/2 · loop.ex:944<br/>installs assigns.agent_event_sink<br/>only when a Coordinator was passed"]
   end
 
   subgraph SPAWN["Tools.SpawnAgent.do_execute/5 · spawn_agent.ex:272"]
     AE["attribute_events/6 · spawn_agent.ex:843<br/>WITH a sink: REPLACES on_event with sink.(sub_id, event)<br/>WITHOUT one: leaves the tool_ui forwarder in place"]
     JC["((NEW)) Agents.Journal.compose/3<br/>wraps whatever on_event ended up being:<br/>write the line first, then call the inner callback"]
     AW["await_worker/3 · spawn_agent.ex:504<br/>Task.shutdown brutal_kill when the deadline passes"]
-    SC["Sidechain.write/1 · spawn_agent.ex:368<br/>ONE line, by the PARENT, after the worker is gone"]
-    FIN["finalize_isolation/1 · spawn_agent.ex:381<br/>git worktree remove --force"]
+    SC["Sidechain.write/1 · spawn_agent.ex:377<br/>ONE line, by the PARENT, after the worker is gone"]
+    FIN["finalize_isolation/1 · spawn_agent.ex:390<br/>git worktree remove --force"]
     BOK["success branch · :447<br/>truncate_result/3 then append_provenance/2"]
     BFAIL["unfinished branch · :408<br/>conclusions_digest/1 · NO provenance today"]
     BTO["timeout branch · :533 timed_out/4<br/>progress_digest/2 · todos and conclusions only"]
@@ -303,4 +303,156 @@ worktree worker's paths therefore finds nothing. Either the sizing moves ahead o
 <code>finalize_isolation/1</code>, or the footer falls back to the size the journal recorded at write time and
 labels it as such: <code>85,043 B (journalled; worktree removed)</code>. That is a second argument for the
 journal the issue does not make.</p>
+</div>
+
+<h2>4. What the issue gets wrong about the code</h2>
+
+<p>Every row was checked against <code>fe2f5fb</code> in a fresh worktree. The issue was written from a
+post-mortem, and a post-mortem describes the failure, not the machinery.</p>
+
+<div class="panel">
+<table>
+<thead>
+<tr><th style="width:30%">The issue says</th><th style="width:38%">The code does</th><th>So</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td>"subscribe a small <code>Agents.Journal</code> to the loop's existing <code>on_event</code> stream — the
+      same stream the Coordinator already consumes"</td>
+  <td>There is no stream and no subscription. <code>on_event</code> is one 1-arity function.
+      <code>attribute_events/6</code> (<code>spawn_agent.ex:843</code>) does
+      <code>Keyword.put(:on_event, tagged_on_event)</code>, discarding whatever was there.</td>
+  <td>Compose in <code>do_execute/5</code>, after <code>attribute_events/6</code>. Only that scope knows the
+      <code>sub_id</code>.</td>
+</tr>
+<tr>
+  <td><em>(my brief to the agent)</em> "the composition point is
+      <code>Loop.inherit_tool_ui_forwarder/2</code>"</td>
+  <td>That function runs once per <em>parent</em> loop setup, before any worker exists, so it cannot know a
+      <code>subagent_id</code>. Its output is then thrown away on every coordinator run.</td>
+  <td>Also wrong. It is only the <em>default</em> the journal composes over when no Coordinator is attached.</td>
+</tr>
+<tr>
+  <td>Journal "<code>:thinking</code>" alongside <code>:iteration</code> and <code>:tool_call</code></td>
+  <td><code>Events.provider_stream_callback/2</code> emits <code>{:thinking, delta}</code> per streamed
+      reasoning delta, exactly like <code>{:content, delta}</code>. The Coordinator survives this only because
+      it <code>cast</code>s and coalesces consecutive text into one entry.</td>
+  <td>One filesystem write per token. <strong>Exclude <code>:content</code> and <code>:thinking</code>
+      entirely.</strong> Conclusions are already durable in the Result and the Coordinator.</td>
+</tr>
+<tr>
+  <td>"Retention: lives and is pruned with its session."</td>
+  <td>Nothing prunes <code>.exathena/sessions/</code>. The only sweeper in the tree is
+      <code>Checkpoint.Sweeper</code>, which GCs <code>.exathena/file-history/SESSION_ID</code> after 30 days
+      at boot. Sidechain JSONL already grows without bound.</td>
+  <td>There is no pruning to inherit. See question 5.</td>
+</tr>
+<tr>
+  <td>"A brutal kill … returns nothing at all", implying total loss</td>
+  <td>True of the <code>%Result{}</code>. But <code>Sidechain.write/1</code> still runs (with
+      <code>result: nil</code>), and <code>timed_out/4</code> already rebuilds a digest from the Coordinator's
+      surviving <code>%AgentInfo{}</code>.</td>
+  <td>The hole is narrower and sharper than stated — and in a place the issue never looks. Next row.</td>
+</tr>
+<tr>
+  <td>The journal is needed because a killed worker leaves nothing</td>
+  <td><code>Coordinator.start_for/2</code> has <strong>exactly one caller</strong>:
+      <code>web/live/chat_live.ex:3039</code>. Every non-web run — <code>mix athena.chat</code>, headless
+      <code>Loop.run/2</code>, tests — has no Coordinator, so <code>progress_digest/2</code> returns
+      <code>nil</code> and the salvage path is dead code there.</td>
+  <td>This, not the web case, is the journal's real job. Say so in the ticket.</td>
+</tr>
+<tr>
+  <td>The motivating incident needs the journal</td>
+  <td><code>:error_max_input_tokens</code> is an ordinary loop termination (<code>loop.ex:177</code>) returning
+      a full <code>%Result{}</code> with <code>messages</code>. <code>Provenance.events/2</code> reads it
+      today.</td>
+  <td>Layer 1a alone fixes the named post-mortem. The journal is justified by other cases or not at all.</td>
+</tr>
+<tr>
+  <td><em>(not mentioned at all)</em></td>
+  <td>The crash branch (<code>spawn_agent.ex:489</code>) returns a bare
+      <code>{:error, {:sub_agent_crashed, reason}}</code> — no digest, no provenance, and not
+      <code>:uncounted</code>, so a crashed worker still bumps the mistake counter PR 218 just taught to
+      ignore budget exhaustion. Nothing in <code>test/</code> mentions either crash atom.</td>
+  <td>A real bug adjacent to this issue. Separate ticket — see section 7.</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<h2>5. The five design questions</h2>
+
+<h3>Q1 — does the journal need to exist at all?</h3>
+
+<p>Yes, but narrowly, and only after layer 1. There are four distinct ways a worker's evidence is lost today and
+the journal is the right answer to exactly one of them.</p>
+
+<div class="panel">
+<table>
+<thead><tr><th style="width:34%">Loss mode</th><th style="width:33%">What survives today</th><th>Cheapest fix</th></tr></thead>
+<tbody>
+<tr><td>Worker returns a <code>%Result{}</code> with an error <code>finish_reason</code> — the reported
+    incident</td>
+    <td>Everything: <code>messages</code>, <code>conclusions</code>, <code>todos</code>.</td>
+    <td><span class="tag t-good">layer 1a</span> one line</td></tr>
+<tr><td>Deadline kill, Coordinator attached (web UI)</td>
+    <td><code>%AgentInfo{}</code> in memory: todos, conclusions, and a 30-row
+        <code>transcript_tail</code> whose <code>tool_call</code> rows name the files.</td>
+    <td><span class="tag t-good">layer 1c</span> read the rows <code>progress_digest/2</code> throws away</td></tr>
+<tr><td>Deadline kill or crash, <strong>no Coordinator</strong> (CLI, headless, tests)</td>
+    <td><strong>Nothing.</strong> A <code>Sidechain</code> line reading <code>result: nil</code>.</td>
+    <td><span class="tag t-acc">layer 2</span> — the journal, and nothing else reaches this case</td></tr>
+<tr><td>The parent itself dies — its linked <code>Task.Supervisor</code> collapses the whole subtree</td>
+    <td>Nothing. <code>Sidechain.write/1</code> never runs; the Coordinator marks agents failed and retires
+        after 5 minutes.</td>
+    <td><span class="tag t-acc">layer 2</span> — and here the reader is a human, not an orchestrator</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note ok">
+<p>The fourth row is the honest case for building it. Every fact in this document was recovered by reading
+source, because session <code>5906635b743d</code> left no machine-readable record of what its seventeen workers
+touched. A journal's first customer is the post-mortem; the orchestrator is its second. That is still worth
+building — but it argues for a small, boring, durable file, not for a rich event log.</p>
+</div>
+
+<h3>Q2 — write-path safety: what is actually guaranteed</h3>
+
+<p>The issue's conclusion is right and its reason is not. Three separate things get conflated as "flushing".</p>
+
+<ul>
+  <li><strong><code>File.write(path, line, [:append])</code> opens, writes and closes per call.</strong> When it
+      returns, the bytes are in the OS page cache and visible to every other process on the machine. Losing them
+      needs a machine crash or power loss, not a process kill and not a BEAM exit. There is no
+      <code>fsync</code> — state that plainly rather than implying durability the code does not buy.</li>
+  <li><strong><code>:delayed_write</code> does not simply lose data on kill.</strong> The buffer lives behind
+      the file handle and is flushed on close, at 64 KB, or after 2 seconds; killing the owner closes the port,
+      which attempts that flush. The real defect is different and worse for this use: <em>a reader cannot see
+      the buffer</em>. The parent reads the journal microseconds after
+      <code>Task.shutdown(task, :brutal_kill)</code> returns, and any write error at close is discarded because
+      nobody holds the handle to observe it. So: no <code>:delayed_write</code> — but for visibility and
+      ordering, not for flushing.</li>
+  <li><strong>A torn final line is possible either way.</strong> <code>:kill</code> lands between reductions, so
+      a BIF already inside <code>write(2)</code> completes; but a process killed between formatting a line and
+      writing it loses that line outright. NDJSON is the right format precisely because it degrades one line at
+      a time. <strong>The reader must <code>Jason.decode</code> line by line and drop an undecodable last line
+      without raising.</strong> That is a testable requirement, not a caveat.</li>
+</ul>
+
+<p>Cost of writing this way: two extra syscalls per line, on the worker's own scheduler, inside its
+<code>on_event</code> callback — which is called <em>synchronously, in the worker process</em>
+(<code>Events.emit/2</code>). At roughly four journalled events per iteration over a 25-iteration budget that is
+about 100 writes per worker. Negligible, <em>provided</em> <code>:content</code> and <code>:thinking</code> are
+excluded. And because the callback runs in the worker, the writer must be
+<code>try/rescue</code>-guarded — a filesystem boundary, the same exemption <code>Sidechain.write/1</code>
+already takes.</p>
+
+<div class="note">
+<p><strong>Rejected: a separate journal GenServer fed by <code>cast</code>.</strong> It would take the
+filesystem off the worker's scheduler, and it survives the worker's death well enough to drain its mailbox. But
+it reintroduces the exact race the journal exists to remove in the case that matters most: when the
+<em>parent</em> dies, the journal process dies with it and every unflushed cast is a line that was never
+written. It buys back on the order of 100 microseconds per worker. Inline and synchronous wins.</p>
 </div>
