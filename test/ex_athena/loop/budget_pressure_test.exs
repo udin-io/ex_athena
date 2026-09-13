@@ -126,5 +126,45 @@ defmodule ExAthena.Loop.BudgetPressureTest do
       assert note =~ "reduce scope"
       refute note =~ " of 0 "
     end
+
+    # Session 5906635b743d: three workers read the nudge, each had its file
+    # already written, and each chose ONE more verification pass. That pass is
+    # what killed them — and because they died mid-turn they never wrote a
+    # report, so the orchestrator learned nothing and re-delegated work that was
+    # already done.
+    #
+    #   NzKBmpsD — "The file has been written: 388 lines, 38 guide sections.
+    #               Let's do a quick sanity check on the file, and then report."
+    #   K9xSEdyy — "File is structurally complete. One final spot-check of a few
+    #               sections, then I'll report."
+    #
+    # An unverified artifact the orchestrator knows about beats a verified one
+    # nobody hears about.
+    test "a worker whose deliverable is DONE but unverified is told to hand it back now" do
+      note = BudgetPressure.note(state(iterations: 45), 0)
+
+      assert note =~ ~r/unverified/i
+      # Hand back in THIS turn — not after one more pass.
+      assert note =~ ~r/now|this turn/i
+      # And say what was skipped, so verification can be re-delegated cheaply.
+      assert note =~ ~r/checks? (you did not|not) run/i
+    end
+
+    # Dropping the verify directive would trade a visible failure for a silent
+    # one. The nudge ranks verification last under pressure; it never says it is
+    # optional in general.
+    test "verifying is still the worker's job" do
+      note = BudgetPressure.note(state(iterations: 45), 0)
+
+      assert note =~ ~r/verif/i
+      refute note =~ ~r/skip verification|do not verify|no need to verify/i
+    end
+
+    test "the not-yet-produced case keeps its original instruction" do
+      note = BudgetPressure.note(state(iterations: 45), 0)
+
+      assert note =~ "reduce scope"
+      assert note =~ "which todos you did NOT complete"
+    end
   end
 end
