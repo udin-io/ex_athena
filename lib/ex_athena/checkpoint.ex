@@ -12,8 +12,8 @@ defmodule ExAthena.Checkpoint do
   session log) to the state at a given event UUID.
 
   Adapted from Claude Code's `~/.claude/file-history/<session_id>/`
-  layout. 30-day TTL is enforced by
-  `ExAthena.Checkpoint.Sweeper`.
+  layout. The 30-day TTL is enforced at boot by
+  `ExAthena.Storage.Sweeper`, and is settable in the settings modal.
 
   ## Modes
 

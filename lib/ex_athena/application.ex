@@ -45,8 +45,8 @@ defmodule ExAthena.Application do
       end
 
     children =
-      if Application.get_env(:ex_athena, :enable_checkpoint_sweeper, true) do
-        children ++ [ExAthena.Checkpoint.Sweeper]
+      if Application.get_env(:ex_athena, :enable_storage_sweeper, true) do
+        children ++ [ExAthena.Storage.Sweeper]
       else
         children
       end

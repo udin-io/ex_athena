@@ -174,6 +174,23 @@ defmodule ExAthena.Storage.SweeperTest do
     end
   end
 
+  describe "as a supervised child" do
+    # The boot task must run once and stay dead. Under :permanent the
+    # supervisor would restart a task that had merely finished its job, and
+    # re-sweep the disk on a loop until it gave up and took the app down.
+    @tag :tmp_dir
+    test "sweeps once and is not restarted", %{tmp_dir: tmp} do
+      stale = session_tree(Path.join(tmp, ".exathena/sessions"), "stale", 45)
+
+      pid = start_supervised!({Sweeper, cwd: tmp})
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _reason}, 2_000
+
+      refute File.exists?(stale)
+      refute Process.alive?(pid)
+    end
+  end
+
   # A session tree as the writers build it: worker transcripts under
   # `sidechains/`, worker journals under `journal/`. Every entry is aged
   # `days` old, deepest first so no later write refreshes a parent.

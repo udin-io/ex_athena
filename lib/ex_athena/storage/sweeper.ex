@@ -45,11 +45,17 @@ defmodule ExAthena.Storage.Sweeper do
   @day_seconds 24 * 60 * 60
   @default_retention_days 30
 
-  @doc false
-  def child_spec(_arg) do
+  @doc """
+  Supervisor child spec for the boot sweep.
+
+  `:transient` because this is a one-shot: it does its work, exits `:normal`,
+  and must not be restarted for having finished. `opts` are passed to `run/1`.
+  """
+  @spec child_spec(keyword()) :: Supervisor.child_spec()
+  def child_spec(opts) when is_list(opts) do
     %{
       id: __MODULE__,
-      start: {Task, :start_link, [__MODULE__, :run, [[]]]},
+      start: {Task, :start_link, [__MODULE__, :run, [opts]]},
       restart: :transient,
       type: :worker
     }

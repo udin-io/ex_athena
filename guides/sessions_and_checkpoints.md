@@ -161,12 +161,20 @@ Optional:
 
 ## TTL sweeper
 
-`ExAthena.Checkpoint.Sweeper` runs once at application boot and
-removes file-history directories older than 30 days. Disable via
-`:enable_checkpoint_sweeper`:
+`ExAthena.Storage.Sweeper` runs once at application boot and removes
+both `.exathena/file-history` and `.exathena/sessions` entries that
+nothing has touched for 30 days. Retention is per directory and settable
+in the web settings modal ("On-disk history"); `0` keeps that directory
+forever.
+
+An entry counts as old only when nothing anywhere inside it has changed
+within the window, and `<id>.jsonl` is kept or removed together with
+`<id>/`, so resuming a session protects its worker transcripts too.
+
+Disable the sweep entirely via `:enable_storage_sweeper`:
 
 ```elixir
-config :ex_athena, enable_checkpoint_sweeper: false
+config :ex_athena, enable_storage_sweeper: false
 ```
 
 Same pattern as the `WorktreeSweeper` (see
