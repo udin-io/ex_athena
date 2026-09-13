@@ -166,6 +166,7 @@ defmodule ExAthena.Tools.SpawnAgentJournalTest do
     assert Enum.any?(records, &match?(%{"ev" => "done", "finish_reason" => "stop"}, &1))
   end
 
+  @tag :capture_log
   test "a crashed worker still reports the file it wrote, and its size", %{
     dir: dir,
     session: session
@@ -185,6 +186,7 @@ defmodule ExAthena.Tools.SpawnAgentJournalTest do
     assert message =~ "85043 B"
   end
 
+  @tag :capture_log
   test "a crashed worker that produced nothing still says so plainly", %{
     dir: dir,
     session: session
