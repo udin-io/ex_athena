@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Issue 216 — worker failure reporting</title>
+<style>
+  :root{
+    --bg:#f7f7f5; --panel:#fff; --ink:#1c1c1a; --muted:#6b6b66; --line:#d8d8d2;
+    --bad:#8f2f24; --bad-bg:#fbeae7;
+    --good:#1f6b45; --good-bg:#e6f3ec;
+    --accent:#2d4a7c; --accent-bg:#e8eef8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:1180px;margin:0 auto;padding:40px 24px 80px}
+  h1{font-size:30px;line-height:1.25;margin:0 0 14px;letter-spacing:-.01em}
+  .sub{color:var(--muted);max-width:78ch;margin:0 0 8px}
+  h2{font-size:20px;margin:44px 0 12px;padding-top:14px;border-top:1px solid var(--line)}
+  h3{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+     margin:22px 0 8px;font-weight:600}
+  p{margin:0 0 12px;max-width:82ch}
+  ul,ol{margin:0 0 12px;padding-left:20px;max-width:82ch}
+  li{margin:0 0 6px}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;
+       background:#efefea;border-radius:3px;padding:1px 4px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:20px;margin:0 0 18px}
+  .panel h3:first-child{margin-top:0}
+  .scroll{overflow-x:auto}
+  .note{border-left:3px solid var(--accent);background:var(--accent-bg);padding:12px 16px;
+        border-radius:0 6px 6px 0;margin:0 0 14px}
+  .note.warn{border-left-color:var(--bad);background:var(--bad-bg)}
+  .note.ok{border-left-color:var(--good);background:var(--good-bg)}
+  .note p:last-child{margin-bottom:0}
+  .tag{display:inline-block;font-size:11px;letter-spacing:.04em;text-transform:uppercase;
+       font-weight:600;padding:2px 7px;border-radius:10px;vertical-align:2px}
+  .t-bad{background:var(--bad-bg);color:var(--bad)}
+  .t-good{background:var(--good-bg);color:var(--good)}
+  .t-acc{background:var(--accent-bg);color:var(--accent)}
+  .legend{display:flex;flex-wrap:wrap;gap:18px;margin:10px 0 4px;font-size:13px;color:var(--muted)}
+  .legend span{display:flex;align-items:center;gap:7px}
+  .sw{width:13px;height:13px;border-radius:3px;border:1px solid var(--line);display:inline-block}
+  table{border-collapse:collapse;width:100%;font-size:13.5px}
+  th{text-align:left;text-transform:uppercase;letter-spacing:.06em;font-size:11px;color:var(--muted);
+     font-weight:600;padding:0 12px 8px 0;border-bottom:1px solid var(--line);vertical-align:bottom}
+  td{padding:9px 12px 9px 0;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  pre{background:#1c1c1a;color:#e8e8e2;padding:16px;border-radius:8px;overflow-x:auto;
+      font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.55}
+  pre code{background:none;color:inherit;padding:0;font-size:inherit}
+  .mermaid{background:var(--panel);text-align:center}
+  .mermaid svg{max-width:100%;height:auto;display:block;margin:0 auto}
+  .kv{font-size:13.5px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Issue 216 — a worker finishes, the orchestrator dies anyway</h1>
+
+<p class="sub">Design pass for issue 216 in <code>udin-io/ex_athena</code>, written before any code.
+Session <code>5906635b743d</code> ran 3h36m over 17 workers and 9.1M input tokens, then terminated on
+<code>error_consecutive_mistakes</code> with all four deliverables complete on disk. The issue carries four
+fixes across <code>SpawnAgent</code>, <code>ReAct</code>, <code>Provenance</code> and <code>BudgetPressure</code>;
+that trips the architecture gate, so this page shows what already exists, what each fix adds, and where the issue
+describes the code wrongly. It decides the mechanism for item 1 and the scope of item 2 before implementation starts.
+Branches off <code>fix/worker-token-budget</code> (PR 214), which owns <code>BudgetPressure</code>.</p>
+
+<h2>1. What exists today, and what this issue adds</h2>
+
+<div class="panel">
+<h3>Module diagram — a worker result from <code>Loop.run</code> to the parent's guard</h3>
+<div class="scroll">
+<pre class="mermaid">
+flowchart TB
+  subgraph WORKER["worker run — its own Loop"]
+    direction TB
+    WL["ExAthena.Loop.run/2"]
+    WR["ExAthena.Result<br/>text · finish_reason · conclusions · todos · messages"]
+    WL -- "terminates on a Terminations subtype" --> WR
+  end
+
+  subgraph PARENT["parent run — orchestrate mode, max_iterations :infinity"]
+    direction TB
+    SA["Tools.SpawnAgent.execute/2"]
+    SC["Agents.Sidechain.write/1 — line 368<br/>writes FULL untruncated text to disk"]
+    DISK[("cwd/.exathena/sessions/PARENT_ID/<br/>sidechains/SUBAGENT_ID.jsonl")]
+    FAIL["failure branch — line 390<br/>finish_reason not in stop, submitted"]
+    DIG["conclusions_digest/1 → digest/3<br/>truncates worker text to 300 chars"]
+    OKB["success branch — line 418<br/>truncate_result/2 then append_provenance/2"]
+    PROV["ExAthena.Provenance.events/footer<br/>write_tools: write, edit only"]
+    DE["Modes.ReAct.do_execute/2"]
+    BM["bump_mistake/1<br/>consecutive_mistakes + 1"]
+    ATS["any_tool_success?/1<br/>resets counter when is_error is not true"]
+    GUARD["Loop.loop/1 guard — line 167<br/>consecutive_mistakes >= max → error_consecutive_mistakes"]
+
+    SA --> SC
+    SC -- "full text, best-effort" --> DISK
+    SA --> FAIL
+    SA --> OKB
+    FAIL --> DIG
+    OKB --> PROV
+    DIG -- "error: worker did not finish REASON" --> DE
+    PROV -- "ok: report plus provenance footer" --> DE
+    DE -- "on the error tuple" --> BM
+    DE -- "tool_result message" --> ATS
+    BM --> GUARD
+    ATS --> GUARD
+  end
+
+  N1["((NEW)) uncounted-failure return<br/>error, :uncounted, text — skips bump_mistake"]
+  N2["((NEW)) truncation notice names the<br/>sidechain path and the read tool"]
+  N3["((NEW)) Tools.ReadWorkerReport<br/>subagent_id, from:, bytes:"]
+  N4["((NEW)) write-brief rail in SpawnAgent.execute/2<br/>refuse before Quota.claim"]
+  N5["((NEW)) Provenance sees bash heredoc and<br/>redirection write targets"]
+  N6["((NEW)) append_provenance/2 on the FAILURE path too"]
+  N7["((NEW)) BudgetPressure.build_note/1<br/>adds the produced-but-unverified case"]
+
+  N1 -.-> DE
+  N2 -.-> OKB
+  N3 -.-> DISK
+  N4 -.-> SA
+  N5 -.-> PROV
+  N6 -.-> FAIL
+  N7 -.-> WL
+
+  classDef new fill:#e6f3ec,stroke:#1f6b45,color:#1f6b45;
+  classDef bad fill:#fbeae7,stroke:#8f2f24,color:#8f2f24;
+  classDef disk fill:#e8eef8,stroke:#2d4a7c,color:#2d4a7c;
+  class N1,N2,N3,N4,N5,N6,N7 new;
+  class BM,GUARD,DIG bad;
+  class DISK,SC disk;
+</pre>
+</div>
+<div class="legend">
+  <span><i class="sw" style="background:#e6f3ec;border-color:#1f6b45"></i> added by this issue</span>
+  <span><i class="sw" style="background:#fbeae7;border-color:#8f2f24"></i> where the run dies today</span>
+  <span><i class="sw" style="background:#e8eef8;border-color:#2d4a7c"></i> already on disk, already written</span>
+  <span><i class="sw" style="background:#fff"></i> exists today, unchanged</span>
+</div>
+</div>
+
+<div class="note ok">
+<p><strong>Finding that shrinks item 2 by most of its weight.</strong>
+<code>Agents.Sidechain.write/1</code> already runs at <code>spawn_agent.ex:368</code>, on BOTH branches,
+BEFORE any truncation, and it persists the worker's full untruncated <code>Result.text</code> plus
+<code>finish_reason</code>, <code>conclusions</code> and <code>todos</code>. The issue says
+<em>"the full text exists at the moment of truncation. Today it is discarded."</em> It is not discarded.
+Item 2 does not need a new write path — it needs a notice that names the existing path, a read tool, and one
+bug fix (below).</p>
+</div>
+
+</div>
+</body>
+</html>
