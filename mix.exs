@@ -219,10 +219,8 @@ defmodule ExAthena.MixProject do
           ExAthena.Sessions.Stores.InMemory,
           ExAthena.Sessions.Stores.Jsonl
         ],
-        Checkpointing: [
-          ExAthena.Checkpoint,
-          ExAthena.Checkpoint.Sweeper
-        ],
+        Checkpointing: [ExAthena.Checkpoint],
+        Storage: [ExAthena.Storage.Sweeper],
         Streaming: [ExAthena.Streaming, ExAthena.Streaming.Event],
         Telemetry: [ExAthena.Telemetry],
         Errors: [ExAthena.Error],

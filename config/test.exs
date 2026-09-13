@@ -6,7 +6,7 @@ config :ex_athena, enable_lsp: false
 
 # Disable sweepers that are not needed during tests.
 config :ex_athena, enable_worktree_sweeper: false
-config :ex_athena, enable_checkpoint_sweeper: false
+config :ex_athena, enable_storage_sweeper: false
 
 # Disable ProviderRegistry at the application level so each test can start
 # its own isolated instance via start_supervised!/1.

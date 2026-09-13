@@ -181,7 +181,7 @@ sequenceDiagram
   S-->>U: messages_deleted
 ```
 
-Source: [`Session.checkpoint/1`](../lib/ex_athena/session.ex), [`Session.rewind/3`](../lib/ex_athena/session.ex). The [`Checkpoint.Sweeper`](../lib/ex_athena/checkpoint/sweeper.ex) prunes old snapshots in the background.
+Source: [`Session.checkpoint/1`](../lib/ex_athena/session.ex), [`Session.rewind/3`](../lib/ex_athena/session.ex). The [`Storage.Sweeper`](../lib/ex_athena/storage/sweeper.ex) prunes old snapshots — and old session transcripts — at boot.
 
 > Snapshots beyond the rewind anchor are deliberately kept as potential redo targets; no separate redo API exists in v1.
 

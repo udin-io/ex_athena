@@ -624,6 +624,37 @@ defmodule ExAthena.Web.Settings do
           help: "Head keeps 75%, tail 25%. An uncapped `find .` once cost 204k input tokens."
         }
       ]
+    },
+    %{
+      ns: :storage,
+      title: "On-disk history",
+      blurb:
+        "How long the checkout keeps what a run leaves behind. Swept once at startup, " <>
+          "never mid-run.",
+      fields: [
+        %{
+          key: :session_retention_days,
+          label: "Session history kept (days)",
+          default: 30,
+          type: :integer,
+          min: 0,
+          help:
+            "Age at which `.exathena/sessions` entries are deleted — session transcripts, " <>
+              "worker reports, worker journals. Measured from the newest file in the session, " <>
+              "so resuming one resets its clock. 0 keeps them forever."
+        },
+        %{
+          key: :file_history_retention_days,
+          label: "File history kept (days)",
+          default: 30,
+          type: :integer,
+          min: 0,
+          help:
+            "Age at which `.exathena/file-history` snapshots are deleted. These are what " <>
+              "a rewind restores, so a session older than this can no longer be rewound. " <>
+              "0 keeps them forever."
+        }
+      ]
     }
   ]
 
