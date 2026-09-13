@@ -353,6 +353,164 @@ default 24), <code>Agents.Deadline</code> (the run deadline, refused at <code>sp
 orchestrate's own repeat-objective watchdog (<code>orchestrate.ex:588</code>). That is five rails; the counter was
 never the load-bearing one for this shape.</p>
 
+
+<h2>4. Item 2 — the report is already on disk; only the address is missing</h2>
+
+<h3>Where it is written today</h3>
+<p><code>Agents.Sidechain.write/1</code>, called unconditionally at <code>spawn_agent.ex:368</code> before either
+result branch, writes one JSON line to:</p>
+<pre><code>cwd/.exathena/sessions/PARENT_SESSION_ID/sidechains/SUBAGENT_ID.jsonl</code></pre>
+<p>The line carries <code>prompt</code>, a serialised <code>opts</code>, and for a successful loop return
+<code>text</code> (untruncated), <code>finish_reason</code>, <code>iterations</code>,
+<code>tool_calls_made</code>, <code>duration_ms</code>, <code>cost_usd</code>, <code>conclusions</code> and
+<code>todos</code>. Worker <code>Ut1hUSMB</code>'s 21,697-character extraction was written there in full, at the same
+moment the parent was being handed 2,000 characters of it.</p>
+
+<div class="note warn">
+<p><strong>Prerequisite bug — the sidechain of a worktree-isolated worker is deleted moments after it is written.</strong>
+Line 368 passes <code>cwd: Keyword.get(sub_opts, :cwd, ctx.cwd)</code>, which for an agent declaring
+<code>isolation: :worktree</code> is the ephemeral worktree under
+<code>~/.cache/ex_athena/worktrees/…</code>. Line 381 then calls <code>finalize_isolation/1</code>, which runs
+<code>git worktree remove --force</code> on that same directory. Write, then delete, eleven lines apart. Fix is one
+argument: write the sidechain under the PARENT's <code>ctx.cwd</code>. This must land before the retrieval tool, or
+the tool will 404 for exactly the isolated workers most worth reading.</p>
+</div>
+
+<h3>What item 2 actually needs</h3>
+<ol>
+  <li><strong>Fix the cwd</strong> above. One line.</li>
+  <li><strong>Name the address in the truncation notice.</strong> <code>truncate_result/2</code>
+      (<code>spawn_agent.ex:971</code>) currently ends with <em>"Ask for the specific part you still need; do not
+      re-request the whole thing"</em> — an instruction with no tool behind it. It becomes a concrete call:
+      <code>read_worker_report("SUBAGENT_ID", from: 2000)</code>. Note the signature change:
+      <code>truncate_result/2</code> is called from three places and only one of them knows a
+      <code>subagent_id</code>, so the notice needs the id threaded in (or a <code>/3</code> arity with the current
+      behaviour as the default).</li>
+  <li><strong>Add the retrieval tool.</strong> <code>read_worker_report(subagent_id, from:, bytes:)</code>,
+      orchestrator-scoped the way <code>spawn_agent</code> is, resolving
+      <code>ctx.cwd/.exathena/sessions/ctx.session_id/sidechains/SUBAGENT_ID.jsonl</code>, decoding the line, and
+      returning a byte slice of <code>result.text</code> with its own cap. The id must be validated against the
+      session's own spawns, not interpolated into a path — it comes from the model.</li>
+  <li><strong>Call <code>append_provenance/2</code> on the failure path too</strong> (it is called only at line 440
+      today, inside the success branch — the issue is right about this one). Then the failure message names the
+      files the worker's tool calls prove it wrote.</li>
+</ol>
+
+<div class="note">
+<p><strong>Overlap with issue 215.</strong> 215's <code>read_worker_log(subagent_id, filter)</code> reads a per-worker
+NDJSON journal at <code>run_dir/workers/SUBAGENT_ID.ndjson</code> — a different file, a different writer, the same
+argument and the same resolution logic. Build <strong>one</strong> tool: ship it here as
+<code>read_worker_report</code> over the sidechain, and have 215 add its <code>filter:</code>/<code>tail:</code>
+options and the journal source to that tool rather than introducing a second one. Whoever implements 215 inherits the
+id-validation and path-resolution code instead of writing it twice. If 215 lands first, this item is its
+<code>report</code> filter and should not be built at all.</p>
+</div>
+
+<h2>5. Item 3 — refuse a write brief handed to a read-only agent</h2>
+
+<h3>Where the check goes</h3>
+<p>The effective toolset is computed by <code>resolve_tools/3</code> (<code>spawn_agent.ex:1024</code>), called at
+line 308 — which is <em>after</em> <code>Quota.claim/1</code> has already taken a worker off the run's allowance of 24.
+<code>Quota</code> has no release. A refusal placed at the natural site therefore burns a slot for a spawn that never
+ran, and the module's own doc says <em>"a refusal costs nothing"</em>. The check must run in
+<code>execute/2</code>'s <code>cond</code> (alongside the depth and completed-todo rails, lines 189-212), which means
+resolving the agent definition's declared <code>tools</code> there — <code>resolve_agent/2</code> is cheap and has no
+side effects, so this is a reorder, not a duplication.</p>
+
+<h3>Proposed detection rule</h3>
+<div class="panel">
+<p>Refuse when <strong>both</strong> hold:</p>
+<ol>
+  <li><strong>Capability.</strong> The resolved toolset (after <code>resolve_tools/3</code>) contains none of
+      <code>write</code>, <code>edit</code>, <code>bash</code>, and no tool the host registered as mutating. Derived
+      from the toolset, never from the agent's name — a custom read-only agent gets the same rail, and an
+      <code>explore</code> a user has granted <code>write</code> to does not.</li>
+  <li><strong>Intent.</strong> The brief text — <code>prompt</code> plus <code>objective</code> plus
+      <code>expected_output</code>, the three fields <code>@prompt_sources</code> already reads — matches an
+      explicit instruction to produce a file. Anchored on an imperative verb immediately governing a file object,
+      case-insensitive:
+      <code>(write|save|create|output|put|append) … (the|your|a) (result|output|report|findings|file|it) … to …</code>
+      plus a bare path-shaped token, and the literal forms <code>write the result to a file</code>,
+      <code>write to PATH</code>, <code>create the file</code>, <code>save it to</code>.</li>
+</ol>
+<p>The refusal names the agent's actual tools and the alternative, in the grammar the depth and quota rails already
+use:</p>
+<pre><code>not started: agent "explore" has tools read, glob, grep, lsp, web_fetch,
+web_search, usage_rules — none of which can write a file, and your brief asks
+for one ("WRITE THE RESULT TO A FILE"). Delegate this to "implementer", or
+drop the file requirement and ask explore to report in its reply.</code></pre>
+</div>
+
+<h3>False-positive cost, stated plainly</h3>
+<ul>
+  <li>A refused spawn costs the orchestrator <strong>one turn</strong> and nothing else: no quota slot (given the
+      reorder above), no worker time, no tokens beyond the error line. The three existing refusal rails already
+      establish that price.</li>
+  <li>The realistic false positive is a brief that says <em>"read the config file and write up what you find"</em> —
+      <code>write up</code> is prose, not a file instruction. The anchored form above does not match it, because
+      <code>up</code> is not a file object and no path token is present. Verbs like <em>document</em>,
+      <em>describe</em>, <em>note</em>, <em>list</em> are not in the verb set.</li>
+  <li>The route around a false positive is one word in the brief, and the error names it. That is cheaper than the
+      measured cost of the false negative: 24.6 minutes and 540K input tokens, plus two probe workers, one of which
+      died on its own mistake counter.</li>
+</ul>
+
+<div class="note">
+<p><strong>This is the item I would consider splitting out.</strong> Items 1, 2 and 4 are loop accounting and reporting
+and share two files. Item 3 is a natural-language classifier on model input — a different kind of risk, a different
+kind of test, and the only one of the four whose correctness is a judgement call rather than a behaviour. It also has
+a cheaper 80 percent available first: <code>explore</code>'s system prompt does not currently say
+<em>"you cannot write files; if the brief asks you to write one, say so and stop"</em> — only the orchestrator's
+protocol says it, to the wrong party. Adding that line to <code>priv/agents/explore.md</code> is a one-line change
+that would have caught this session, and the code rail can follow on its own ticket with the regex it deserves.</p>
+</div>
+
+<h2>6. Item 4 — the BudgetPressure note</h2>
+
+<p><code>Loop.BudgetPressure.build_note/1</code> on branch <code>fix/worker-token-budget</code>. The directive to
+verify is NOT in this note and is NOT being touched — the note is about what to do when the budget cannot pay for
+everything left. Today it names one state; it must name two.</p>
+
+<div class="panel">
+<h3>Today</h3>
+<pre><code>[runtime] You are N turns in and near the end of your budget. Todos: D of T
+completed. If you cannot finish everything, reduce scope NOW: stop gathering,
+complete what you can, and produce your report. State explicitly which todos
+you did NOT complete and what remains for each, so the orchestrator can
+re-delegate them as separate steps. An honest partial report is worth far more
+than being cut off mid-exploration.</code></pre>
+
+<h3>Proposed</h3>
+<pre><code>[runtime] You are N turns in and near the end of your budget. Todos: D of T
+completed. Verifying your work is still your job — but it is now the FIRST
+thing to cut, not the last. Pick the state you are in:
+
+- Deliverable NOT yet produced: reduce scope NOW. Stop gathering, produce what
+  you can, and state explicitly which todos you did NOT complete and what
+  remains for each, so the orchestrator can re-delegate them as separate steps.
+
+- Deliverable produced but NOT fully verified: hand it back NOW, in this turn.
+  Do not start another verification pass — a pass you do not survive loses the
+  report as well as the check. Open your report with UNVERIFIED, name the
+  artifact and where it is, and list the checks you did not run so the
+  orchestrator can re-delegate verification as its own cheap step.
+
+An honest partial report is worth far more than being cut off mid-exploration,
+and an unverified artifact the orchestrator knows about beats a verified one it
+never hears about.</code></pre>
+</div>
+
+<ul>
+  <li><strong>What does not change:</strong> the trigger (<code>wrap_up_at_percent</code>, default 75), the three
+      budget fractions, the ephemeral tail placement, and <code>todo_progress/1</code>.</li>
+  <li><strong>What does:</strong> <code>build_note/1</code> only. No new state is read, so no new plumbing — the
+      worker classifies its own state, which is the only party that can.</li>
+  <li><strong>Why "the FIRST thing to cut" rather than "skip verification":</strong> the three quoted workers each
+      knew they were near the ceiling and each chose one more pass anyway. The note has to rank the two actions, not
+      just list them. Telling a worker verification is optional in general would trade a visible failure for a silent
+      one — which is what the issue says, and this wording keeps it.</li>
+</ul>
+
 </div>
 </body>
 </html>
