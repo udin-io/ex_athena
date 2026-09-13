@@ -50,7 +50,7 @@ defmodule ExAthena.Tools.SpawnAgent do
   """
 
   alias ExAthena.Agents
-  alias ExAthena.Agents.{Deadline, Quota, Sidechain, Worktree}
+  alias ExAthena.Agents.{Deadline, Journal, Quota, Sidechain, Worktree}
   alias ExAthena.Loop.Terminations
   alias ExAthena.Orchestrator.AgentInfo
   alias ExAthena.Tuning
@@ -319,6 +319,11 @@ defmodule ExAthena.Tools.SpawnAgent do
     # to the parent's cwd transparently if any safety check fails.
     {sub_opts, isolation_info} = apply_isolation(agent_def, sub_opts, ctx)
 
+    # After isolation, so the journal stats the directory the worker really
+    # runs in; the FILE stays under our cwd, because a worktree worker's own
+    # directory is deleted moments after it finishes.
+    sub_opts = install_journal(sub_opts, ctx, sub_id)
+
     parent_hooks = Map.get(ctx.assigns || %{}, :hooks, %{})
 
     emit_event(ctx, {:subagent_spawn, %{id: sub_id, prompt: prompt}})
@@ -505,7 +510,13 @@ defmodule ExAthena.Tools.SpawnAgent do
               isolation: finalized_isolation
             })
 
-          timed_out(ctx, sub_id, timeout, Deadline.waited(%{agent_wait_counters: [wait_counter]}))
+          timed_out(
+            ctx,
+            sub_id,
+            timeout,
+            Deadline.waited(%{agent_wait_counters: [wait_counter]}),
+            worker_cwd(sub_opts, ctx)
+          )
       end
 
     result
@@ -539,25 +550,70 @@ defmodule ExAthena.Tools.SpawnAgent do
   # already does. Live, one worker was killed at its 30 minute mark after 19
   # iterations and 555k input tokens, and returned literally nothing; the
   # orchestrator re-delegated the same ground twice.
-  defp timed_out(ctx, sub_id, timeout, queued_ms) do
+  defp timed_out(ctx, sub_id, timeout, queued_ms, worker_cwd) do
     spent = describe_budget(timeout, queued_ms)
 
-    case progress_digest(ctx, sub_id) do
-      nil ->
+    learned =
+      [progress_digest(ctx, sub_id), journal_footer(ctx, sub_id, worker_cwd)]
+      |> Enum.reject(&is_nil/1)
+
+    case learned do
+      [] ->
         notify_failure(ctx, sub_id, "timed out after #{spent} — no progress recorded")
 
         {:error, :uncounted,
          "worker timed out after #{spent} with no progress recorded. " <>
            "Re-delegate a smaller slice, or finish without it."}
 
-      digest ->
-        notify_failure(ctx, sub_id, "timed out after #{spent}:\n#{digest}")
+      parts ->
+        body = Enum.join(parts, "\n")
+        notify_failure(ctx, sub_id, "timed out after #{spent}:\n#{body}")
 
         {:error, :uncounted,
          "worker timed out after #{spent}. " <>
-           "What it learned before stopping:\n#{digest}\n" <>
+           "What it learned before stopping:\n#{body}\n" <>
            "Re-delegate a narrower slice building on those findings, or finish without it."}
     end
+  end
+
+  # The one thing a brutal kill cannot destroy: the worker wrote this as it
+  # worked. The Coordinator's observation above is prose about the work and
+  # exists only on web runs; this is the evidence, and it exists everywhere.
+  # Rendered through Provenance so a dead worker's facts reach the parent in
+  # exactly the format a live one's do.
+  defp journal_footer(ctx, sub_id, worker_cwd) do
+    records = ctx |> journal_path(sub_id) |> Journal.read()
+
+    ExAthena.Provenance.footer(Journal.provenance_events(records),
+      cwd: worker_cwd,
+      sizes: Journal.sizes(records)
+    )
+  end
+
+  # Journalling is an observation wrapped around whatever callback the spawn
+  # already had — the Coordinator's per-agent sink when one is attached, the
+  # tool_ui forwarder when not. Both are wrapped, because the loop reaches the
+  # worker through `:on_event` and the worker's own tools reach it through
+  # `assigns`.
+  defp install_journal(sub_opts, ctx, sub_id) do
+    path = journal_path(ctx, sub_id)
+    opts = [cwd: worker_cwd(sub_opts, ctx)]
+    assigns = Keyword.get(sub_opts, :assigns, %{})
+
+    sub_opts
+    |> Keyword.update(
+      :on_event,
+      Journal.compose(nil, path, opts),
+      &Journal.compose(&1, path, opts)
+    )
+    |> Keyword.put(
+      :assigns,
+      Map.put(assigns, :on_event, Journal.compose(assigns[:on_event], path, opts))
+    )
+  end
+
+  defp journal_path(ctx, sub_id) do
+    Journal.path(ctx.cwd || File.cwd!(), ctx.session_id || "unknown", sub_id)
   end
 
   # Naming the queue time keeps the orchestrator from reading a slow worker as

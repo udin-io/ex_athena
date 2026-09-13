@@ -62,6 +62,11 @@ defmodule ExAthena.Agents.Journal do
   # rows. One number, two places.
   @default_line_chars 400
 
+  # Tools whose `path` argument names a file they wrote. `apply_patch` is
+  # absent on purpose: its targets live inside the diff, not in an argument, so
+  # a journal record cannot name them and claiming one would be a guess.
+  @write_tool_names ~w(write edit)
+
   @doc """
   Where one worker's journal lives: beside the sidechain transcript, under the
   PARENT's session directory.
@@ -136,9 +141,90 @@ defmodule ExAthena.Agents.Journal do
     end
   end
 
+  @doc """
+  Rebuild `ExAthena.Provenance` events from journal records.
+
+  So a killed worker's evidence reaches its parent in the SAME footer format a
+  live one's does. There is one `[worker provenance]` line in this system and
+  `Provenance.scan/1` parses it back out of a transcript, so a second format
+  would be a second contract to keep in sync.
+
+  This is where the read-time joins happen, because the writer holds no state:
+  a `tool_call` names the path and the matching `tool_result` says whether it
+  succeeded, so a failed write never becomes evidence.
+  """
+  @spec provenance_events([map()]) :: [Provenance.event()]
+  def provenance_events(records) when is_list(records) do
+    succeeded = succeeded_ids(records)
+
+    Enum.flat_map(records, fn
+      %{"ev" => "tool_call", "id" => id, "name" => name, "path" => path} when is_binary(path) ->
+        if name in @write_tool_names and MapSet.member?(succeeded, id),
+          do: [{:write, path}],
+          else: []
+
+      %{"ev" => "tool_result", "cmd" => cmd} = record when is_binary(cmd) ->
+        [command_event(record, cmd) | bash_writes(record)]
+
+      _ ->
+        []
+    end)
+  end
+
+  @doc """
+  Byte counts the worker measured, keyed by the path its own tool call named.
+
+  The parent stats from disk first; these are the fallback for when it cannot,
+  which is the NORMAL case for a `:worktree` worker whose directory
+  `SpawnAgent.finalize_isolation/1` has already removed. Measuring in the
+  worker is the only moment the file is certain to exist.
+  """
+  @spec sizes([map()]) :: %{String.t() => non_neg_integer()}
+  def sizes(records) when is_list(records) do
+    declared =
+      for %{"ev" => "tool_call", "id" => id, "path" => path} <- records,
+          is_binary(path),
+          into: %{},
+          do: {id, path}
+
+    tool_sizes =
+      for %{"ev" => "tool_result", "id" => id, "bytes" => bytes} <- records,
+          is_integer(bytes),
+          path = declared[id],
+          is_binary(path),
+          into: %{},
+          do: {path, bytes}
+
+    bash_sizes =
+      for %{"ev" => "tool_result"} = record <- records,
+          %{"path" => path, "bytes" => bytes} <- Map.get(record, "writes", []),
+          is_binary(path) and is_integer(bytes),
+          into: %{},
+          do: {path, bytes}
+
+    Map.merge(bash_sizes, tool_sizes)
+  end
+
   # ---------------------------------------------------------------------------
   # Private
   # ---------------------------------------------------------------------------
+
+  defp succeeded_ids(records) do
+    for %{"ev" => "tool_result", "id" => id, "ok" => true} <- records,
+        into: MapSet.new(),
+        do: id
+  end
+
+  defp command_event(%{"exit_code" => 0}, cmd), do: {:command, cmd}
+
+  defp command_event(%{"exit_code" => code}, cmd) when is_integer(code),
+    do: {:failed_command, cmd}
+
+  defp command_event(_record, cmd), do: {:command, cmd}
+
+  defp bash_writes(record) do
+    for %{"path" => path} <- Map.get(record, "writes", []), is_binary(path), do: {:write, path}
+  end
 
   defp decode(line) do
     case Jason.decode(line) do
@@ -228,6 +314,7 @@ defmodule ExAthena.Agents.Journal do
 
   defp evidence(%{kind: :process, payload: %{command: command} = payload}, opts) do
     %{
+      cmd: cap_chars(command, opts),
       exit_code: Map.get(payload, :exit_code),
       writes: confirmed_writes(command, Keyword.get(opts, :cwd))
     }

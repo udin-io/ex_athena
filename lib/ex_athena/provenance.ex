@@ -77,7 +77,7 @@ defmodule ExAthena.Provenance do
   # than "any trailing parenthesis": commands carry a ` (failed)` suffix
   # through the same splitter, and eating that would silently turn a red test
   # suite into a green one.
-  @annotation_re ~r/\s*\((?:\d+ B|missing|written, not re-checked)\)$/
+  @annotation_re ~r/\s*\((?:\d+ B(?:, not re-checked)?|missing|written, not re-checked)\)$/
 
   @type event ::
           {:write, String.t()}
@@ -174,6 +174,11 @@ defmodule ExAthena.Provenance do
       `stat`ed so the footer carries a byte count. "Wrote an 85 KB file" is
       checkable; "the file is structurally complete" is a claim, and the size
       is what separates them.
+    * `:sizes` — a `path => bytes` map measured earlier, used only where the
+      `stat` fails. `ExAthena.Agents.Journal` supplies it for a worker whose
+      directory has since been removed; the annotation then says the number was
+      not re-checked, so a measurement taken elsewhere is never passed off as
+      one taken here.
 
   A path that cannot be sized is never dropped, because an absent path reads as
   "the worker wrote nothing" — the exact failure this module exists to prevent.
@@ -193,12 +198,12 @@ defmodule ExAthena.Provenance do
     cwd = Keyword.get(opts, :cwd)
     events = verify(events, cwd)
 
-    do_footer(events, cwd)
+    do_footer(events, cwd, Keyword.get(opts, :sizes, %{}))
   end
 
-  defp do_footer([], _cwd), do: nil
+  defp do_footer([], _cwd, _sizes), do: nil
 
-  defp do_footer(events, cwd) do
+  defp do_footer(events, cwd, sizes) do
     failed = MapSet.new(failed_commands(events))
 
     rendered_commands =
@@ -208,7 +213,7 @@ defmodule ExAthena.Provenance do
           else: truncate(cmd)
       end)
 
-    rendered_files = Enum.map(changed_files(events), &annotate(&1, cwd))
+    rendered_files = Enum.map(changed_files(events), &annotate(&1, cwd, sizes))
 
     facts =
       "[worker provenance] files changed: #{render(rendered_files)}" <>
@@ -452,18 +457,19 @@ defmodule ExAthena.Provenance do
   defp on_disk?(_path, _cwd), do: false
 
   # A size, or the reason there isn't one. Never nothing: see footer/2.
-  defp annotate(path, nil), do: path
+  defp annotate(path, nil, _sizes), do: path
 
-  defp annotate(path, cwd) do
+  defp annotate(path, cwd, sizes) do
     case File.stat(Path.expand(path, cwd)) do
       {:ok, %File.Stat{size: size}} -> "#{path} (#{size} B)"
-      _ -> "#{path} (#{unverifiable_reason(cwd)})"
+      _ -> "#{path} (#{unverifiable_reason(cwd, Map.get(sizes, path))})"
     end
   end
 
-  defp unverifiable_reason(cwd) do
-    if File.dir?(cwd), do: "missing", else: "written, not re-checked"
-  end
+  defp unverifiable_reason(_cwd, bytes) when is_integer(bytes), do: "#{bytes} B, not re-checked"
+
+  defp unverifiable_reason(cwd, _bytes),
+    do: if(File.dir?(cwd), do: "missing", else: "written, not re-checked")
 
   defp render([]), do: "none"
 
