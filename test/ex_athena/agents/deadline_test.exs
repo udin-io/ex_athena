@@ -131,12 +131,12 @@ defmodule ExAthena.Agents.DeadlineTest do
     end
   end
 
-  describe "install/3" do
+  describe "install/4" do
     test "puts the child's own counter at the head of the inherited chain" do
       parent = counter()
       mine = counter()
 
-      assigns = Deadline.install(%{agent_wait_counters: [parent]}, 42, mine)
+      assigns = Deadline.install(%{agent_wait_counters: [parent]}, 42, mine, 10)
 
       assert assigns.agent_deadline_at == 42
       assert assigns.agent_wait_counters == [mine, parent]
@@ -144,7 +144,13 @@ defmodule ExAthena.Agents.DeadlineTest do
 
     test "starts a chain for a worker whose parent had none" do
       mine = counter()
-      assert %{agent_wait_counters: [^mine]} = Deadline.install(%{}, 42, mine)
+      assert %{agent_wait_counters: [^mine]} = Deadline.install(%{}, 42, mine, 10)
+    end
+
+    # BudgetPressure needs the start to express time as a share of the budget
+    # rather than a bare "ms left", which says nothing to a model.
+    test "records when the budget began" do
+      assert %{agent_deadline_from: 10} = Deadline.install(%{}, 42, counter(), 10)
     end
   end
 end

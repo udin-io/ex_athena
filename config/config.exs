@@ -46,6 +46,8 @@ config :ex_athena, max_agents_per_run: 24
 #
 # config :ex_athena, :agents,
 #   max_iterations: 50,                # floor on a worker's iteration budget
+#   max_input_tokens: 800_000,         # spend ceiling per worker (0 = off)
+#   digest_findings: 3,                # conclusions carried in a handoff digest
 #   result_chars: 64_000,              # cap on the report a worker returns to its parent
 #   dictated_code_lines: 8,            # fenced lines before a brief counts as dictated code
 #   prompt_chars: 160,                 # brief shown in the agent overview panel
@@ -53,6 +55,10 @@ config :ex_athena, max_agents_per_run: 24
 #   transcript_entry_chars: 400,       # cap per non-text transcript row
 #   transcript_text_chars: 4_000,      # cap per text transcript row
 #   conclusions_cap: 50                # conclusions retained per agent
+#
+# config :ex_athena, :loop,
+#   max_input_tokens: 0,               # spend ceiling for the top-level run (0 = off)
+#   wrap_up_at_percent: 75             # % of any budget before the wrap-up nudge
 #
 # config :ex_athena, :web,
 #   max_retained_events: 2_000         # events a run replays to a reattaching browser

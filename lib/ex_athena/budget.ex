@@ -76,6 +76,30 @@ defmodule ExAthena.Budget do
 
   def exceeded?(_budget, _cap), do: false
 
+  @doc """
+  Whether cumulative INPUT tokens have reached `cap`. `nil` cap never trips.
+
+  The cost cap above is inert on a local provider, where every call is free —
+  so wall clock was the only rail a worker had, and 30 minutes holds a great
+  deal of context. Live, one implementer spent 1,992,051 input tokens over 38
+  iterations and completed none of its eight sub-steps; its replacement spent
+  another 920,357 and hit the same wall. Across 41 workers that finished, the
+  most any of them ever used was 701,896 — a worker far past that is not
+  close to done, it is lost.
+
+  Input rather than total: input is what grows with the context and what runs
+  away (1.99M in against 20.8k out on the worker above).
+  """
+  @spec input_exceeded?(t(), pos_integer() | nil) :: boolean()
+  def input_exceeded?(_budget, nil), do: false
+
+  def input_exceeded?(%__MODULE__{usage: usage}, cap)
+      when is_integer(cap) and cap > 0 do
+    Map.get(usage, :input_tokens, 0) >= cap
+  end
+
+  def input_exceeded?(_budget, _cap), do: false
+
   @doc "Wall-clock milliseconds since budget was opened."
   @spec duration_ms(t()) :: non_neg_integer()
   def duration_ms(%__MODULE__{started_at: nil}), do: 0

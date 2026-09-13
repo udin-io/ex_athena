@@ -746,13 +746,16 @@ defmodule ExAthena.LoopTest do
 
       # Early turns: no wrap-up pressure.
       assert_receive {:req, 1, msgs1}
-      refute Enum.any?(msgs1, fn m -> is_binary(m.content) and m.content =~ "wrap up" end)
+      refute Enum.any?(msgs1, fn m -> is_binary(m.content) and m.content =~ "[runtime]" end)
 
-      # Late turns (near the cap): a wrap-up directive appears at the tail.
+      # Late turns (near the cap): the directive appears at the tail. It tells
+      # the loop to stop gathering, produce a report, and hand back what it
+      # could not reach — see ExAthena.Loop.BudgetPressure.
       assert_receive {:req, 5, msgs5}
 
       assert Enum.any?(msgs5, fn m ->
-               is_binary(m.content) and m.content =~ "wrap up" and m.content =~ "final"
+               is_binary(m.content) and m.content =~ "reduce scope" and
+                 m.content =~ "stop gathering" and m.content =~ "report"
              end)
     end
 

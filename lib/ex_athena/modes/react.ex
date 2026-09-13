@@ -25,7 +25,7 @@ defmodule ExAthena.Modes.ReAct do
   @behaviour ExAthena.Loop.Mode
 
   alias ExAthena.{Messages, Permissions, Skills, Telemetry}
-  alias ExAthena.Loop.{Events, Inference, Parallel, State}
+  alias ExAthena.Loop.{BudgetPressure, Events, Inference, Parallel, State}
   alias ExAthena.Messages.ToolCall
   alias ExAthena.Tools
 
@@ -768,28 +768,18 @@ defmodule ExAthena.Modes.ReAct do
     }
   end
 
-  # Turn-budget wrap-up pressure (cache-safe tail): a finite-cap loop that
-  # keeps gathering will exhaust its budget mid-exploration and get cut off
-  # before writing its report (observed: explore workers read until the
-  # 25-turn cap, returning incomplete findings). Once it enters the final
-  # stretch, push it to stop and produce its answer.
-  defp budget_note(%State{max_iterations: max, iterations: i}) when is_integer(max) and max > 0 do
-    remaining = max - i
-
-    if remaining <= max(3, div(max, 4)) do
-      [
-        Messages.user(
-          "[runtime] You have #{max(remaining, 1)} of #{max} turns left — wrap up NOW: " <>
-            "STOP gathering and produce your final answer/report with what you already have. " <>
-            "Do not start new exploration."
-        )
-      ]
-    else
-      []
+  # Budget wrap-up pressure (cache-safe tail): a finite-budget loop that keeps
+  # gathering is cut off mid-exploration before it writes its report. Once it
+  # enters the final stretch of ANY of its budgets — iterations, wall clock,
+  # input tokens — push it to reduce scope and hand back what it could not
+  # reach. See ExAthena.Loop.BudgetPressure for why all three, and why the
+  # note names the todo list.
+  defp budget_note(%State{} = state) do
+    case BudgetPressure.note(state, System.monotonic_time(:millisecond)) do
+      nil -> []
+      note -> [Messages.user(note)]
     end
   end
-
-  defp budget_note(_state), do: []
 
   # Mode-supplied EPHEMERAL phase steering at the request tail (cache-safe:
   # the system prompt and transcript prefix stay byte-stable; only the tail

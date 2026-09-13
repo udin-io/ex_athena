@@ -60,6 +60,7 @@ defmodule ExAthena.Loop.State do
             max_iterations: 25,
             max_consecutive_mistakes: 3,
             max_budget_usd: nil,
+            max_input_tokens: nil,
             max_unproductive_iterations: 3,
             tool_timeout_ms: 60_000,
             max_concurrency: 4,
