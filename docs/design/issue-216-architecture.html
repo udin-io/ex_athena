@@ -414,8 +414,9 @@ line 308 — which is <em>after</em> <code>Quota.claim/1</code> has already take
 <code>Quota</code> has no release. A refusal placed at the natural site therefore burns a slot for a spawn that never
 ran, and the module's own doc says <em>"a refusal costs nothing"</em>. The check must run in
 <code>execute/2</code>'s <code>cond</code> (alongside the depth and completed-todo rails, lines 189-212), which means
-resolving the agent definition's declared <code>tools</code> there — <code>resolve_agent/2</code> is cheap and has no
-side effects, so this is a reorder, not a duplication.</p>
+resolving the agent definition's declared <code>tools</code> there — <code>resolve_agent/2</code> has no side effects,
+though it may hit the filesystem via <code>Agents.discover/1</code> when <code>assigns[:agents]</code> is unset — so
+resolve once and thread the result down to line 276 rather than calling it twice.</p>
 
 <h3>Proposed detection rule</h3>
 <div class="panel">
