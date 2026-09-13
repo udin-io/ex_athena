@@ -6,9 +6,12 @@ defmodule ExAthena.Tools.SpawnAgent do
   file) to a fresh conversation with its own message history — so the parent
   loop doesn't pay the token cost of the sub-task's intermediate steps.
 
-  Two rails bound the worker tree: `max_agent_depth` (how deep delegation may
-  nest) and `max_agents_per_run` (how many workers a whole run may spawn — see
-  `ExAthena.Agents.Quota`). Both refuse with an error the model reads.
+  Three rails bound the worker tree: `max_agent_depth` (how deep delegation
+  may nest), `max_agents_per_run` (how many workers a whole run may spawn —
+  see `ExAthena.Agents.Quota`) and the write rail (a brief that orders a file
+  handed to a worker with no tool that can write one — see
+  `ExAthena.Agents.WriteBrief`). All three refuse with an error the model
+  reads, in `execute/2` and before any worker slot is claimed.
 
   Arguments:
 

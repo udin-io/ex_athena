@@ -297,6 +297,15 @@ back. The parent stays in `:accept_edits` and applies the edits.
   workers one run may spawn across every branch. Both are overridable per
   run via `assigns`, and both refuse a spawn with an error telling the model
   to finish with what it has rather than failing the run.
+- **The write rail**: a spawn is refused when the worker's resolved toolset
+  has no tool that can write a file and the brief plainly orders one —
+  `ExAthena.Agents.WriteBrief`. It fires in `execute/2`, before
+  `Agents.Quota.claim/1`, so a refusal spends no worker slot. Capability is
+  read off the toolset, never the agent's name: `plan` declares `write`, and
+  an `explore` a caller has granted `write` to is not read-only either. It is
+  the only rail here that reads English rather than a number, so it is built
+  to under-fire; `config :ex_athena, :agents, write_brief_rail: 0` turns it
+  off.
 - **Worktree git safety**: `Agents.Worktree.create/2` refuses to create a
   worktree on a dirty branch (uncommitted changes) by default. Tests cover the
   safety checks. Don't bypass them.
