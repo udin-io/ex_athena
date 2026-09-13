@@ -121,6 +121,31 @@ defmodule ExAthena.Loop.Terminations do
       the limit or reduce scope.
     * `:fatal` — don't retry without operator action.
   """
+  @doc """
+  Did this run stop because it ran out of room, rather than because it went
+  wrong?
+
+  Deliberately NOT `category/1 == :capacity`. That category also covers
+  `:error_consecutive_mistakes`, `:error_no_progress` and
+  `:error_max_structured_output_retries` — a run that hallucinated, went in
+  circles, or could not produce parseable output. Those are faults, and a
+  caller re-issuing the same work will reproduce them. The five below are
+  budgets: the same work with more room, or less of it, would have finished.
+
+  `SpawnAgent` uses this to decide whether a worker's termination should
+  advance its parent's consecutive-mistake counter. Session 5906635b743d died
+  on that counter with every deliverable already written, because a worker
+  exhausting its token budget was scored as the parent hallucinating a tool
+  call.
+  """
+  @spec budget_exhaustion?(subtype()) :: boolean()
+  def budget_exhaustion?(:error_max_input_tokens), do: true
+  def budget_exhaustion?(:error_max_budget_usd), do: true
+  def budget_exhaustion?(:error_max_turns), do: true
+  def budget_exhaustion?(:error_prompt_too_long), do: true
+  def budget_exhaustion?(:error_thinking_starved), do: true
+  def budget_exhaustion?(_), do: false
+
   @spec category(subtype()) :: :success | :interrupted | :retryable | :capacity | :fatal
   def category(:stop), do: :success
   def category(:submitted), do: :success

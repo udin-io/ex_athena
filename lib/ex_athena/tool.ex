@@ -56,9 +56,28 @@ defmodule ExAthena.Tool do
   """
   @callback schema() :: map()
 
+  @doc """
+  Run the tool. Return shapes, and what the loop does with each:
+
+    * `{:ok, result}` — success; `result` is stringified for the model.
+    * `{:ok, text, ui_payload}` — success, plus a payload hosts render
+      natively (see `ExAthena.Messages.ToolResult`).
+    * `{:error, reason}` — failure. The model sees it AND the loop counts the
+      turn against `max_consecutive_mistakes`.
+    * `{:error, :uncounted, text}` — failure the model must read but the loop
+      must not score. The tool result is identical to `{:error, reason}` in
+      every respect except that it does not advance the mistake counter (nor
+      reset it). For a failure that is a fact about the world rather than a
+      mistake by the calling model — a delegated worker running out of its
+      token budget, say. Use it only when repeating the call would NOT repeat
+      the fault.
+    * `{:halt, reason}` — end the run.
+  """
   @callback execute(arguments :: map(), ctx :: ToolContext.t()) ::
               {:ok, result :: term()}
+              | {:ok, text :: String.t(), ui_payload :: map()}
               | {:error, reason :: term()}
+              | {:error, :uncounted, text :: String.t()}
               | {:halt, reason :: term()}
 
   @doc """

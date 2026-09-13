@@ -92,4 +92,37 @@ defmodule ExAthena.Loop.TerminationsTest do
       assert Terminations.category(:error_provider_auth) == :fatal
     end
   end
+
+  # The distinction SpawnAgent charges a parent's mistake counter on. Getting it
+  # wrong in either direction is expensive: too broad and an orchestrator
+  # survives workers that will fail the same way forever; too narrow and it dies
+  # with its deliverables finished, which is what session 5906635b743d did.
+  describe "budget_exhaustion?/1" do
+    test "a run that ran out of room is a budget fact" do
+      assert Terminations.budget_exhaustion?(:error_max_input_tokens)
+      assert Terminations.budget_exhaustion?(:error_max_budget_usd)
+      assert Terminations.budget_exhaustion?(:error_max_turns)
+      assert Terminations.budget_exhaustion?(:error_prompt_too_long)
+      assert Terminations.budget_exhaustion?(:error_thinking_starved)
+    end
+
+    test "a run that went wrong is NOT, even where category/1 says :capacity" do
+      for subtype <- [
+            :error_consecutive_mistakes,
+            :error_no_progress,
+            :error_max_structured_output_retries
+          ] do
+        assert Terminations.category(subtype) == :capacity
+
+        refute Terminations.budget_exhaustion?(subtype),
+               "#{subtype} is a fault, not a budget — repeating the work repeats it"
+      end
+    end
+
+    test "success, interruption and the fatal subtypes are not budgets" do
+      for subtype <- [:stop, :submitted, :stopped, :error_halted, :error_provider_auth] do
+        refute Terminations.budget_exhaustion?(subtype)
+      end
+    end
+  end
 end
