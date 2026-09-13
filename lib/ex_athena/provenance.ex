@@ -221,6 +221,29 @@ defmodule ExAthena.Provenance do
   end
 
   @doc """
+  Paths a shell command unambiguously names as write targets.
+
+  Only the forms a reader can resolve without running a shell: `> path`,
+  `>> path`, `tee path`. Targets carrying anything the shell would expand — a
+  variable, a tilde, a glob, a quote — are refused rather than guessed at, and
+  so are `/dev/*` sinks. Callers must still confirm the path exists before
+  treating it as evidence (`verify/2` does this for events; the worker journal
+  does it at write time, while the file is certain to be there).
+
+  Returns `[]` for anything that is not a binary.
+  """
+  @spec write_targets(String.t()) :: [String.t()]
+  def write_targets(cmd) when is_binary(cmd) do
+    (Regex.scan(@redirect_re, cmd, capture: :all_but_first) ++
+       Regex.scan(@tee_re, cmd, capture: :all_but_first))
+    |> List.flatten()
+    |> Enum.filter(&safe_target?/1)
+    |> Enum.uniq()
+  end
+
+  def write_targets(_), do: []
+
+  @doc """
   Whether a test file was written before the first source file.
 
   This is the one question a set of events cannot answer, and the reason
@@ -412,15 +435,7 @@ defmodule ExAthena.Provenance do
 
   defp arg(_args, _key), do: nil
 
-  # Only the forms a reader can resolve without running a shell.
-  defp write_candidates(cmd) do
-    (Regex.scan(@redirect_re, cmd, capture: :all_but_first) ++
-       Regex.scan(@tee_re, cmd, capture: :all_but_first))
-    |> List.flatten()
-    |> Enum.filter(&safe_target?/1)
-    |> Enum.uniq()
-    |> Enum.map(&{:bash_write, &1})
-  end
+  defp write_candidates(cmd), do: Enum.map(write_targets(cmd), &{:bash_write, &1})
 
   # /dev/null and friends are not deliverables, and reporting one as a changed
   # file is the same lie as reporting a path that was never written.

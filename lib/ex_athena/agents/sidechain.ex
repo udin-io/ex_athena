@@ -32,7 +32,7 @@ defmodule ExAthena.Agents.Sidechain do
         result: result
       })
       when is_binary(parent_session_id) and is_binary(subagent_id) do
-    dir = Path.join([cwd, ".exathena", "sessions", parent_session_id, "sidechains"])
+    dir = Path.join(session_dir(cwd, parent_session_id), "sidechains")
     File.mkdir_p!(dir)
     path = Path.join(dir, "#{subagent_id}.jsonl")
 
@@ -53,6 +53,19 @@ defmodule ExAthena.Agents.Sidechain do
   end
 
   def write(_), do: :ok
+
+  @doc """
+  Root for everything one parent run keeps about its workers.
+
+  One definition, because three modules resolve against it: this writer, the
+  per-worker journal (`ExAthena.Agents.Journal`) and the tool that reads them
+  both back (`ExAthena.Tools.ReadWorkerReport`). Always the PARENT's cwd — a
+  `:worktree` worker's own directory is deleted moments after it finishes.
+  """
+  @spec session_dir(String.t(), String.t()) :: String.t()
+  def session_dir(cwd, parent_session_id) do
+    Path.join([cwd, ".exathena", "sessions", parent_session_id])
+  end
 
   defp serializable_opts(opts) when is_list(opts) do
     # Best-effort serialisation — every value goes through `inspect/1` so
