@@ -667,3 +667,41 @@ footer reading <code>files changed: none</code> is the status quo. False positiv
 path that does not exist is never reported. A parse that must survive a <code>stat</code> cannot invent
 evidence.</p>
 </div>
+
+<h2>9. Open question for the reviewer</h2>
+
+<div class="note">
+<p>Layer 1c (read the Coordinator's <code>transcript_tail</code>) and layer 2 (the journal) cover overlapping
+ground on web runs. 1c is a handful of lines and bounded at the last 30 rows; the journal is a new module and a
+new file but is complete and works everywhere. <strong>Build both, or build only the journal and let the web
+case read the same file as everyone else?</strong> The recommendation above is both, because 1c ships in the
+first commit and the journal is behind a knob that can be set to 0 — but the single-path answer is defensible
+and cheaper to maintain.</p>
+</div>
+
+<h2>10. Mermaid sources</h2>
+
+<p class="kv">Kept verbatim so the same pictures can go in the PR body under an "## Architecture" heading, where
+GitHub renders them natively.</p>
+
+<h3>Module diagram</h3>
+<pre><code id="src-module"></code></pre>
+<h3>Timing — as-is</h3>
+<pre><code id="src-asis"></code></pre>
+<h3>Timing — as-designed</h3>
+<pre><code id="src-asdesigned"></code></pre>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  const blocks = document.querySelectorAll("pre.mermaid");
+  const ids = ["src-module","src-asis","src-asdesigned"];
+  blocks.forEach((b, i) => {
+    const el = document.getElementById(ids[i]);
+    if (el) el.textContent = b.textContent.trim();
+  });
+  mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose" });
+</script>
+
+</div>
+</body>
+</html>
