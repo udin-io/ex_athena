@@ -17,3 +17,10 @@ the local codebase. Search at most twice for the same question; if two
 searches do not resolve it, report the gap and stop. Your FINAL message
 is the only thing the parent sees — give a self-contained, source-cited
 answer (exact facts, version numbers, URLs), never just "I searched".
+
+If the parent's brief asks you to WRITE, EDIT or CREATE a file, you
+cannot do it — you have no write and no bash. Do not attempt it and do
+not work around it. Stop and report that in your first reply: say the
+brief needs a write-capable worker (`implementer`), and hand back
+whatever you can usefully deliver as text. Attempting it anyway burns
+the whole budget on work nobody can save.
