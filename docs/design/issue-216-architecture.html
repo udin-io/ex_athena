@@ -511,6 +511,96 @@ never hears about.</code></pre>
       one — which is what the issue says, and this wording keeps it.</li>
 </ul>
 
+
+<h2>7. Where the issue describes the code wrongly</h2>
+
+<div class="panel scroll">
+<table>
+<thead><tr><th>The issue says</th><th>The code says</th><th>Effect on scope</th></tr></thead>
+<tbody>
+<tr>
+  <td>"The full text exists at the moment of truncation. Today it is discarded." Fix: "Write the full report to the run directory when it exceeds the cap."</td>
+  <td><code>Sidechain.write/1</code> at <code>spawn_agent.ex:368</code> already persists the full untruncated text, on both branches, before truncation.</td>
+  <td><span class="tag t-good">smaller</span> No new write path. Item 2 is a notice, a tool, and one cwd bug fix.</td>
+</tr>
+<tr>
+  <td>"the last three spawns died on <code>error_max_input_tokens</code>, <code>error_during_execution</code> and <code>error_max_input_tokens</code>" — exempt category <code>:capacity</code>.</td>
+  <td><code>error_during_execution</code> is <code>:retryable</code>, not <code>:capacity</code> (<code>terminations.ex</code>).</td>
+  <td><span class="tag t-acc">restated</span> The acceptance test must use three BUDGET terminations, not this session's three.</td>
+</tr>
+<tr>
+  <td>Prefer "a third state on <code>ToolResult</code> (e.g. <code>is_error: :informational</code>) that <code>any_tool_success?/1</code> treats as neither".</td>
+  <td><code>any_tool_success?/1</code> tests <code>err != true</code>, so <code>:informational</code> reads as SUCCESS and resets the counter — the defect option 2 was rejected for.</td>
+  <td><span class="tag t-bad">changed</span> Neither option as written. See section 3.</td>
+</tr>
+<tr>
+  <td><code>spawn_agent.ex:389</code> / <code>:918</code> / <code>:440</code> as the sites.</td>
+  <td>On this branch: <code>:390</code>, <code>:918</code>, <code>:440</code>. Close enough; <code>:918</code> and <code>:440</code> are exact.</td>
+  <td><span class="tag t-good">confirmed</span></td>
+</tr>
+<tr>
+  <td>"<code>append_provenance/2</code> … is appended at <code>spawn_agent.ex:440</code>, inside the success branch only." (from issue 215, relied on by 216)</td>
+  <td>Confirmed. <code>append_provenance</code> appears at exactly one call site, line 440, in the success branch.</td>
+  <td><span class="tag t-good">confirmed</span></td>
+</tr>
+<tr>
+  <td><code>@write_tools ~w(write edit)</code> makes bash-written files invisible.</td>
+  <td>Confirmed (<code>provenance.ex</code>). Measured live: worker <code>T2cuzVsh</code> wrote 113KB by heredoc, footer read "files changed: none".</td>
+  <td><span class="tag t-good">confirmed</span> But this belongs to 215's layer 1, not here.</td>
+</tr>
+<tr>
+  <td>"<code>orchestrate.ex:45</code> already tells the model this … Prompt-only, with no code rail behind it."</td>
+  <td>Confirmed, lines 45-48 of the <code>@protocol_addendum</code>. Also true and unmentioned: <code>priv/agents/explore.md</code> tells the WORKER it may not modify files but never tells it what to do when the brief demands it.</td>
+  <td><span class="tag t-acc">cheaper option</span> See section 5.</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<h2>8. Scope — what should ship together, and what should not</h2>
+
+<div class="panel">
+<table>
+<thead><tr><th>Item</th><th>Verdict</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td>1 — uncounted budget termination</td><td><span class="tag t-good">ship</span></td><td>The binding failure. Two-file change once the return shape replaces the third state.</td></tr>
+<tr><td>2 — retrievable full report</td><td><span class="tag t-good">ship, reduced</span></td><td>Sidechain already writes it. Ships as: cwd bug fix, notice wording, one read tool, provenance on the failure path.</td></tr>
+<tr><td>3 — refuse a write brief to a read-only agent</td><td><span class="tag t-acc">split</span></td><td>A prompt classifier, not loop accounting. Ship the one-line <code>explore.md</code> guard here; the code rail gets its own ticket with its own regex tests.</td></tr>
+<tr><td>4 — BudgetPressure unverified hand-back</td><td><span class="tag t-good">ship</span></td><td>One function, on the branch this work sits on. Smallest and highest-leverage of the four.</td></tr>
+<tr><td>bash-aware <code>Provenance</code></td><td><span class="tag t-bad">not here</span></td><td>Issue 215 layer 1. Costing it properly ("have the bash tool report the paths it touched") is 215's job and 216 does not need it.</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note">
+<p><strong>Ordering inside the PR.</strong> Item 4 first (self-contained, on the parent branch). Then item 1's return
+shape in <code>ReAct</code>, then <code>SpawnAgent</code>'s classification on top of it. Then item 2's cwd fix, then
+the notice, then the read tool. Item 3's prompt line anywhere. Each of those is a commit; the acceptance behaviours in
+the issue map one-to-one onto them.</p>
+</div>
+
+<h2>9. Mermaid sources</h2>
+<p class="kv">Kept verbatim so the same pictures can go in the PR body under an "## Architecture" heading, where GitHub
+renders them natively.</p>
+
+<h3>Module diagram</h3>
+<pre><code id="src-module"></code></pre>
+<h3>Timing — as-is</h3>
+<pre><code id="src-asis"></code></pre>
+<h3>Timing — as-designed</h3>
+<pre><code id="src-asdesigned"></code></pre>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  const blocks = document.querySelectorAll("pre.mermaid");
+  const ids = ["src-module","src-asis","src-asdesigned"];
+  blocks.forEach((b, i) => {
+    const el = document.getElementById(ids[i]);
+    if (el) el.textContent = b.textContent.trim();
+  });
+  mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose" });
+</script>
+
 </div>
 </body>
 </html>
