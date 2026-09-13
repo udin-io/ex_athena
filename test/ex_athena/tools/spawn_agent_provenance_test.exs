@@ -80,21 +80,25 @@ defmodule ExAthena.Tools.SpawnAgentProvenanceTest do
     end
   end
 
-  defp run(worker_calls, worker_tools, dir) do
+  defp run(worker_calls, worker_tools, dir, extra_worker_opts \\ []) do
+    worker_opts =
+      Keyword.merge(
+        [
+          provider: :mock,
+          mock: [responder: worker_responder(worker_calls)],
+          tools: worker_tools,
+          memory: false
+        ],
+        extra_worker_opts
+      )
+
     Loop.run("do the task",
       provider: :mock,
       mock: [responder: parent_responder()],
       tools: [ExAthena.Tools.SpawnAgent],
       cwd: dir,
       memory: false,
-      assigns: %{
-        spawn_agent_opts: [
-          provider: :mock,
-          mock: [responder: worker_responder(worker_calls)],
-          tools: worker_tools,
-          memory: false
-        ]
-      },
+      assigns: %{spawn_agent_opts: worker_opts},
       max_iterations: 5
     )
   end
@@ -152,6 +156,48 @@ defmodule ExAthena.Tools.SpawnAgentProvenanceTest do
     test "leaves a report that fits completely alone" do
       assert ExAthena.Tools.SpawnAgent.truncate_result("short", 40) == "short"
       refute ExAthena.Tools.SpawnAgent.truncate_result("short", 40) =~ "truncated"
+    end
+  end
+
+  # Session 5906635b743d: three workers wrote their file, then stopped on
+  # `error_max_input_tokens` during a verification pass. Each handed back
+  # "No stated findings — the worker recorded only intentions", and the
+  # 85,043-byte file it had written 90 seconds earlier went unmentioned. The
+  # orchestrator re-delegated, failed again, and died on its mistake counter.
+  #
+  # The worker's Result — including its full `messages` — survives every loop
+  # termination (only a brutal kill destroys it), so Provenance could always
+  # read it. It simply was never asked to on this branch.
+  describe "a worker cut off before it reported" do
+    test "hands back the files it wrote, not just what it said", %{dir: dir} do
+      calls = [
+        %ToolCall{
+          id: "w1",
+          name: "write",
+          arguments: %{"path" => "plan/extract.md", "content" => String.duplicate("x", 400)}
+        }
+      ]
+
+      assert {:ok, result} = run(calls, [ExAthena.Tools.Write], dir, max_iterations: 1)
+
+      report = report(result)
+
+      # It is still reported as a failure — the parent has to know it lost the step.
+      assert report =~ "worker stopped on its budget"
+      # ...but the evidence of what it managed to do now rides along.
+      assert report =~ "[worker provenance]"
+      assert report =~ "plan/extract.md"
+    end
+
+    test "a cut-off worker that changed nothing gets no provenance line", %{dir: dir} do
+      File.write!(Path.join(dir, "a.ex"), "defmodule A do\nend\n")
+      calls = [%ToolCall{id: "w1", name: "read", arguments: %{"path" => "a.ex"}}]
+
+      assert {:ok, result} = run(calls, [ExAthena.Tools.Read], dir, max_iterations: 1)
+
+      report = report(result)
+      assert report =~ "worker stopped on its budget"
+      refute report =~ "[worker provenance]"
     end
   end
 

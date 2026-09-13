@@ -405,7 +405,13 @@ defmodule ExAthena.Tools.SpawnAgent do
               isolation: finalized_isolation
             })
 
-          digest = conclusions_digest(sub_result)
+          # The worker's own account of itself, plus what its tool calls prove.
+          # A cut-off worker's conclusions are usually intentions ("one final
+          # spot-check, then I'll report"); the footer is the only part of this
+          # message that is checkable. Session 5906635b743d re-delegated three
+          # workers whose files were already on disk because this branch
+          # reported the prose and not the facts.
+          digest = sub_result |> conclusions_digest() |> append_provenance(sub_result)
 
           # Surface the failure digest on the agent's Overview entry too.
           case Map.get(ctx.assigns || %{}, :agent_event_sink) do
