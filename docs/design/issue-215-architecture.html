@@ -611,7 +611,7 @@ one definition of where a worker's artifacts live instead of the three string jo
 <h3>Correlation happens at read time, not write time</h3>
 
 <p><code>%ToolResult{}</code> carries <code>tool_call_id</code> and <strong>no tool name</strong>
-(<code>lib/ex_athena/messages.ex:35</code>). The issue's sample line puts <code>"name":"write"</code> on the
+(<code>lib/ex_athena/messages.ex:36</code>). The issue's sample line puts <code>"name":"write"</code> on the
 result, which the writer cannot know without holding per-worker state across callback invocations. Write
 <code>id</code> on both lines and let the reader join them. A stateless closure is a closure that cannot lose
 state when the worker dies.</p>
