@@ -364,9 +364,17 @@ defmodule ExAthena.Tools.SpawnAgent do
     stop_subtree(subtree)
 
     # Persist the sidechain transcript (best-effort; never fails the spawn).
+    #
+    # Under the PARENT's cwd, never the worker's. A `:worktree`-isolated worker
+    # runs in an ephemeral directory that `finalize_isolation/1` deletes eleven
+    # lines below (`git worktree remove --force`), so a transcript written to
+    # `sub_opts[:cwd]` is written into a grave — and it is exactly the isolated
+    # workers whose transcripts are worth reading. The parent's cwd also keeps
+    # one run's sidechains in one place, which is what `read_worker_report`
+    # resolves against.
     _ =
       Sidechain.write(%{
-        cwd: Keyword.get(sub_opts, :cwd, ctx.cwd),
+        cwd: ctx.cwd,
         parent_session_id: ctx.session_id || "unknown",
         subagent_id: sub_id,
         prompt: prompt,
