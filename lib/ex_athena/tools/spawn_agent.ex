@@ -441,7 +441,8 @@ defmodule ExAthena.Tools.SpawnAgent do
             text
             |> truncate_result(
               Map.get(args, "max_result_chars") ||
-                Tuning.get(:agents, :result_chars, @default_result_chars)
+                Tuning.get(:agents, :result_chars, @default_result_chars),
+              sub_id
             )
             |> append_provenance(sub_result)
 
@@ -1011,21 +1012,38 @@ defmodule ExAthena.Tools.SpawnAgent do
   silently clipped, and it responded by re-requesting whole files (one run
   spent 6 of 28 spawns on "report the FULL contents of…"). Naming the loss
   lets it ask for the missing part instead of the whole thing again.
+
+  With a `subagent_id`, the notice names the exact `read_worker_report` call
+  that returns the rest. Without one it can only describe the loss: the old
+  wording, "ask for the specific part you still need", was an instruction the
+  model had no tool to follow, and a worker whose report is truncated is
+  usually gone by the time the parent reads it.
   """
-  @spec truncate_result(String.t(), pos_integer() | any()) :: String.t()
-  def truncate_result(text, max) when is_integer(max) and max > 0 do
+  @spec truncate_result(String.t(), pos_integer() | any(), String.t() | nil) :: String.t()
+  def truncate_result(text, max, subagent_id \\ nil)
+
+  def truncate_result(text, max, subagent_id) when is_integer(max) and max > 0 do
     len = String.length(text)
 
     if len > max do
       String.slice(text, 0, max) <>
         "\n\n[report truncated — #{max} of #{len} characters shown. " <>
-        "Ask for the specific part you still need; do not re-request the whole thing.]"
+        recovery_hint(subagent_id, max) <> "]"
     else
       text
     end
   end
 
-  def truncate_result(text, _), do: text
+  def truncate_result(text, _max, _subagent_id), do: text
+
+  defp recovery_hint(subagent_id, max) when is_binary(subagent_id) do
+    "The full report is on disk: call " <>
+      ~s|read_worker_report with subagent_id: "#{subagent_id}", from: #{max} | <>
+      "to continue from here. Do NOT re-run the worker."
+  end
+
+  defp recovery_hint(_subagent_id, _max),
+    do: "Ask for the specific part you still need; do not re-request the whole thing."
 
   # The worker's report is prose it wrote about itself, so it can claim work it
   # never did ("the app compiles cleanly" for a run that never built anything).
@@ -1062,10 +1080,13 @@ defmodule ExAthena.Tools.SpawnAgent do
   # ceiling but can never add a tool the agent isn't allowed. With no agent
   # definition (plain spawn), the ceiling is the full builtin set.
   #
-  # Control tools (`plan_mode` / `spawn_agent`) are never inherited from the
-  # ceiling. `todo_write` is always granted (worker contract). `spawn_agent` is
-  # granted only when the child is allowed to nest further (depth < cap), so
-  # any worker can delegate sub-tasks until the ceiling — see the depth rail.
+  # Control tools (`plan_mode` / `spawn_agent` / `read_worker_report`) are never
+  # inherited from the ceiling. `todo_write` is always granted (worker
+  # contract). `spawn_agent` is granted only when the child is allowed to nest
+  # further (depth < cap), so any worker can delegate sub-tasks until the
+  # ceiling — see the depth rail. `read_worker_report` rides with it: it answers
+  # "what did MY worker say", so it is useless to a leaf that has no workers and
+  # is only schema noise in its prompt.
   defp resolve_tools(requested, declared, child_can_nest?) do
     known = ExAthena.Tools.builtins() |> MapSet.new(& &1.name())
     all = Enum.map(ExAthena.Tools.builtins(), & &1.name())
@@ -1079,10 +1100,11 @@ defmodule ExAthena.Tools.SpawnAgent do
       end
 
     selected
-    |> Enum.reject(&(&1 in ["plan_mode", "spawn_agent"]))
+    |> Enum.reject(&(&1 in ["plan_mode", "spawn_agent", "read_worker_report"]))
     |> Enum.filter(&MapSet.member?(known, &1))
     |> maybe_grant("todo_write", true)
     |> maybe_grant("spawn_agent", child_can_nest?)
+    |> maybe_grant("read_worker_report", child_can_nest?)
   end
 
   defp maybe_grant(tools, _name, false), do: tools

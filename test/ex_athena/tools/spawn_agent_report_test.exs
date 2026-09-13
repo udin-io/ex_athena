@@ -91,4 +91,168 @@ defmodule ExAthena.Tools.SpawnAgentReportTest do
       refute File.dir?(sidechain_dir(worker, "parent-session"))
     end
   end
+
+  describe "the parent can fetch a report its own cap truncated" do
+    @report String.duplicate("finding. ", 400)
+
+    defp run_with_cap(parent, worker, cap) do
+      Loop.run("do a thing",
+        provider: :mock,
+        mock: [
+          responder: parent_responder(%{"prompt" => "go", "max_result_chars" => cap})
+        ],
+        tools: [ExAthena.Tools.SpawnAgent, ExAthena.Tools.ReadWorkerReport],
+        cwd: parent,
+        memory: false,
+        session_id: "parent-session",
+        assigns: %{
+          spawn_agent_opts: [
+            cwd: worker,
+            provider: :mock,
+            mock: [responder: worker_responder(@report)],
+            tools: [],
+            memory: false
+          ]
+        },
+        max_iterations: 5
+      )
+    end
+
+    defp spawn_report(result) do
+      result.messages
+      |> Enum.filter(&match?(%{role: :tool}, &1))
+      |> Enum.flat_map(& &1.tool_results)
+      |> List.first()
+      |> Map.fetch!(:content)
+    end
+
+    test "the truncation notice names a call the model can actually make",
+         %{parent: parent, worker: worker} do
+      assert {:ok, result} = run_with_cap(parent, worker, 200)
+      report = spawn_report(result)
+
+      assert report =~ "200 of #{String.length(@report)} characters shown"
+      # The old notice said "ask for the specific part you still need" — an
+      # instruction with no tool behind it. Name the tool and the offset.
+      assert report =~ "read_worker_report"
+      assert report =~ ~s(from: 200)
+      assert report =~ "subagent_"
+    end
+
+    test "the full report comes back through read_worker_report",
+         %{parent: parent, worker: worker} do
+      assert {:ok, _result} = run_with_cap(parent, worker, 200)
+
+      [file] = File.ls!(sidechain_dir(parent, "parent-session"))
+      id = Path.basename(file, ".jsonl")
+
+      ctx =
+        ExAthena.ToolContext.new(cwd: parent, session_id: "parent-session")
+
+      assert {:ok, text} =
+               ExAthena.Tools.ReadWorkerReport.execute(%{"subagent_id" => id}, ctx)
+
+      assert text =~ String.slice(@report, 0, 50)
+      assert String.contains?(text, String.slice(@report, -50, 50))
+    end
+
+    test "a window can be requested from where the truncation stopped",
+         %{parent: parent, worker: worker} do
+      assert {:ok, _result} = run_with_cap(parent, worker, 200)
+
+      [file] = File.ls!(sidechain_dir(parent, "parent-session"))
+      id = Path.basename(file, ".jsonl")
+      ctx = ExAthena.ToolContext.new(cwd: parent, session_id: "parent-session")
+
+      assert {:ok, text} =
+               ExAthena.Tools.ReadWorkerReport.execute(
+                 %{"subagent_id" => id, "from" => 200, "max_chars" => 50},
+                 ctx
+               )
+
+      assert text =~ String.slice(@report, 200, 50)
+      refute text =~ String.slice(@report, 0, 50)
+    end
+
+    test "an unknown worker says so instead of raising", %{parent: parent} do
+      ctx = ExAthena.ToolContext.new(cwd: parent, session_id: "parent-session")
+
+      assert {:error, reason} =
+               ExAthena.Tools.ReadWorkerReport.execute(
+                 %{"subagent_id" => "subagent_neverExisted"},
+                 ctx
+               )
+
+      assert reason =~ "no report"
+    end
+
+    # The id comes from the model, so it must never reach the filesystem as
+    # given.
+    test "a traversal attempt is refused, not resolved", %{parent: parent} do
+      ctx = ExAthena.ToolContext.new(cwd: parent, session_id: "parent-session")
+
+      for bad <- ["../../etc/passwd", "subagent_../../x", "/etc/passwd", "sub agent"] do
+        assert {:error, reason} =
+                 ExAthena.Tools.ReadWorkerReport.execute(%{"subagent_id" => bad}, ctx)
+
+        assert reason =~ "not a worker id"
+      end
+    end
+  end
+
+  # read_worker_report answers "what did MY worker say". A leaf worker has no
+  # workers, so the tool is schema noise there — it is granted exactly when
+  # spawn_agent is, and never inherited from an agent definition's ceiling.
+  describe "the tool is scoped to whoever can delegate" do
+    defp worker_tools(parent, worker, depth) do
+      ref = make_ref()
+      test_pid = self()
+
+      spy = fn _req ->
+        send(test_pid, {ref, :worker_ran})
+        %Response{text: "done", finish_reason: :stop, provider: :mock}
+      end
+
+      {:ok, _} =
+        Loop.run("do a thing",
+          provider: :mock,
+          mock: [responder: parent_responder(%{"prompt" => "go"})],
+          tools: [ExAthena.Tools.SpawnAgent],
+          cwd: parent,
+          memory: false,
+          session_id: "parent-session",
+          assigns: %{
+            agent_depth: depth,
+            max_agent_depth: 2,
+            spawn_agent_opts: [
+              cwd: worker,
+              provider: :mock,
+              mock: [responder: spy],
+              memory: false,
+              on_event: fn _ -> :ok end
+            ]
+          },
+          max_iterations: 5
+        )
+
+      assert_receive {^ref, :worker_ran}, 2_000
+
+      [file] = File.ls!(sidechain_dir(parent, "parent-session"))
+
+      Path.join([parent, ".exathena", "sessions", "parent-session", "sidechains", file])
+      |> File.read!()
+      |> Jason.decode!()
+      |> get_in(["opts", "tools"])
+    end
+
+    test "a worker that may still delegate gets it", %{parent: parent, worker: worker} do
+      assert worker_tools(parent, worker, 0) =~ "read_worker_report"
+    end
+
+    test "a worker at the nesting ceiling does not", %{parent: parent, worker: worker} do
+      tools = worker_tools(parent, worker, 1)
+      refute tools =~ "read_worker_report"
+      refute tools =~ "spawn_agent"
+    end
+  end
 end
