@@ -46,6 +46,7 @@ defmodule ExAthena.Tools.ReadWorkerReport do
   @behaviour ExAthena.Tool
 
   alias ExAthena.Agents.{Journal, Sidechain}
+  alias ExAthena.Provenance
   alias ExAthena.ToolContext
 
   # Matches the ids SpawnAgent generates: "subagent_" plus url-safe base64.
@@ -163,23 +164,20 @@ defmodule ExAthena.Tools.ReadWorkerReport do
   defp fetch_journal(id, args, ctx) do
     filter = Map.get(args, "filter") || "tail"
 
-    cond do
-      filter not in @filters ->
+    with true <- filter in @filters,
+         [_ | _] = records <- Journal.read(journal_path(ctx, id)) do
+      {:ok,
+       records
+       |> render(filter, offset(args, "n", @default_tail))
+       |> slice(offset(args, "from", 0), offset(args, "max_chars", @default_max_chars))}
+    else
+      false ->
         {:error, "filter must be one of: #{Enum.join(@filters, ", ")}."}
 
-      true ->
-        case Journal.read(journal_path(ctx, id)) do
-          [] ->
-            {:error,
-             "no journal on disk for #{id}. Either the worker was never spawned in " <>
-               "this session, or journalling is switched off (Workers → journal size cap)."}
-
-          records ->
-            {:ok,
-             records
-             |> render(filter, offset(args, "n", @default_tail))
-             |> slice(offset(args, "from", 0), offset(args, "max_chars", @default_max_chars))}
-        end
+      [] ->
+        {:error,
+         "no journal on disk for #{id}. Either the worker was never spawned in " <>
+           "this session, or journalling is switched off (Workers → journal size cap)."}
     end
   end
 
@@ -192,16 +190,26 @@ defmodule ExAthena.Tools.ReadWorkerReport do
     end
   end
 
+  # Call order, not map order: "wrote the test, ran it, then edited source" and
+  # the reverse carry different meanings, which is why Provenance preserves
+  # order in the first place. A map's enumeration order would also vary with its
+  # size.
   defp render(records, "writes", _n) do
-    records
-    |> Journal.sizes()
-    |> case do
-      sizes when map_size(sizes) == 0 ->
+    sizes = Journal.sizes(records)
+    paths = records |> Journal.provenance_events() |> Provenance.changed_files()
+
+    case paths do
+      [] ->
         "This worker changed no files."
 
-      sizes ->
-        header(records, "wrote #{map_size(sizes)} file(s)") <>
-          Enum.map_join(sizes, "\n", fn {path, bytes} -> "wrote #{path} (#{bytes} B)" end)
+      _ ->
+        header(records, "wrote #{length(paths)} file(s)") <>
+          Enum.map_join(paths, "\n", fn path ->
+            case Map.get(sizes, path) do
+              bytes when is_integer(bytes) -> "wrote #{path} (#{bytes} B)"
+              _ -> "wrote #{path}"
+            end
+          end)
     end
   end
 
