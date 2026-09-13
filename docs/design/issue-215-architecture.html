@@ -621,10 +621,15 @@ process and cwd</em>, so a <code>File.stat/1</code> on the path a successful wri
 moment the file certainly exists — including inside a <code>:worktree</code> worker's directory, which
 <code>finalize_isolation/1</code> deletes before the parent could ever stat it.</p>
 
-<pre><code>{"t":1789248701432,"i":14,"ev":"tool_call","id":"call_7f","name":"bash","path":null,
- "args":"cat &gt; plan/uat_testing/guides-96-114-extract.md &lt;&lt;'EOF'\n# UAT guides 96-114\n…"}
-{"t":1789248701998,"i":14,"ev":"tool_result","id":"call_7f","ok":true,"exit_code":0,
- "path":"plan/uat_testing/guides-96-114-extract.md","bytes":85043}</code></pre>
+<pre><code>{"t":1789248701201,"ev":"iteration","i":14}
+{"t":1789248701432,"ev":"tool_call","id":"call_7f","name":"bash","path":null,
+ "args":"%{\"command\" =&gt; \"cat &gt; plan/uat_testing/guides-96-114-extract.md &lt;&lt;'EOF'…\"}"}
+{"t":1789248701998,"ev":"tool_result","id":"call_7f","ok":true,"exit_code":0,
+ "cmd":"cat &gt; plan/uat_testing/guides-96-114-extract.md &lt;&lt;'EOF'…",
+ "writes":[{"path":"plan/uat_testing/guides-96-114-extract.md","bytes":85043}]}</code></pre>
+
+<p class="kv">No <code>"i"</code> outside the <code>iteration</code> line, and no tool name on the result — see
+section 10. <code>writes</code> is empty unless the path was found on disk at the moment the command finished.</p>
 
 <h2>8. Scope — what this ticket is, and what it is not</h2>
 
@@ -668,18 +673,68 @@ path that does not exist is never reported. A parse that must survive a <code>st
 evidence.</p>
 </div>
 
-<h2>9. Open question for the reviewer</h2>
+<h2>9. Answered: build only the journal</h2>
 
-<div class="note">
-<p>Layer 1c (read the Coordinator's <code>transcript_tail</code>) and layer 2 (the journal) cover overlapping
-ground on web runs. 1c is a handful of lines and bounded at the last 30 rows; the journal is a new module and a
-new file but is complete and works everywhere. <strong>Build both, or build only the journal and let the web
-case read the same file as everyone else?</strong> The recommendation above is both, because 1c ships in the
-first commit and the journal is behind a knob that can be set to 0 — but the single-path answer is defensible
-and cheaper to maintain.</p>
+<div class="note ok">
+<p>The open question was whether to build layer 1c (read the Coordinator's <code>transcript_tail</code>) as well
+as the journal. <strong>Decision: only the journal.</strong> 1c covers one entry point of four and is dead code
+in <code>mix athena.chat</code>, headless <code>Loop.run/2</code> and tests — two salvage paths overlapping on
+web runs and diverging everywhere else is the duplicate-path case the repo's DRY rule names. One path, all four
+entry points, and the web case reads the same file as everyone else.</p>
+<p>Consequence: the journal defaults <strong>on</strong>, because it is now the only thing standing between a
+killed worker and lost evidence. <code>journal_bytes</code> bounds the cost without making survival opt-in.</p>
 </div>
 
-<h2>10. Mermaid sources</h2>
+<h2>10. What the code changed about this design</h2>
+
+<p>Three things were wrong in the approved design, all found by reading the code while implementing it. They are
+recorded here because the diagrams above still describe the shape, and someone will read them before the
+source.</p>
+
+<div class="panel">
+<table>
+<thead><tr><th style="width:26%">The design said</th><th style="width:37%">The code required</th><th>Consequence</th></tr></thead>
+<tbody>
+<tr>
+  <td>The writer holds per-worker state (iteration, a call-id to path map, a byte counter) in the process
+      dictionary, as <code>Events.provider_stream_callback/2</code> does for its fence filter.</td>
+  <td><code>on_event</code> is invoked from inside <code>Task.async_stream</code> tasks whenever tool calls run
+      concurrently (<code>lib/ex_athena/loop/parallel.ex:97</code> calling
+      <code>ReAct.run_single_tool_call/2</code>, which emits both <code>:tool_call</code> and
+      <code>:tool_result</code>). There is no single process to hang state on.</td>
+  <td><strong>The writer is stateless.</strong> Which turned out to be free: <code>write</code> and
+      <code>edit</code> both report the resolved path in their <code>:diff</code> ui payload, and
+      <code>bash</code> reports the full command in its <code>:process</code> payload, so every line is derived
+      from its own event. Correlation is a read-time join, as section 7 already wanted.</td>
+</tr>
+<tr>
+  <td>Every line carries <code>"i"</code>, the iteration it belongs to.</td>
+  <td>Same reason — the current iteration is state.</td>
+  <td>Only <code>iteration</code> and <code>conclusion</code> records carry <code>i</code>; the reader carries it
+      forward. One less thing to be wrong.</td>
+</tr>
+<tr>
+  <td>The footer stats at hand-back; the worktree case is covered by an honest
+      <code>(written, not re-checked)</code> caveat.</td>
+  <td>That works, but throws away a number the journal already measured correctly, in the worker, while the
+      file existed.</td>
+  <td><code>Provenance.footer/2</code> gained a <code>:sizes</code> fallback used only where the
+      <code>stat</code> fails, rendering <code>(85043 B, not re-checked)</code>. Still one footer format — the
+      constraint section 3a insisted on — and no measurement taken elsewhere is passed off as one taken here.</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<div class="note">
+<p><strong>Also confirmed while implementing:</strong> the <code>schema coverage</code> test really does enforce
+the settings fields. <code>test/ex_athena/web/settings_test.exs:158</code> greps
+<code>Path.wildcard("lib/**/*.ex")</code> for literal <code>Tuning.get(:ns, :key</code> calls and fails on any
+the schema omits — so <code>journal_bytes</code> and <code>journal_line_chars</code> could not have been added
+without their modal fields.</p>
+</div>
+
+<h2>11. Mermaid sources</h2>
 
 <p class="kv">Kept verbatim so the same pictures can go in the PR body under an "## Architecture" heading, where
 GitHub renders them natively.</p>

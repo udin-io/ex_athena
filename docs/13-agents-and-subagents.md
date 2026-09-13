@@ -45,6 +45,7 @@ Sources:
 - Worktree: [`Agents.Worktree`](../lib/ex_athena/agents/worktree.ex),
   [`Agents.WorktreeSweeper`](../lib/ex_athena/agents/worktree_sweeper.ex)
 - Sidechain: [`Agents.Sidechain`](../lib/ex_athena/agents/sidechain.ex)
+- Journal: [`Agents.Journal`](../lib/ex_athena/agents/journal.ex)
 
 ---
 
@@ -189,6 +190,51 @@ Source: [`Agents.Sidechain`](../lib/ex_athena/agents/sidechain.ex).
 The parent doesn't *see* sidechain events in its message history (only the final
 summary tool_result). But debug UIs and post-hoc auditing can pull the full
 subagent trace.
+
+---
+
+## The worker journal
+
+The sidechain is written by the **parent**, once, after the worker is already
+gone. So is everything else a parent learns about a worker — its report, its
+conclusions ledger, the `Provenance` footer are all derived from the `Result`
+the worker hands back.
+
+A worker that is killed outright hands back no `Result`, so all of it is lost
+at the same moment. The journal exists for that case: the **worker** writes it,
+continuously, while it is alive.
+
+    <parent cwd>/.exathena/sessions/<parent_session_id>/journal/<subagent_id>.ndjson
+
+One JSON object per line — iterations, tool calls with the paths they named,
+tool results with exit codes and byte counts, usage, conclusions, and the
+finish reason. Streamed `:content` and `:thinking` are refused: they arrive one
+delta per token, and the journal records what a worker *did*, never a second
+copy of what it said.
+
+Three properties are load-bearing:
+
+- **Stateless writer.** `on_event` is invoked from inside `Task.async_stream`
+  tasks when tool calls run concurrently, so there is no single process to hang
+  a counter or a call-id map on. Every line is derived from its own event, and
+  correlating a `tool_result` back to the `tool_call` that named the path is the
+  reader's job.
+- **No `:delayed_write`.** The parent reads this file microseconds after
+  brutal-killing the worker, and a buffer is a thing the reader cannot see.
+- **Sizes measured in the worker.** A `:worktree` worker's directory is deleted
+  by `finalize_isolation/1` before the parent could stat anything, so the byte
+  count is taken where and when the file certainly exists. The parent still
+  prefers its own `stat`, and falls back to the journalled number annotated
+  `not re-checked`.
+
+The parent reads it in two places: automatically when a worker times out (the
+`[worker provenance]` footer it hands back is then rendered from the journal),
+and on demand via `read_worker_report` with `source: "journal"`.
+
+Capped by `config :ex_athena, :agents, journal_bytes` (0 disables) and
+`journal_line_chars`, both in the settings modal under **Workers**.
+
+Source: [`Agents.Journal`](../lib/ex_athena/agents/journal.ex).
 
 ---
 
