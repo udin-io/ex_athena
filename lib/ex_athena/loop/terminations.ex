@@ -112,16 +112,6 @@ defmodule ExAthena.Loop.Terminations do
   def error?(_), do: true
 
   @doc """
-  Categorise a termination for retry classification. Returns one of:
-  `:retryable`, `:capacity`, `:fatal`.
-
-    * `:interrupted` — a human stopped it; retry only if they ask.
-    * `:retryable` — transient; caller may retry on a new run.
-    * `:capacity` — the run hit a configured limit; caller should increase
-      the limit or reduce scope.
-    * `:fatal` — don't retry without operator action.
-  """
-  @doc """
   Did this run stop because it ran out of room, rather than because it went
   wrong?
 
@@ -146,6 +136,16 @@ defmodule ExAthena.Loop.Terminations do
   def budget_exhaustion?(:error_thinking_starved), do: true
   def budget_exhaustion?(_), do: false
 
+  @doc """
+  Categorise a termination for retry classification. Returns one of:
+  `:retryable`, `:capacity`, `:fatal`.
+
+    * `:interrupted` — a human stopped it; retry only if they ask.
+    * `:retryable` — transient; caller may retry on a new run.
+    * `:capacity` — the run hit a configured limit; caller should increase
+      the limit or reduce scope.
+    * `:fatal` — don't retry without operator action.
+  """
   @spec category(subtype()) :: :success | :interrupted | :retryable | :capacity | :fatal
   def category(:stop), do: :success
   def category(:submitted), do: :success
