@@ -151,6 +151,101 @@ Item 2 does not need a new write path — it needs a notice that names the exist
 bug fix (below).</p>
 </div>
 
+
+<h2>2. The failure this fixes, step by step</h2>
+
+<p>Three things have to line up, and only a sequence shows the order: the worker's artifact lands on disk
+<em>before</em> its budget runs out, the parent is told about a budget fact in the grammar of a mistake, and the
+parent's own counter — its only turn-based rail under <code>max_iterations: :infinity</code> — reaches three.</p>
+
+<div class="panel">
+<h3>As-is — session 5906635b743d, the last three spawns</h3>
+<div class="scroll">
+<pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor H as Human
+  participant O as Orchestrator loop<br/>max_iterations :infinity
+  participant SA as SpawnAgent
+  participant W as Worker NzKBmpsD
+  participant FS as Filesystem
+  participant RA as ReAct accounting
+
+  H->>O: create a combined UAT guide
+  O->>SA: spawn_agent implementer, max_result_chars 2000
+  SA->>W: Loop.run with max_input_tokens 800000
+  W->>FS: write guides-96-114-extract.md — 85043 bytes
+  FS-->>W: ok
+  Note over W: BudgetPressure note fires at 75 percent<br/>"reduce scope NOW, produce your report"
+  W->>W: chooses ONE more verification pass
+  W->>W: input tokens cross the cap mid-turn
+  W-->>SA: Result finish_reason error_max_input_tokens<br/>text is a narration line, no report
+  SA->>FS: Sidechain.write — full text to sidechains/SUBAGENT_ID.jsonl
+  Note over SA,FS: written, and nothing ever tells the parent it exists
+  SA-->>O: error: worker did not finish error_max_input_tokens<br/>digest of INTENTIONS, 300 chars, no provenance
+  O->>RA: tool result is_error true
+  RA->>RA: bump_mistake — counter 1
+  Note over O: parent re-delegates the same ground, twice more
+  RA->>RA: counter 2, then 3
+  RA-->>O: guard at loop.ex 167 fires
+  O-->>H: error_consecutive_mistakes, 3h36m, 9.1M tokens
+  Note over FS: all four deliverables complete on disk the whole time
+</pre>
+</div>
+<div class="note warn">
+<p>Read step 10 and step 12 together. The parent is handed a sentence that reads
+<em>"the worker did not finish"</em> and nothing that reads <em>"an 85KB file exists at this path"</em> — while
+<code>Sidechain.write</code> put the worker's own account of it on disk one line earlier.</p>
+</div>
+</div>
+
+<div class="panel">
+<h3>As-designed — the same run with items 1, 2 and 4 in place</h3>
+<div class="scroll">
+<pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor H as Human
+  participant O as Orchestrator loop
+  participant SA as SpawnAgent
+  participant W as Worker NzKBmpsD
+  participant FS as Filesystem
+  participant RA as ReAct accounting
+
+  H->>O: create a combined UAT guide
+  O->>SA: spawn_agent implementer, max_result_chars 2000
+  SA->>W: Loop.run
+  W->>FS: write guides-96-114-extract.md — 85043 bytes
+  Note over W: item 4 — BudgetPressure now names TWO states.<br/>Deliverable produced but unverified: hand it back NOW,<br/>labelled unverified, naming the checks not run.
+  W-->>SA: Result finish_reason stop<br/>"UNVERIFIED: wrote guides-96-114-extract.md, 19 of 19 guides.<br/>Not run: tail-section spot check, heading count."
+  SA->>FS: Sidechain.write — full text
+  SA->>FS: item 2 — stat the paths Provenance derived
+  SA-->>O: ok: report plus provenance footer naming the file and its size
+  O->>RA: tool result is_error nil — success, counter resets
+  O->>SA: spawn a cheap verification-only worker for the named file
+  Note over O,SA: the re-delegation is 1 small step, not a repeat of the whole brief
+
+  rect rgb(251,234,231)
+  Note over W: and when the cap DOES bite mid-turn anyway
+  W-->>SA: Result finish_reason error_max_input_tokens
+  SA->>SA: item 1 — Terminations.category is a budget subtype
+  SA->>FS: item 2 — provenance footer on the FAILURE path too
+  SA-->>O: error, :uncounted, "worker stopped on its token budget.<br/>Files it wrote: guides-96-114-extract.md 85043 B.<br/>Full report: read_worker_report SUBAGENT_ID"
+  O->>RA: tool result is_error TRUE — the model still reads a failure
+  RA->>RA: item 1 — NO bump_mistake, and no reset either
+  Note over RA: counter unchanged. Three of these in a row<br/>leave the orchestrator running.
+  O->>SA: read_worker_report SUBAGENT_ID from 0 bytes 4000
+  SA-->>O: the untruncated report the parent used to lose
+  end
+</pre>
+</div>
+<div class="note ok">
+<p>The economy: the as-designed path spends ONE cheap verification spawn where the as-is path spent two failed
+re-delegations and the run. Nothing in it asks the worker to skip verification — item 4 only moves the report
+<em>before</em> the victory lap when the budget cannot pay for both.</p>
+</div>
+</div>
+
 </div>
 </body>
 </html>
