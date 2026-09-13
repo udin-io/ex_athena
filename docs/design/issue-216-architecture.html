@@ -580,7 +580,64 @@ the notice, then the read tool. Item 3's prompt line anywhere. Each of those is 
 the issue map one-to-one onto them.</p>
 </div>
 
-<h2>9. Mermaid sources</h2>
+<h2>10. What shipped</h2>
+
+<div class="note ok">
+<p>All three recommendations were accepted on 2026-09-13 and implemented on
+<code>issue-216-worker-failure-reporting</code>. This section is the record of what landed against what was
+designed; the sections above are left as approved.</p>
+</div>
+
+<div class="panel scroll">
+<table>
+<thead><tr><th>Item</th><th>Shipped as</th><th>Where</th></tr></thead>
+<tbody>
+<tr>
+  <td>1 — uncounted budget termination</td>
+  <td>As designed. <code>{:error, :uncounted, text}</code> tool return; no third <code>is_error</code> state.
+      Classification via <code>Terminations.budget_exhaustion?/1</code>, an explicit list, not <code>category/1</code>.
+      Worker timeouts ride the same path.</td>
+  <td><code>lib/ex_athena/tool.ex</code>, <code>modes/react.ex</code>, <code>loop/terminations.ex</code>,
+      <code>tools/spawn_agent.ex</code>, <code>modes/orchestrate.ex</code></td>
+</tr>
+<tr>
+  <td>2 — retrievable full report</td>
+  <td>As designed, reduced. Sidechain cwd bug fixed first, as its own commit. New
+      <code>read_worker_report</code> tool over the existing sidechain; truncation notice names the call and the
+      offset. No new write path.</td>
+  <td><code>tools/read_worker_report.ex</code>, <code>tools/spawn_agent.ex</code></td>
+</tr>
+<tr>
+  <td>3 — write brief to a read-only agent</td>
+  <td>Split. Only the prompt guard shipped, on <code>explore</code> AND <code>research</code>. The code rail is a
+      follow-up ticket carrying the <code>Quota</code>-ordering finding.</td>
+  <td><code>priv/agents/explore.md</code>, <code>priv/agents/research.md</code></td>
+</tr>
+<tr>
+  <td>4 — unverified hand-back</td>
+  <td>As designed. Verify directive kept and ranked; second branch added for the produced-but-unverified case.</td>
+  <td><code>loop/budget_pressure.ex</code></td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<h3>Found during implementation, not during design</h3>
+<ul>
+  <li><code>Modes.Orchestrate</code> pattern-matches <code>SpawnAgent.execute/2</code>'s return in TWO places
+      (<code>auto_delegate/2</code> and <code>auto_research/2</code>). A new return shape raised
+      <code>CaseClauseError</code> in the runtime's own auto-delegation path — caught by an existing test, not by the
+      audit, because the audit traced <code>is_error</code> rather than the tool return.</li>
+  <li>The worker-timeout path returned <code>{:error, {:sub_agent_timeout, 1000}}</code>, a bare Elixir tuple the
+      model read as <code>error: {:sub_agent_timeout, 1000}</code>. Now a sentence.</li>
+  <li><code>plan</code> is not a read-only agent — it declares <code>write</code>, scoped to
+      <code>.exathena/plans/</code> — so the item 3 prompt guard deliberately excludes it.</li>
+  <li>The repo had no root <code>CLAUDE.md</code> and has no <code>docs/PROJECT.md</code> set, but does have an
+      <code>adr/</code> directory of 20+ entries. The first is now created; the migration is flagged there and
+      remains outstanding.</li>
+</ul>
+
+<h2>11. Mermaid sources</h2>
 <p class="kv">Kept verbatim so the same pictures can go in the PR body under an "## Architecture" heading, where GitHub
 renders them natively.</p>
 
