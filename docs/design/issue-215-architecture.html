@@ -588,3 +588,82 @@ PR 218 just shipped. Separate files, shared directory.</p>
 <code>session_dir/2</code>, and <code>Journal</code> and <code>ReadWorkerReport</code> both call it, so there is
 one definition of where a worker's artifacts live instead of the three string joins there are today.</p>
 </div>
+
+<h2>7. The journal record</h2>
+
+<div class="panel">
+<h3>Which events are written, and which are refused</h3>
+<table>
+<thead><tr><th style="width:22%">Event</th><th style="width:14%">Rate</th><th>Journalled as</th></tr></thead>
+<tbody>
+<tr><td><code>{:iteration, n}</code></td><td>1 per turn</td><td><code>{"ev":"iteration","i":14}</code> — the clock everything else hangs off.</td></tr>
+<tr><td><code>{:tool_call, %ToolCall{}}</code></td><td>1 per call</td><td><code>id</code>, <code>name</code>, and arguments digested to <code>journal_line_chars</code>. For <code>write</code>/<code>edit</code>/<code>apply_patch</code> the <code>path</code> is lifted to its own field so the reader never parses a digest.</td></tr>
+<tr><td><code>{:tool_result, %ToolResult{}}</code></td><td>1 per call</td><td><code>id</code>, <code>is_error</code>, <code>exit_code</code> when the <code>ui_payload</code> carries one, and <code>bytes</code> from a <code>File.stat/1</code> of the path the matching call named.</td></tr>
+<tr><td><code>{:usage, map}</code></td><td>1 per turn</td><td><code>input_tokens</code> / <code>output_tokens</code>. Emitted once per turn from the final <code>Response</code>, not per delta.</td></tr>
+<tr><td><code>{:conclusion, …}</code></td><td>1 per turn</td><td><code>text</code> and <code>source</code>. Cheap, and it is what makes the file readable to a human six hours later.</td></tr>
+<tr><td><code>{:subagent_spawn, …}</code> / <code>{:subagent_result, …}</code></td><td>rare</td><td>child <code>id</code> only. The child has its own journal; duplicating its text here would nest transcripts.</td></tr>
+<tr><td><code>{:done, %Result{}}</code></td><td>1, terminal</td><td><code>finish_reason</code>. Its absence is itself the evidence that the worker was killed.</td></tr>
+<tr><td><code>{:content, _}</code>, <code>{:thinking, _}</code></td><td><strong>per delta</strong></td><td><span class="tag t-bad">refused</span> One filesystem write per token. The issue lists <code>:thinking</code>; it must not be journalled.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>Correlation happens at read time, not write time</h3>
+
+<p><code>%ToolResult{}</code> carries <code>tool_call_id</code> and <strong>no tool name</strong>
+(<code>lib/ex_athena/messages.ex:35</code>). The issue's sample line puts <code>"name":"write"</code> on the
+result, which the writer cannot know without holding per-worker state across callback invocations. Write
+<code>id</code> on both lines and let the reader join them. A stateless closure is a closure that cannot lose
+state when the worker dies.</p>
+
+<p>The one derivation worth doing at write time is the byte count: the journal runs <em>in the worker's own
+process and cwd</em>, so a <code>File.stat/1</code> on the path a successful write just named is taken at the one
+moment the file certainly exists — including inside a <code>:worktree</code> worker's directory, which
+<code>finalize_isolation/1</code> deletes before the parent could ever stat it.</p>
+
+<pre><code>{"t":1789248701432,"i":14,"ev":"tool_call","id":"call_7f","name":"bash","path":null,
+ "args":"cat &gt; plan/uat_testing/guides-96-114-extract.md &lt;&lt;'EOF'\n# UAT guides 96-114\n…"}
+{"t":1789248701998,"i":14,"ev":"tool_result","id":"call_7f","ok":true,"exit_code":0,
+ "path":"plan/uat_testing/guides-96-114-extract.md","bytes":85043}</code></pre>
+
+<h2>8. Scope — what this ticket is, and what it is not</h2>
+
+<div class="panel">
+<table>
+<thead><tr><th style="width:30%">Work</th><th style="width:14%">Where</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td><strong>1a</strong> <code>append_provenance/2</code> on the unfinished branch</td><td><span class="tag t-good">this ticket, first commit</span></td><td>One line. It is the entire fix for the incident the issue is named after, and it should be reviewable on its own.</td></tr>
+<tr><td><strong>1b</strong> bash write targets in <code>Provenance</code>, <code>stat</code>-verified</td><td><span class="tag t-good">this ticket</span></td><td>Self-contained in one module with a pure test surface.</td></tr>
+<tr><td><strong>1c</strong> <code>progress_digest/2</code> reads <code>transcript_tail</code></td><td><span class="tag t-good">this ticket</span></td><td>Same module, same failure, and it is what covers the web case while the journal covers the rest.</td></tr>
+<tr><td><strong>2</strong> <code>Agents.Journal</code> plus the <code>compose/3</code> wiring</td><td><span class="tag t-good">this ticket</span></td><td>The mechanism the issue is for.</td></tr>
+<tr><td><strong>3a</strong> byte sizes in <code>Provenance.footer/1</code></td><td><span class="tag t-good">this ticket</span></td><td>Small, and it is what turns the footer into evidence rather than a list.</td></tr>
+<tr><td><strong>3b</strong> <code>source:</code> / <code>filter:</code> on <code>ReadWorkerReport</code></td><td><span class="tag t-good">this ticket</span></td><td>Already designed for in PR 218.</td></tr>
+<tr><td>Pruning <code>.exathena/sessions</code> — generalise <code>Checkpoint.Sweeper</code></td><td><span class="tag t-acc">separate ticket</span></td><td>Fixes unbounded growth that predates this issue and deletes data this issue does not create.</td></tr>
+<tr><td>The crash branch: no digest, no provenance, not <code>:uncounted</code></td><td><span class="tag t-acc">separate ticket</span></td><td>A crashed worker still bumps the mistake counter PR 218 just taught to spare budget exhaustion. It is a bug with its own reproduction, not a layer of this design.</td></tr>
+<tr><td>Having <code>bash</code> itself report the paths it touched</td><td><span class="tag t-acc">only if 1b proves insufficient</span></td><td>See below.</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>Why 1b is a stat, not a parser</h3>
+
+<p>The issue offers two routes for bash-written files and prefers "have the bash tool report the paths it
+touched". That is more robust <em>if the tool can know</em>, and it cannot without paying for it: discovering
+what an arbitrary command touched means an <code>strace</code>, a directory scan, or a
+<code>git status --porcelain</code> before and after every single <code>bash</code> call. The
+<code>ui_payload</code> at <code>bash.ex:405</code> is a clean place to put the answer; nothing cheap produces
+one.</p>
+
+<p>Parsing shell syntax to find write targets is the other rabbit hole, and it is worse, because a wrong answer
+here is a fabricated fact in a footer whose entire value is that its facts are checkable. Redirection into a
+variable, <code>tee</code> behind a pipe, <code>sed -i</code>, a Python heredoc that opens its own file — the
+tail is endless and every miss is silent.</p>
+
+<div class="note ok">
+<p><strong>The narrow version keeps the property that matters.</strong> Match only unambiguous forms —
+<code>&gt; path</code>, <code>&gt;&gt; path</code>, <code>tee path</code> — then <code>File.stat/1</code> every
+candidate and report only the ones that exist with a size. False negatives stay possible and are acceptable: a
+footer reading <code>files changed: none</code> is the status quo. False positives become impossible, because a
+path that does not exist is never reported. A parse that must survive a <code>stat</code> cannot invent
+evidence.</p>
+</div>
