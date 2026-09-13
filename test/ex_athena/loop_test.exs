@@ -750,12 +750,15 @@ defmodule ExAthena.LoopTest do
 
       # Late turns (near the cap): the directive appears at the tail. It tells
       # the loop to stop gathering, produce a report, and hand back what it
-      # could not reach — see ExAthena.Loop.BudgetPressure.
+      # could not reach — and, when the deliverable already exists, to hand it
+      # back unverified rather than spend the last turns checking it. See
+      # ExAthena.Loop.BudgetPressure.
       assert_receive {:req, 5, msgs5}
 
       assert Enum.any?(msgs5, fn m ->
                is_binary(m.content) and m.content =~ "reduce scope" and
-                 m.content =~ "stop gathering" and m.content =~ "report"
+                 m.content =~ ~r/stop gathering/i and m.content =~ "report" and
+                 m.content =~ ~r/unverified/i
              end)
     end
 
