@@ -39,7 +39,14 @@ fails in ways that look like flakes but are not.
 Measured 2026-09-13 on `main` (`5db70d8`). Do not chase these:
 
 * 3 symlink-canonicalisation tests in `ExAthena.ToolContextTest`.
-* 1 `ExAthena.Tools.BashTest` confinement test needing `bwrap` on PATH.
+* 1 `ExAthena.Tools.BashTest` confinement test, "writes inside a root
+  succeed". NOT a missing `bwrap` — the binary is on PATH here
+  (`/usr/bin/bwrap`, 0.8.0) and the test still fails. It cannot create a user
+  namespace inside the dev container: `bwrap --dev-bind / / true` exits 1 with
+  "No permissions to create new namespace". `ExAthena.Sandbox.available?/1`
+  only checks that the helper exists, so the confined path runs, every command
+  under it fails, and the write never lands. Run that one-liner before
+  believing any other explanation.
 * `ExAthena.Tools.AskUserTest` flakes intermittently.
 * The LSP / `ImplicitDiagnostics` family flakes in CI; re-run the job once
   before treating a failure there as real.
