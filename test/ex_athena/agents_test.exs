@@ -49,6 +49,35 @@ defmodule ExAthena.AgentsTest do
       assert "web_search" in research_tools
     end
 
+    # Session 5906635b743d spawned `explore` with a prompt beginning "WRITE THE
+    # RESULT TO A FILE". The agent has no write and no bash, so it burned 24.6
+    # minutes and 540K input tokens on work it could never save, then two more
+    # workers were spawned purely to probe whether writing was possible at all.
+    #
+    # `orchestrate.ex` already tells the ORCHESTRATOR not to do this. Nothing
+    # told the WORKER what to do when it happened anyway — so it tried.
+    test "a read-only agent is told what to do when its brief demands a file", %{
+      cwd: cwd,
+      user: user
+    } do
+      agents = Agents.discover(cwd, user_dir: user)
+
+      # `plan` is excluded on purpose: it HAS write (scoped to
+      # .exathena/plans/) and its prompt already says what it may write.
+      for name <- ["explore", "research"] do
+        %Definition{system_prompt: prompt, tools: tools} = Map.fetch!(agents, name)
+
+        refute "write" in tools
+        refute "bash" in tools
+
+        assert prompt =~ ~r/implementer/,
+               "#{name} must name the agent that CAN write"
+
+        assert prompt =~ ~r/report .*(instead|rather)|do not attempt|say so/i,
+               "#{name} must tell the worker to report the refusal, not attempt the write"
+      end
+    end
+
     test "loads a custom project agent and prefers it over builtins", %{
       cwd: cwd,
       user: user

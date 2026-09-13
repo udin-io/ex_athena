@@ -51,6 +51,7 @@ defmodule ExAthena.Tools.SpawnAgent do
 
   alias ExAthena.Agents
   alias ExAthena.Agents.{Deadline, Quota, Sidechain, Worktree}
+  alias ExAthena.Loop.Terminations
   alias ExAthena.Orchestrator.AgentInfo
   alias ExAthena.Tuning
 
@@ -364,9 +365,17 @@ defmodule ExAthena.Tools.SpawnAgent do
     stop_subtree(subtree)
 
     # Persist the sidechain transcript (best-effort; never fails the spawn).
+    #
+    # Under the PARENT's cwd, never the worker's. A `:worktree`-isolated worker
+    # runs in an ephemeral directory that `finalize_isolation/1` deletes eleven
+    # lines below (`git worktree remove --force`), so a transcript written to
+    # `sub_opts[:cwd]` is written into a grave — and it is exactly the isolated
+    # workers whose transcripts are worth reading. The parent's cwd also keeps
+    # one run's sidechains in one place, which is what `read_worker_report`
+    # resolves against.
     _ =
       Sidechain.write(%{
-        cwd: Keyword.get(sub_opts, :cwd, ctx.cwd),
+        cwd: ctx.cwd,
         parent_session_id: ctx.session_id || "unknown",
         subagent_id: sub_id,
         prompt: prompt,
@@ -410,10 +419,7 @@ defmodule ExAthena.Tools.SpawnAgent do
               :ok
           end
 
-          {:error,
-           "worker did not finish (#{sub_result.finish_reason}). " <>
-             "What it learned before stopping:\n#{digest}\n" <>
-             "Re-delegate with a narrower or clearer brief, building on those findings."}
+          unfinished_error(sub_result.finish_reason, digest)
 
         {:ok, {:ok, %{text: text} = sub_result}} ->
           # A thinking-model worker often ends with a BLANK text channel —
@@ -435,7 +441,8 @@ defmodule ExAthena.Tools.SpawnAgent do
             text
             |> truncate_result(
               Map.get(args, "max_result_chars") ||
-                Tuning.get(:agents, :result_chars, @default_result_chars)
+                Tuning.get(:agents, :result_chars, @default_result_chars),
+              sub_id
             )
             |> append_provenance(sub_result)
 
@@ -515,7 +522,9 @@ defmodule ExAthena.Tools.SpawnAgent do
   end
 
   # A timed-out worker is brutal-killed, so its `Result` — and with it every
-  # finding — dies with the process. The observer (Coordinator) has been
+  # finding — dies with the process. It comes back `:uncounted` for the same
+  # reason a token-capped worker does (see `unfinished_error/2`): running out of
+  # clock is a fact about the worker, not a mistake by the parent. The observer (Coordinator) has been
   # accumulating the same todos and conclusions all along, so the digest is
   # rebuilt from there and handed back the way the `error_max_turns` path
   # already does. Live, one worker was killed at its 30 minute mark after 19
@@ -527,12 +536,15 @@ defmodule ExAthena.Tools.SpawnAgent do
     case progress_digest(ctx, sub_id) do
       nil ->
         notify_failure(ctx, sub_id, "timed out after #{spent} — no progress recorded")
-        {:error, {:sub_agent_timeout, timeout}}
+
+        {:error, :uncounted,
+         "worker timed out after #{spent} with no progress recorded. " <>
+           "Re-delegate a smaller slice, or finish without it."}
 
       digest ->
         notify_failure(ctx, sub_id, "timed out after #{spent}:\n#{digest}")
 
-        {:error,
+        {:error, :uncounted,
          "worker timed out after #{spent}. " <>
            "What it learned before stopping:\n#{digest}\n" <>
            "Re-delegate a narrower slice building on those findings, or finish without it."}
@@ -889,6 +901,40 @@ defmodule ExAthena.Tools.SpawnAgent do
 
   defp append_cwd_line(brief, _cwd), do: brief
 
+  # How an unfinished worker reaches the parent.
+  #
+  # Always a tool ERROR: the parent has to know it lost the step and re-plan,
+  # and returning the worker's (usually empty) text as a success left the
+  # orchestrator blind to the failure.
+  #
+  # But a worker that ran out of BUDGET is a fact about that worker, not a
+  # mistake by the parent, so it comes back `:uncounted` — read by the model,
+  # not scored by the loop (see `ExAthena.Tool`'s execute contract). Session
+  # 5906635b743d died on `error_consecutive_mistakes` after three workers were
+  # cut off, with all four of its deliverables already complete on disk;
+  # orchestrate mode sets `max_iterations: :infinity`, so that counter was the
+  # only turn-based guard it had.
+  #
+  # A worker that hallucinated, went in circles, or could not produce parseable
+  # output keeps counting: re-delegating the same brief reproduces the fault,
+  # which is exactly what the counter is for. See
+  # `ExAthena.Loop.Terminations.budget_exhaustion?/1` for why this is not
+  # `category/1 == :capacity`.
+  defp unfinished_error(finish_reason, digest) do
+    if Terminations.budget_exhaustion?(finish_reason) do
+      {:error, :uncounted,
+       "worker stopped on its budget (#{finish_reason}) before reporting — " <>
+         "it did not fail at the task, it ran out of room. " <>
+         "What it learned before stopping:\n#{digest}\n" <>
+         "Re-delegate a SMALLER slice building on those findings, or finish without it."}
+    else
+      {:error,
+       "worker did not finish (#{finish_reason}). " <>
+         "What it learned before stopping:\n#{digest}\n" <>
+         "Re-delegate with a narrower or clearer brief, building on those findings."}
+    end
+  end
+
   # Salvage an unfinished worker's learnings: its conclusions ledger (and
   # any final text) as a compact digest the orchestrator can build on.
   # Structured handoff so the retry skips finished work: completed and
@@ -966,21 +1012,38 @@ defmodule ExAthena.Tools.SpawnAgent do
   silently clipped, and it responded by re-requesting whole files (one run
   spent 6 of 28 spawns on "report the FULL contents of…"). Naming the loss
   lets it ask for the missing part instead of the whole thing again.
+
+  With a `subagent_id`, the notice names the exact `read_worker_report` call
+  that returns the rest. Without one it can only describe the loss: the old
+  wording, "ask for the specific part you still need", was an instruction the
+  model had no tool to follow, and a worker whose report is truncated is
+  usually gone by the time the parent reads it.
   """
-  @spec truncate_result(String.t(), pos_integer() | any()) :: String.t()
-  def truncate_result(text, max) when is_integer(max) and max > 0 do
+  @spec truncate_result(String.t(), pos_integer() | any(), String.t() | nil) :: String.t()
+  def truncate_result(text, max, subagent_id \\ nil)
+
+  def truncate_result(text, max, subagent_id) when is_integer(max) and max > 0 do
     len = String.length(text)
 
     if len > max do
       String.slice(text, 0, max) <>
         "\n\n[report truncated — #{max} of #{len} characters shown. " <>
-        "Ask for the specific part you still need; do not re-request the whole thing.]"
+        recovery_hint(subagent_id, max) <> "]"
     else
       text
     end
   end
 
-  def truncate_result(text, _), do: text
+  def truncate_result(text, _max, _subagent_id), do: text
+
+  defp recovery_hint(subagent_id, max) when is_binary(subagent_id) do
+    "The full report is on disk: call " <>
+      ~s|read_worker_report with subagent_id: "#{subagent_id}", from: #{max} | <>
+      "to continue from here. Do NOT re-run the worker."
+  end
+
+  defp recovery_hint(_subagent_id, _max),
+    do: "Ask for the specific part you still need; do not re-request the whole thing."
 
   # The worker's report is prose it wrote about itself, so it can claim work it
   # never did ("the app compiles cleanly" for a run that never built anything).
@@ -1017,10 +1080,13 @@ defmodule ExAthena.Tools.SpawnAgent do
   # ceiling but can never add a tool the agent isn't allowed. With no agent
   # definition (plain spawn), the ceiling is the full builtin set.
   #
-  # Control tools (`plan_mode` / `spawn_agent`) are never inherited from the
-  # ceiling. `todo_write` is always granted (worker contract). `spawn_agent` is
-  # granted only when the child is allowed to nest further (depth < cap), so
-  # any worker can delegate sub-tasks until the ceiling — see the depth rail.
+  # Control tools (`plan_mode` / `spawn_agent` / `read_worker_report`) are never
+  # inherited from the ceiling. `todo_write` is always granted (worker
+  # contract). `spawn_agent` is granted only when the child is allowed to nest
+  # further (depth < cap), so any worker can delegate sub-tasks until the
+  # ceiling — see the depth rail. `read_worker_report` rides with it: it answers
+  # "what did MY worker say", so it is useless to a leaf that has no workers and
+  # is only schema noise in its prompt.
   defp resolve_tools(requested, declared, child_can_nest?) do
     known = ExAthena.Tools.builtins() |> MapSet.new(& &1.name())
     all = Enum.map(ExAthena.Tools.builtins(), & &1.name())
@@ -1034,10 +1100,11 @@ defmodule ExAthena.Tools.SpawnAgent do
       end
 
     selected
-    |> Enum.reject(&(&1 in ["plan_mode", "spawn_agent"]))
+    |> Enum.reject(&(&1 in ["plan_mode", "spawn_agent", "read_worker_report"]))
     |> Enum.filter(&MapSet.member?(known, &1))
     |> maybe_grant("todo_write", true)
     |> maybe_grant("spawn_agent", child_can_nest?)
+    |> maybe_grant("read_worker_report", child_can_nest?)
   end
 
   defp maybe_grant(tools, _name, false), do: tools

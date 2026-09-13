@@ -859,6 +859,13 @@ defmodule ExAthena.Modes.Orchestrate do
                 ~s(pending todo "#{content}" to a worker. Worker summary:\n#{text}\n) <>
                 "Update your todo list, then delegate the next pending todo with spawn_agent."
 
+            # A worker that ran out of budget, not one that failed the task.
+            # The runtime's own retry must not re-issue the same slice — that
+            # is what exhausted it the first time.
+            {:ok, {:error, :uncounted, text}} ->
+              "[orchestration runtime] Auto-delegation of \"#{content}\" ran out of budget: " <>
+                "#{text}\nSplit this todo into smaller steps before delegating it again."
+
             {:ok, {:error, reason}} ->
               "[orchestration runtime] Auto-delegation of \"#{content}\" failed: " <>
                 "#{inspect(reason)}. Revise the plan or delegate it yourself with spawn_agent."
@@ -1031,6 +1038,10 @@ defmodule ExAthena.Modes.Orchestrate do
               "[orchestration runtime] Planning stalled, so the runtime delegated online " <>
                 "research to a worker. Findings:\n#{text}\n" <>
                 "Now record your todos with todo_write using these findings and delegate the work."
+
+            {:ok, {:error, :uncounted, text}} ->
+              "[orchestration runtime] Auto-research ran out of budget: #{text}\n" <>
+                "Record your todos with todo_write from what you know and delegate."
 
             {:ok, {:error, reason}} ->
               "[orchestration runtime] Auto-research failed: #{inspect(reason)}. " <>

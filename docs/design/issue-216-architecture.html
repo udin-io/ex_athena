@@ -1,0 +1,664 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Issue 216 — worker failure reporting</title>
+<style>
+  :root{
+    --bg:#f7f7f5; --panel:#fff; --ink:#1c1c1a; --muted:#6b6b66; --line:#d8d8d2;
+    --bad:#8f2f24; --bad-bg:#fbeae7;
+    --good:#1f6b45; --good-bg:#e6f3ec;
+    --accent:#2d4a7c; --accent-bg:#e8eef8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  .wrap{max-width:1180px;margin:0 auto;padding:40px 24px 80px}
+  h1{font-size:30px;line-height:1.25;margin:0 0 14px;letter-spacing:-.01em}
+  .sub{color:var(--muted);max-width:78ch;margin:0 0 8px}
+  h2{font-size:20px;margin:44px 0 12px;padding-top:14px;border-top:1px solid var(--line)}
+  h3{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+     margin:22px 0 8px;font-weight:600}
+  p{margin:0 0 12px;max-width:82ch}
+  ul,ol{margin:0 0 12px;padding-left:20px;max-width:82ch}
+  li{margin:0 0 6px}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;
+       background:#efefea;border-radius:3px;padding:1px 4px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:20px;margin:0 0 18px}
+  .panel h3:first-child{margin-top:0}
+  .scroll{overflow-x:auto}
+  .note{border-left:3px solid var(--accent);background:var(--accent-bg);padding:12px 16px;
+        border-radius:0 6px 6px 0;margin:0 0 14px}
+  .note.warn{border-left-color:var(--bad);background:var(--bad-bg)}
+  .note.ok{border-left-color:var(--good);background:var(--good-bg)}
+  .note p:last-child{margin-bottom:0}
+  .tag{display:inline-block;font-size:11px;letter-spacing:.04em;text-transform:uppercase;
+       font-weight:600;padding:2px 7px;border-radius:10px;vertical-align:2px}
+  .t-bad{background:var(--bad-bg);color:var(--bad)}
+  .t-good{background:var(--good-bg);color:var(--good)}
+  .t-acc{background:var(--accent-bg);color:var(--accent)}
+  .legend{display:flex;flex-wrap:wrap;gap:18px;margin:10px 0 4px;font-size:13px;color:var(--muted)}
+  .legend span{display:flex;align-items:center;gap:7px}
+  .sw{width:13px;height:13px;border-radius:3px;border:1px solid var(--line);display:inline-block}
+  table{border-collapse:collapse;width:100%;font-size:13.5px}
+  th{text-align:left;text-transform:uppercase;letter-spacing:.06em;font-size:11px;color:var(--muted);
+     font-weight:600;padding:0 12px 8px 0;border-bottom:1px solid var(--line);vertical-align:bottom}
+  td{padding:9px 12px 9px 0;border-bottom:1px solid var(--line);vertical-align:top}
+  tr:last-child td{border-bottom:none}
+  pre{background:#1c1c1a;color:#e8e8e2;padding:16px;border-radius:8px;overflow-x:auto;
+      font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.55}
+  pre code{background:none;color:inherit;padding:0;font-size:inherit}
+  .mermaid{background:var(--panel);text-align:center}
+  .mermaid svg{max-width:100%;height:auto;display:block;margin:0 auto}
+  .kv{font-size:13.5px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Issue 216 — a worker finishes, the orchestrator dies anyway</h1>
+
+<p class="sub">Design pass for issue 216 in <code>udin-io/ex_athena</code>, written before any code.
+Session <code>5906635b743d</code> ran 3h36m over 17 workers and 9.1M input tokens, then terminated on
+<code>error_consecutive_mistakes</code> with all four deliverables complete on disk. The issue carries four
+fixes across <code>SpawnAgent</code>, <code>ReAct</code>, <code>Provenance</code> and <code>BudgetPressure</code>;
+that trips the architecture gate, so this page shows what already exists, what each fix adds, and where the issue
+describes the code wrongly. It decides the mechanism for item 1 and the scope of item 2 before implementation starts.
+Branches off <code>fix/worker-token-budget</code> (PR 214), which owns <code>BudgetPressure</code>.</p>
+
+<h2>1. What exists today, and what this issue adds</h2>
+
+<div class="panel">
+<h3>Module diagram — a worker result from <code>Loop.run</code> to the parent's guard</h3>
+<div class="scroll">
+<pre class="mermaid">
+flowchart TB
+  subgraph WORKER["worker run — its own Loop"]
+    direction TB
+    WL["ExAthena.Loop.run/2"]
+    WR["ExAthena.Result<br/>text · finish_reason · conclusions · todos · messages"]
+    WL -- "terminates on a Terminations subtype" --> WR
+  end
+
+  subgraph PARENT["parent run — orchestrate mode, max_iterations :infinity"]
+    direction TB
+    SA["Tools.SpawnAgent.execute/2"]
+    SC["Agents.Sidechain.write/1 — line 368<br/>writes FULL untruncated text to disk"]
+    DISK[("cwd/.exathena/sessions/PARENT_ID/<br/>sidechains/SUBAGENT_ID.jsonl")]
+    FAIL["failure branch — line 390<br/>finish_reason not in stop, submitted"]
+    DIG["conclusions_digest/1 → digest/3<br/>truncates worker text to 300 chars"]
+    OKB["success branch — line 418<br/>truncate_result/2 then append_provenance/2"]
+    PROV["ExAthena.Provenance.events/footer<br/>write_tools: write, edit only"]
+    DE["Modes.ReAct.do_execute/2"]
+    BM["bump_mistake/1<br/>consecutive_mistakes + 1"]
+    ATS["any_tool_success?/1<br/>resets counter when is_error is not true"]
+    GUARD["Loop.loop/1 guard — line 167<br/>consecutive_mistakes >= max → error_consecutive_mistakes"]
+
+    SA --> SC
+    SC -- "full text, best-effort" --> DISK
+    SA --> FAIL
+    SA --> OKB
+    FAIL --> DIG
+    OKB --> PROV
+    DIG -- "error: worker did not finish REASON" --> DE
+    PROV -- "ok: report plus provenance footer" --> DE
+    DE -- "on the error tuple" --> BM
+    DE -- "tool_result message" --> ATS
+    BM --> GUARD
+    ATS --> GUARD
+  end
+
+  N1["((NEW)) uncounted-failure return<br/>error, :uncounted, text — skips bump_mistake"]
+  N2["((NEW)) truncation notice names the<br/>sidechain path and the read tool"]
+  N3["((NEW)) Tools.ReadWorkerReport<br/>subagent_id, from:, bytes:"]
+  N4["((NEW)) write-brief rail in SpawnAgent.execute/2<br/>refuse before Quota.claim"]
+  N5["((NEW)) Provenance sees bash heredoc and<br/>redirection write targets"]
+  N6["((NEW)) append_provenance/2 on the FAILURE path too"]
+  N7["((NEW)) BudgetPressure.build_note/1<br/>adds the produced-but-unverified case"]
+
+  N1 -.-> DE
+  N2 -.-> OKB
+  N3 -.-> DISK
+  N4 -.-> SA
+  N5 -.-> PROV
+  N6 -.-> FAIL
+  N7 -.-> WL
+
+  classDef new fill:#e6f3ec,stroke:#1f6b45,color:#1f6b45;
+  classDef bad fill:#fbeae7,stroke:#8f2f24,color:#8f2f24;
+  classDef disk fill:#e8eef8,stroke:#2d4a7c,color:#2d4a7c;
+  class N1,N2,N3,N4,N5,N6,N7 new;
+  class BM,GUARD,DIG bad;
+  class DISK,SC disk;
+</pre>
+</div>
+<div class="legend">
+  <span><i class="sw" style="background:#e6f3ec;border-color:#1f6b45"></i> added by this issue</span>
+  <span><i class="sw" style="background:#fbeae7;border-color:#8f2f24"></i> where the run dies today</span>
+  <span><i class="sw" style="background:#e8eef8;border-color:#2d4a7c"></i> already on disk, already written</span>
+  <span><i class="sw" style="background:#fff"></i> exists today, unchanged</span>
+</div>
+</div>
+
+<div class="note ok">
+<p><strong>Finding that shrinks item 2 by most of its weight.</strong>
+<code>Agents.Sidechain.write/1</code> already runs at <code>spawn_agent.ex:368</code>, on BOTH branches,
+BEFORE any truncation, and it persists the worker's full untruncated <code>Result.text</code> plus
+<code>finish_reason</code>, <code>conclusions</code> and <code>todos</code>. The issue says
+<em>"the full text exists at the moment of truncation. Today it is discarded."</em> It is not discarded.
+Item 2 does not need a new write path — it needs a notice that names the existing path, a read tool, and one
+bug fix (below).</p>
+</div>
+
+
+<h2>2. The failure this fixes, step by step</h2>
+
+<p>Three things have to line up, and only a sequence shows the order: the worker's artifact lands on disk
+<em>before</em> its budget runs out, the parent is told about a budget fact in the grammar of a mistake, and the
+parent's own counter — its only turn-based rail under <code>max_iterations: :infinity</code> — reaches three.</p>
+
+<div class="panel">
+<h3>As-is — session 5906635b743d, the last three spawns</h3>
+<div class="scroll">
+<pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor H as Human
+  participant O as Orchestrator loop<br/>max_iterations :infinity
+  participant SA as SpawnAgent
+  participant W as Worker NzKBmpsD
+  participant FS as Filesystem
+  participant RA as ReAct accounting
+
+  H->>O: create a combined UAT guide
+  O->>SA: spawn_agent implementer, max_result_chars 2000
+  SA->>W: Loop.run with max_input_tokens 800000
+  W->>FS: write guides-96-114-extract.md — 85043 bytes
+  FS-->>W: ok
+  Note over W: BudgetPressure note fires at 75 percent<br/>"reduce scope NOW, produce your report"
+  W->>W: chooses ONE more verification pass
+  W->>W: input tokens cross the cap mid-turn
+  W-->>SA: Result finish_reason error_max_input_tokens<br/>text is a narration line, no report
+  SA->>FS: Sidechain.write — full text to sidechains/SUBAGENT_ID.jsonl
+  Note over SA,FS: written, and nothing ever tells the parent it exists
+  SA-->>O: error: worker did not finish error_max_input_tokens<br/>digest of INTENTIONS, 300 chars, no provenance
+  O->>RA: tool result is_error true
+  RA->>RA: bump_mistake — counter 1
+  Note over O: parent re-delegates the same ground, twice more
+  RA->>RA: counter 2, then 3
+  RA-->>O: guard at loop.ex 167 fires
+  O-->>H: error_consecutive_mistakes, 3h36m, 9.1M tokens
+  Note over FS: all four deliverables complete on disk the whole time
+</pre>
+</div>
+<div class="note warn">
+<p>Read step 10 and step 12 together. The parent is handed a sentence that reads
+<em>"the worker did not finish"</em> and nothing that reads <em>"an 85KB file exists at this path"</em> — while
+<code>Sidechain.write</code> put the worker's own account of it on disk one line earlier.</p>
+</div>
+</div>
+
+<div class="panel">
+<h3>As-designed — the same run with items 1, 2 and 4 in place</h3>
+<div class="scroll">
+<pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor H as Human
+  participant O as Orchestrator loop
+  participant SA as SpawnAgent
+  participant W as Worker NzKBmpsD
+  participant FS as Filesystem
+  participant RA as ReAct accounting
+
+  H->>O: create a combined UAT guide
+  O->>SA: spawn_agent implementer, max_result_chars 2000
+  SA->>W: Loop.run
+  W->>FS: write guides-96-114-extract.md — 85043 bytes
+  Note over W: item 4 — BudgetPressure now names TWO states.<br/>Deliverable produced but unverified: hand it back NOW,<br/>labelled unverified, naming the checks not run.
+  W-->>SA: Result finish_reason stop<br/>"UNVERIFIED: wrote guides-96-114-extract.md, 19 of 19 guides.<br/>Not run: tail-section spot check, heading count."
+  SA->>FS: Sidechain.write — full text
+  SA->>FS: item 2 — stat the paths Provenance derived
+  SA-->>O: ok: report plus provenance footer naming the file and its size
+  O->>RA: tool result is_error nil — success, counter resets
+  O->>SA: spawn a cheap verification-only worker for the named file
+  Note over O,SA: the re-delegation is 1 small step, not a repeat of the whole brief
+
+  rect rgb(251,234,231)
+  Note over W: and when the cap DOES bite mid-turn anyway
+  W-->>SA: Result finish_reason error_max_input_tokens
+  SA->>SA: item 1 — Terminations.category is a budget subtype
+  SA->>FS: item 2 — provenance footer on the FAILURE path too
+  SA-->>O: error, :uncounted, "worker stopped on its token budget.<br/>Files it wrote: guides-96-114-extract.md 85043 B.<br/>Full report: read_worker_report SUBAGENT_ID"
+  O->>RA: tool result is_error TRUE — the model still reads a failure
+  RA->>RA: item 1 — NO bump_mistake, and no reset either
+  Note over RA: counter unchanged. Three of these in a row<br/>leave the orchestrator running.
+  O->>SA: read_worker_report SUBAGENT_ID from 0 bytes 4000
+  SA-->>O: the untruncated report the parent used to lose
+  end
+</pre>
+</div>
+<div class="note ok">
+<p>The economy: the as-designed path spends ONE cheap verification spawn where the as-is path spent two failed
+re-delegations and the run. Nothing in it asks the worker to skip verification — item 4 only moves the report
+<em>before</em> the victory lap when the budget cannot pay for both.</p>
+</div>
+</div>
+
+
+<h2>3. Item 1 — a failure the model reads but the loop does not score</h2>
+
+<h3>What the counter actually does today</h3>
+<p>Two independent things happen to a tool error in <code>Modes.ReAct</code>, and item 1 needs to separate them:</p>
+<ul>
+  <li><code>do_execute/2</code> line 353 builds <code>Messages.tool_result(id, "error: …", true)</code> AND calls
+      <code>bump_mistake/1</code>. Both, from one clause.</li>
+  <li>At the turn boundary (line 213) the bump is clamped to at most one per turn, then
+      <code>any_tool_success?/1</code> (line 433) resets the counter to zero if ANY tool result in the turn has
+      <code>is_error != true</code>.</li>
+  <li><code>Loop.loop/1</code> line 167 ends the run at <code>max_consecutive_mistakes</code>.</li>
+</ul>
+
+<div class="note warn">
+<p><strong>The issue's preferred option would silently do the opposite of what it wants.</strong>
+<code>any_tool_success?/1</code> tests <code>err != true</code>. An <code>is_error: :informational</code> satisfies
+that, so the turn would be counted as a SUCCESS and the counter would RESET to zero — precisely the defect the issue
+rejects option 2 for. Option 1 is not "prefer 1 over 2"; as written it is option 2 with extra blast radius.</p>
+</div>
+
+<h3>The <code>is_error</code> audit — every call site, and what a third state does there</h3>
+<div class="panel scroll">
+<table>
+<thead><tr><th>Site</th><th>What it does today</th><th>With <code>is_error: :informational</code></th><th>Verdict</th></tr></thead>
+<tbody>
+<tr><td><code>messages.ex:46</code><br/>typespec</td><td><code>boolean() | nil</code></td><td>Type widens to <code>boolean() | :informational | nil</code>. Dialyzer-visible everywhere.</td><td><span class="tag t-acc">churn</span></td></tr>
+<tr><td><code>modes/react.ex:435</code><br/><code>any_tool_success?/1</code></td><td><code>err != true</code> → success</td><td><strong>Reads as SUCCESS and resets the counter to 0.</strong></td><td><span class="tag t-bad">breaks</span></td></tr>
+<tr><td><code>modes/react.ex:464</code><br/><code>record_todos/3</code></td><td><code>reject(is_error == true)</code></td><td>An informational spawn result would count as a successful <code>todo_write</code> id. Harmless in practice (only <code>todo_write</code> ids are matched) but wrong by accident.</td><td><span class="tag t-bad">breaks</span></td></tr>
+<tr><td><code>modes/react.ex:706</code><br/><code>empty_local_result?/1</code></td><td><code>err == true</code> for research nudge</td><td>Informational stops counting as a failed lookup. Only applies to grep/glob/read/web_fetch, never to spawn.</td><td><span class="tag t-acc">inert</span></td></tr>
+<tr><td><code>modes/orchestrate.ex:577</code><br/>spawn watchdog</td><td><code>tr.is_error != true</code> → a spawn happened, reset <code>turns_without_spawn</code></td><td>A capacity-terminated spawn would count as a real delegation. <strong>Arguably correct</strong> — the worker DID run — but it is a behaviour change nobody asked for, decided by a truthiness test.</td><td><span class="tag t-bad">breaks</span></td></tr>
+<tr><td><code>providers/req_llm.ex:444</code><br/>wire metadata</td><td><code>if(first.is_error, do: %{is_error: true}, else: %{})</code></td><td><code>:informational</code> is truthy → maps to wire <code>is_error: true</code>. The model sees a failure, which is what item 1 wants — but only by accident of truthiness, and one <code>== true</code> refactor away from flipping.</td><td><span class="tag t-acc">fragile</span></td></tr>
+<tr><td><code>compactors/observation_mask.ex:91</code></td><td><code>tr.is_error != true</code> → maskable</td><td>Informational results become maskable. Probably fine, but this is the module that decides what the parent still remembers under pressure — the exact runs item 1 is about.</td><td><span class="tag t-bad">risk</span></td></tr>
+<tr><td><code>provenance.ex:68</code></td><td><code>reject(match?(%ToolResult{is_error: true}, …))</code></td><td>Informational calls stay in the evidence stream. Correct by luck.</td><td><span class="tag t-acc">inert</span></td></tr>
+<tr><td><code>session.ex:737</code><br/>serialise</td><td>passes <code>tr.is_error</code> through verbatim</td><td>An atom is written to session JSONL. Replay must then accept it; older sessions never contain it. Forward-compatible, not backward.</td><td><span class="tag t-acc">churn</span></td></tr>
+<tr><td><code>messages.ex:196</code><br/><code>to_tool_result/1</code></td><td><code>fetch(map, :is_error)</code></td><td>Deserialises whatever it finds, including the string <code>"informational"</code> from JSON. Silent atom/string mismatch on replay.</td><td><span class="tag t-bad">risk</span></td></tr>
+<tr><td><code>chat/tui/state.ex:207-214</code></td><td><code>if is_error, do: :error</code></td><td>Truthy → renders as a red <code>✗</code> error. Acceptable.</td><td><span class="tag t-acc">inert</span></td></tr>
+<tr><td><code>chat/tui.ex:800-802</code></td><td><code>if is_error, do: :tool_result_error</code></td><td>Same. Acceptable.</td><td><span class="tag t-acc">inert</span></td></tr>
+<tr><td><code>web/live/chat_live.ex</code><br/>6 sites incl. 2919</td><td><code>tr.is_error || false</code>, then <code>if</code> in HEEx</td><td>Truthy → red. Line 2919 coerces to a boolean anyway, so the third state is already erased before it reaches the template. Acceptable.</td><td><span class="tag t-acc">inert</span></td></tr>
+<tr><td><code>providers/claude_code.ex:97,202,255</code></td><td>reads the ClaudeCode SDK's own <code>is_error</code> booleans; line 202 CONSTRUCTS a <code>ToolResult</code> from one</td><td>Producer only — a third state can never originate here. No change.</td><td><span class="tag t-good">unaffected</span></td></tr>
+<tr><td><code>mcp/tool.ex:30</code></td><td>doc only: MCP <code>is_error: true</code> → <code>{:error, content}</code></td><td>Doc text. No change.</td><td><span class="tag t-good">unaffected</span></td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note warn">
+<p><strong>Audit verdict: NO. The third state is not safe as specified.</strong> Fourteen sites, of which five change
+behaviour and three of those change it wrongly — including the one function item 1 exists to fix. Three more work only
+because <code>:informational</code> happens to be truthy, which is a property of Elixir, not a decision anyone recorded.
+And the field is PERSISTED (<code>session.ex:737</code>) and sent on the wire (<code>req_llm.ex:444</code>), so a
+third state is a data-format change for a loop-accounting problem.</p>
+</div>
+
+<h3>Recommendation — carry the signal on the RETURN, not on the message</h3>
+
+<div class="note ok">
+<p><strong>Keep <code>is_error</code> a boolean. Add one tool return shape:
+<code>{:error, :uncounted, text}</code>.</strong></p>
+</div>
+
+<p>The tool-result message stays exactly as it is today — <code>is_error: true</code>, red in both UIs, wire
+<code>is_error: true</code>, masked by the compactor, rejected by <code>Provenance</code>, and read by the model as a
+plain failure. Only <code>ReAct.do_execute/2</code> changes: a new clause that builds the same error result but skips
+<code>bump_mistake/1</code>. <code>any_tool_success?/1</code> already returns <code>false</code> for
+<code>is_error: true</code>, so the turn is neither a success nor a mistake with no edit at all. Zero of the fourteen
+audit rows move.</p>
+
+<ul>
+  <li><strong>Where the decision is made:</strong> <code>SpawnAgent</code>'s failure branch
+      (<code>spawn_agent.ex:390</code>) classifies <code>sub_result.finish_reason</code> and returns
+      <code>{:error, :uncounted, text}</code> for a budget termination, plain <code>{:error, text}</code> otherwise.</li>
+  <li><strong>Contract debt to pay while there:</strong> <code>ExAthena.Tool</code>'s <code>@callback execute/2</code>
+      (<code>tool.ex:59</code>) already omits the <code>{:ok, text, ui}</code> shape that <code>ReAct</code> has
+      handled for some time. The new shape goes in the spec alongside it.</li>
+</ul>
+
+<h3>Do NOT key the decision on <code>Terminations.category/1</code></h3>
+<div class="note warn">
+<p><code>category/1</code> returns <code>:capacity</code> for eight subtypes, and three of them are the worker
+MISBEHAVING rather than running out of room: <code>error_consecutive_mistakes</code>,
+<code>error_no_progress</code>, and <code>error_max_structured_output_retries</code>. A worker that hallucinated its way
+to its own mistake ceiling, or went in circles, is exactly the case the parent's counter should catch — item 3 of this
+same issue records a worker that died that way. Keying on <code>category/1</code> would make all three uncountable.</p>
+<p>Use an explicit list of budget-exhaustion subtypes instead:
+<code>error_max_input_tokens</code>, <code>error_max_budget_usd</code>, <code>error_max_turns</code>,
+<code>error_prompt_too_long</code>, <code>error_thinking_starved</code>, and the timeout path. Everything else keeps
+counting. <code>Terminations.category/1</code> has no production caller today other than
+<code>Result.category/1</code>, which itself has none, so nothing forces the reuse.</p>
+</div>
+
+<div class="note">
+<p><strong>Second thing the issue gets wrong about its own session.</strong> It says the last three spawns died on
+<code>error_max_input_tokens</code>, <code>error_during_execution</code> and <code>error_max_input_tokens</code>, then
+proposes exempting category <code>:capacity</code>. <code>error_during_execution</code> is
+<code>:retryable</code> — so under the issue's own rule the middle one still counts, the counter goes 0, 1, 1, and the
+run survives anyway. The rule works; the narrative that all three were capacity does not. The acceptance test must
+therefore be written with three <em>budget</em> terminations, not "the three from this session".</p>
+</div>
+
+<h3>What still stops a parent looping on bad spawns</h3>
+<p>An uncounted failure neither bumps nor resets, so a parent that spawns nothing but budget-dying workers is no longer
+bounded by the mistake counter. It is still bounded by: <code>Agents.Quota</code> (<code>max_agents_per_run</code>,
+default 24), <code>Agents.Deadline</code> (the run deadline, refused at <code>spawn_agent.ex:234</code>), the
+<code>max_input_tokens</code> and <code>max_budget_usd</code> guards, <code>error_no_progress</code>, and
+orchestrate's own repeat-objective watchdog (<code>orchestrate.ex:588</code>). That is five rails; the counter was
+never the load-bearing one for this shape.</p>
+
+
+<h2>4. Item 2 — the report is already on disk; only the address is missing</h2>
+
+<h3>Where it is written today</h3>
+<p><code>Agents.Sidechain.write/1</code>, called unconditionally at <code>spawn_agent.ex:368</code> before either
+result branch, writes one JSON line to:</p>
+<pre><code>cwd/.exathena/sessions/PARENT_SESSION_ID/sidechains/SUBAGENT_ID.jsonl</code></pre>
+<p>The line carries <code>prompt</code>, a serialised <code>opts</code>, and for a successful loop return
+<code>text</code> (untruncated), <code>finish_reason</code>, <code>iterations</code>,
+<code>tool_calls_made</code>, <code>duration_ms</code>, <code>cost_usd</code>, <code>conclusions</code> and
+<code>todos</code>. Worker <code>Ut1hUSMB</code>'s 21,697-character extraction was written there in full, at the same
+moment the parent was being handed 2,000 characters of it.</p>
+
+<div class="note warn">
+<p><strong>Prerequisite bug — the sidechain of a worktree-isolated worker is deleted moments after it is written.</strong>
+Line 368 passes <code>cwd: Keyword.get(sub_opts, :cwd, ctx.cwd)</code>, which for an agent declaring
+<code>isolation: :worktree</code> is the ephemeral worktree under
+<code>~/.cache/ex_athena/worktrees/…</code>. Line 381 then calls <code>finalize_isolation/1</code>, which runs
+<code>git worktree remove --force</code> on that same directory. Write, then delete, eleven lines apart. Fix is one
+argument: write the sidechain under the PARENT's <code>ctx.cwd</code>. This must land before the retrieval tool, or
+the tool will 404 for exactly the isolated workers most worth reading.</p>
+</div>
+
+<h3>What item 2 actually needs</h3>
+<ol>
+  <li><strong>Fix the cwd</strong> above. One line.</li>
+  <li><strong>Name the address in the truncation notice.</strong> <code>truncate_result/2</code>
+      (<code>spawn_agent.ex:971</code>) currently ends with <em>"Ask for the specific part you still need; do not
+      re-request the whole thing"</em> — an instruction with no tool behind it. It becomes a concrete call:
+      <code>read_worker_report("SUBAGENT_ID", from: 2000)</code>. Note the signature change:
+      <code>truncate_result/2</code> is called from three places and only one of them knows a
+      <code>subagent_id</code>, so the notice needs the id threaded in (or a <code>/3</code> arity with the current
+      behaviour as the default).</li>
+  <li><strong>Add the retrieval tool.</strong> <code>read_worker_report(subagent_id, from:, bytes:)</code>,
+      orchestrator-scoped the way <code>spawn_agent</code> is, resolving
+      <code>ctx.cwd/.exathena/sessions/ctx.session_id/sidechains/SUBAGENT_ID.jsonl</code>, decoding the line, and
+      returning a byte slice of <code>result.text</code> with its own cap. The id must be validated against the
+      session's own spawns, not interpolated into a path — it comes from the model.</li>
+  <li><strong>Call <code>append_provenance/2</code> on the failure path too</strong> (it is called only at line 440
+      today, inside the success branch — the issue is right about this one). Then the failure message names the
+      files the worker's tool calls prove it wrote.</li>
+</ol>
+
+<div class="note">
+<p><strong>Overlap with issue 215.</strong> 215's <code>read_worker_log(subagent_id, filter)</code> reads a per-worker
+NDJSON journal at <code>run_dir/workers/SUBAGENT_ID.ndjson</code> — a different file, a different writer, the same
+argument and the same resolution logic. Build <strong>one</strong> tool: ship it here as
+<code>read_worker_report</code> over the sidechain, and have 215 add its <code>filter:</code>/<code>tail:</code>
+options and the journal source to that tool rather than introducing a second one. Whoever implements 215 inherits the
+id-validation and path-resolution code instead of writing it twice. If 215 lands first, this item is its
+<code>report</code> filter and should not be built at all.</p>
+</div>
+
+<h2>5. Item 3 — refuse a write brief handed to a read-only agent</h2>
+
+<h3>Where the check goes</h3>
+<p>The effective toolset is computed by <code>resolve_tools/3</code> (<code>spawn_agent.ex:1024</code>), called at
+line 308 — which is <em>after</em> <code>Quota.claim/1</code> has already taken a worker off the run's allowance of 24.
+<code>Quota</code> has no release. A refusal placed at the natural site therefore burns a slot for a spawn that never
+ran, and the module's own doc says <em>"a refusal costs nothing"</em>. The check must run in
+<code>execute/2</code>'s <code>cond</code> (alongside the depth and completed-todo rails, lines 189-212), which means
+resolving the agent definition's declared <code>tools</code> there — <code>resolve_agent/2</code> has no side effects,
+though it may hit the filesystem via <code>Agents.discover/1</code> when <code>assigns[:agents]</code> is unset — so
+resolve once and thread the result down to line 276 rather than calling it twice.</p>
+
+<h3>Proposed detection rule</h3>
+<div class="panel">
+<p>Refuse when <strong>both</strong> hold:</p>
+<ol>
+  <li><strong>Capability.</strong> The resolved toolset (after <code>resolve_tools/3</code>) contains none of
+      <code>write</code>, <code>edit</code>, <code>bash</code>, and no tool the host registered as mutating. Derived
+      from the toolset, never from the agent's name — a custom read-only agent gets the same rail, and an
+      <code>explore</code> a user has granted <code>write</code> to does not.</li>
+  <li><strong>Intent.</strong> The brief text — <code>prompt</code> plus <code>objective</code> plus
+      <code>expected_output</code>, the three fields <code>@prompt_sources</code> already reads — matches an
+      explicit instruction to produce a file. Anchored on an imperative verb immediately governing a file object,
+      case-insensitive:
+      <code>(write|save|create|output|put|append) … (the|your|a) (result|output|report|findings|file|it) … to …</code>
+      plus a bare path-shaped token, and the literal forms <code>write the result to a file</code>,
+      <code>write to PATH</code>, <code>create the file</code>, <code>save it to</code>.</li>
+</ol>
+<p>The refusal names the agent's actual tools and the alternative, in the grammar the depth and quota rails already
+use:</p>
+<pre><code>not started: agent "explore" has tools read, glob, grep, lsp, web_fetch,
+web_search, usage_rules — none of which can write a file, and your brief asks
+for one ("WRITE THE RESULT TO A FILE"). Delegate this to "implementer", or
+drop the file requirement and ask explore to report in its reply.</code></pre>
+</div>
+
+<h3>False-positive cost, stated plainly</h3>
+<ul>
+  <li>A refused spawn costs the orchestrator <strong>one turn</strong> and nothing else: no quota slot (given the
+      reorder above), no worker time, no tokens beyond the error line. The three existing refusal rails already
+      establish that price.</li>
+  <li>The realistic false positive is a brief that says <em>"read the config file and write up what you find"</em> —
+      <code>write up</code> is prose, not a file instruction. The anchored form above does not match it, because
+      <code>up</code> is not a file object and no path token is present. Verbs like <em>document</em>,
+      <em>describe</em>, <em>note</em>, <em>list</em> are not in the verb set.</li>
+  <li>The route around a false positive is one word in the brief, and the error names it. That is cheaper than the
+      measured cost of the false negative: 24.6 minutes and 540K input tokens, plus two probe workers, one of which
+      died on its own mistake counter.</li>
+</ul>
+
+<div class="note">
+<p><strong>This is the item I would consider splitting out.</strong> Items 1, 2 and 4 are loop accounting and reporting
+and share two files. Item 3 is a natural-language classifier on model input — a different kind of risk, a different
+kind of test, and the only one of the four whose correctness is a judgement call rather than a behaviour. It also has
+a cheaper 80 percent available first: <code>explore</code>'s system prompt does not currently say
+<em>"you cannot write files; if the brief asks you to write one, say so and stop"</em> — only the orchestrator's
+protocol says it, to the wrong party. Adding that line to <code>priv/agents/explore.md</code> is a one-line change
+that would have caught this session, and the code rail can follow on its own ticket with the regex it deserves.</p>
+</div>
+
+<h2>6. Item 4 — the BudgetPressure note</h2>
+
+<p><code>Loop.BudgetPressure.build_note/1</code> on branch <code>fix/worker-token-budget</code>. The directive to
+verify is NOT in this note and is NOT being touched — the note is about what to do when the budget cannot pay for
+everything left. Today it names one state; it must name two.</p>
+
+<div class="panel">
+<h3>Today</h3>
+<pre><code>[runtime] You are N turns in and near the end of your budget. Todos: D of T
+completed. If you cannot finish everything, reduce scope NOW: stop gathering,
+complete what you can, and produce your report. State explicitly which todos
+you did NOT complete and what remains for each, so the orchestrator can
+re-delegate them as separate steps. An honest partial report is worth far more
+than being cut off mid-exploration.</code></pre>
+
+<h3>Proposed</h3>
+<pre><code>[runtime] You are N turns in and near the end of your budget. Todos: D of T
+completed. Verifying your work is still your job — but it is now the FIRST
+thing to cut, not the last. Pick the state you are in:
+
+- Deliverable NOT yet produced: reduce scope NOW. Stop gathering, produce what
+  you can, and state explicitly which todos you did NOT complete and what
+  remains for each, so the orchestrator can re-delegate them as separate steps.
+
+- Deliverable produced but NOT fully verified: hand it back NOW, in this turn.
+  Do not start another verification pass — a pass you do not survive loses the
+  report as well as the check. Open your report with UNVERIFIED, name the
+  artifact and where it is, and list the checks you did not run so the
+  orchestrator can re-delegate verification as its own cheap step.
+
+An honest partial report is worth far more than being cut off mid-exploration,
+and an unverified artifact the orchestrator knows about beats a verified one it
+never hears about.</code></pre>
+</div>
+
+<ul>
+  <li><strong>What does not change:</strong> the trigger (<code>wrap_up_at_percent</code>, default 75), the three
+      budget fractions, the ephemeral tail placement, and <code>todo_progress/1</code>.</li>
+  <li><strong>What does:</strong> <code>build_note/1</code> only. No new state is read, so no new plumbing — the
+      worker classifies its own state, which is the only party that can.</li>
+  <li><strong>Why "the FIRST thing to cut" rather than "skip verification":</strong> the three quoted workers each
+      knew they were near the ceiling and each chose one more pass anyway. The note has to rank the two actions, not
+      just list them. Telling a worker verification is optional in general would trade a visible failure for a silent
+      one — which is what the issue says, and this wording keeps it.</li>
+</ul>
+
+
+<h2>7. Where the issue describes the code wrongly</h2>
+
+<div class="panel scroll">
+<table>
+<thead><tr><th>The issue says</th><th>The code says</th><th>Effect on scope</th></tr></thead>
+<tbody>
+<tr>
+  <td>"The full text exists at the moment of truncation. Today it is discarded." Fix: "Write the full report to the run directory when it exceeds the cap."</td>
+  <td><code>Sidechain.write/1</code> at <code>spawn_agent.ex:368</code> already persists the full untruncated text, on both branches, before truncation.</td>
+  <td><span class="tag t-good">smaller</span> No new write path. Item 2 is a notice, a tool, and one cwd bug fix.</td>
+</tr>
+<tr>
+  <td>"the last three spawns died on <code>error_max_input_tokens</code>, <code>error_during_execution</code> and <code>error_max_input_tokens</code>" — exempt category <code>:capacity</code>.</td>
+  <td><code>error_during_execution</code> is <code>:retryable</code>, not <code>:capacity</code> (<code>terminations.ex</code>).</td>
+  <td><span class="tag t-acc">restated</span> The acceptance test must use three BUDGET terminations, not this session's three.</td>
+</tr>
+<tr>
+  <td>Prefer "a third state on <code>ToolResult</code> (e.g. <code>is_error: :informational</code>) that <code>any_tool_success?/1</code> treats as neither".</td>
+  <td><code>any_tool_success?/1</code> tests <code>err != true</code>, so <code>:informational</code> reads as SUCCESS and resets the counter — the defect option 2 was rejected for.</td>
+  <td><span class="tag t-bad">changed</span> Neither option as written. See section 3.</td>
+</tr>
+<tr>
+  <td><code>spawn_agent.ex:389</code> / <code>:918</code> / <code>:440</code> as the sites.</td>
+  <td>On this branch: <code>:390</code>, <code>:918</code>, <code>:440</code>. Close enough; <code>:918</code> and <code>:440</code> are exact.</td>
+  <td><span class="tag t-good">confirmed</span></td>
+</tr>
+<tr>
+  <td>"<code>append_provenance/2</code> … is appended at <code>spawn_agent.ex:440</code>, inside the success branch only." (from issue 215, relied on by 216)</td>
+  <td>Confirmed. <code>append_provenance</code> appears at exactly one call site, line 440, in the success branch.</td>
+  <td><span class="tag t-good">confirmed</span></td>
+</tr>
+<tr>
+  <td><code>@write_tools ~w(write edit)</code> makes bash-written files invisible.</td>
+  <td>Confirmed (<code>provenance.ex</code>). Measured live: worker <code>T2cuzVsh</code> wrote 113KB by heredoc, footer read "files changed: none".</td>
+  <td><span class="tag t-good">confirmed</span> But this belongs to 215's layer 1, not here.</td>
+</tr>
+<tr>
+  <td>"<code>orchestrate.ex:45</code> already tells the model this … Prompt-only, with no code rail behind it."</td>
+  <td>Confirmed, lines 45-48 of the <code>@protocol_addendum</code>. Also true and unmentioned: <code>priv/agents/explore.md</code> tells the WORKER it may not modify files but never tells it what to do when the brief demands it.</td>
+  <td><span class="tag t-acc">cheaper option</span> See section 5.</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<h2>8. Scope — what should ship together, and what should not</h2>
+
+<div class="panel">
+<table>
+<thead><tr><th>Item</th><th>Verdict</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td>1 — uncounted budget termination</td><td><span class="tag t-good">ship</span></td><td>The binding failure. Two-file change once the return shape replaces the third state.</td></tr>
+<tr><td>2 — retrievable full report</td><td><span class="tag t-good">ship, reduced</span></td><td>Sidechain already writes it. Ships as: cwd bug fix, notice wording, one read tool, provenance on the failure path.</td></tr>
+<tr><td>3 — refuse a write brief to a read-only agent</td><td><span class="tag t-acc">split</span></td><td>A prompt classifier, not loop accounting. Ship the one-line <code>explore.md</code> guard here; the code rail gets its own ticket with its own regex tests.</td></tr>
+<tr><td>4 — BudgetPressure unverified hand-back</td><td><span class="tag t-good">ship</span></td><td>One function, on the branch this work sits on. Smallest and highest-leverage of the four.</td></tr>
+<tr><td>bash-aware <code>Provenance</code></td><td><span class="tag t-bad">not here</span></td><td>Issue 215 layer 1. Costing it properly ("have the bash tool report the paths it touched") is 215's job and 216 does not need it.</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="note">
+<p><strong>Ordering inside the PR.</strong> Item 4 first (self-contained, on the parent branch). Then item 1's return
+shape in <code>ReAct</code>, then <code>SpawnAgent</code>'s classification on top of it. Then item 2's cwd fix, then
+the notice, then the read tool. Item 3's prompt line anywhere. Each of those is a commit; the acceptance behaviours in
+the issue map one-to-one onto them.</p>
+</div>
+
+<h2>10. What shipped</h2>
+
+<div class="note ok">
+<p>All three recommendations were accepted on 2026-09-13 and implemented on
+<code>issue-216-worker-failure-reporting</code>. This section is the record of what landed against what was
+designed; the sections above are left as approved.</p>
+</div>
+
+<div class="panel scroll">
+<table>
+<thead><tr><th>Item</th><th>Shipped as</th><th>Where</th></tr></thead>
+<tbody>
+<tr>
+  <td>1 — uncounted budget termination</td>
+  <td>As designed. <code>{:error, :uncounted, text}</code> tool return; no third <code>is_error</code> state.
+      Classification via <code>Terminations.budget_exhaustion?/1</code>, an explicit list, not <code>category/1</code>.
+      Worker timeouts ride the same path.</td>
+  <td><code>lib/ex_athena/tool.ex</code>, <code>modes/react.ex</code>, <code>loop/terminations.ex</code>,
+      <code>tools/spawn_agent.ex</code>, <code>modes/orchestrate.ex</code></td>
+</tr>
+<tr>
+  <td>2 — retrievable full report</td>
+  <td>As designed, reduced. Sidechain cwd bug fixed first, as its own commit. New
+      <code>read_worker_report</code> tool over the existing sidechain; truncation notice names the call and the
+      offset. No new write path.</td>
+  <td><code>tools/read_worker_report.ex</code>, <code>tools/spawn_agent.ex</code></td>
+</tr>
+<tr>
+  <td>3 — write brief to a read-only agent</td>
+  <td>Split. Only the prompt guard shipped, on <code>explore</code> AND <code>research</code>. The code rail is a
+      follow-up ticket carrying the <code>Quota</code>-ordering finding.</td>
+  <td><code>priv/agents/explore.md</code>, <code>priv/agents/research.md</code></td>
+</tr>
+<tr>
+  <td>4 — unverified hand-back</td>
+  <td>As designed. Verify directive kept and ranked; second branch added for the produced-but-unverified case.</td>
+  <td><code>loop/budget_pressure.ex</code></td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<h3>Found during implementation, not during design</h3>
+<ul>
+  <li><code>Modes.Orchestrate</code> pattern-matches <code>SpawnAgent.execute/2</code>'s return in TWO places
+      (<code>auto_delegate/2</code> and <code>auto_research/2</code>). A new return shape raised
+      <code>CaseClauseError</code> in the runtime's own auto-delegation path — caught by an existing test, not by the
+      audit, because the audit traced <code>is_error</code> rather than the tool return.</li>
+  <li>The worker-timeout path returned <code>{:error, {:sub_agent_timeout, 1000}}</code>, a bare Elixir tuple the
+      model read as <code>error: {:sub_agent_timeout, 1000}</code>. Now a sentence.</li>
+  <li><code>plan</code> is not a read-only agent — it declares <code>write</code>, scoped to
+      <code>.exathena/plans/</code> — so the item 3 prompt guard deliberately excludes it.</li>
+  <li>The repo had no root <code>CLAUDE.md</code> and has no <code>docs/PROJECT.md</code> set, but does have an
+      <code>adr/</code> directory of 20+ entries. The first is now created; the migration is flagged there and
+      remains outstanding.</li>
+</ul>
+
+<h2>11. Mermaid sources</h2>
+<p class="kv">Kept verbatim so the same pictures can go in the PR body under an "## Architecture" heading, where GitHub
+renders them natively.</p>
+
+<h3>Module diagram</h3>
+<pre><code id="src-module"></code></pre>
+<h3>Timing — as-is</h3>
+<pre><code id="src-asis"></code></pre>
+<h3>Timing — as-designed</h3>
+<pre><code id="src-asdesigned"></code></pre>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  const blocks = document.querySelectorAll("pre.mermaid");
+  const ids = ["src-module","src-asis","src-asdesigned"];
+  blocks.forEach((b, i) => {
+    const el = document.getElementById(ids[i]);
+    if (el) el.textContent = b.textContent.trim();
+  });
+  mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose" });
+</script>
+
+</div>
+</body>
+</html>

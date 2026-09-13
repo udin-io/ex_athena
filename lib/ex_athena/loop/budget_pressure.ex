@@ -20,6 +20,23 @@ defmodule ExAthena.Loop.BudgetPressure do
   re-delegate them as separate, smaller steps. That is also the cheapest
   available correction for the brief having been too big in the first place.
 
+  ## Two states, not one
+
+  Session 5906635b743d: three workers read this note with their file already
+  written — one recorded "I'm near my budget limit, so I need to wrap up
+  quickly" — and each then chose ONE more verification pass. That pass is what
+  killed them, and because they died mid-turn they never wrote a report, so the
+  orchestrator learned nothing and re-delegated work already sitting complete on
+  disk.
+
+  Telling a worker to skip verification would trade a visible failure for a
+  silent one, so the directive to verify stays. What the note adds is the case
+  it never covered: a deliverable that EXISTS but is unchecked is handed back
+  immediately, labelled unverified and naming the checks not run, so the
+  orchestrator can re-delegate verification as its own cheap step. Ranking the
+  two matters more than listing them — all three workers knew they were near the
+  ceiling and went one more round anyway.
+
   Configure the trigger with
   `config :ex_athena, :loop, wrap_up_at_percent: 75`.
   """
@@ -71,10 +88,19 @@ defmodule ExAthena.Loop.BudgetPressure do
   defp build_note(state) do
     "[runtime] You are #{state.iterations} turns in and near the end of your budget. " <>
       todo_progress(state) <>
-      "If you cannot finish everything, reduce scope NOW: stop gathering, complete what you " <>
-      "can, and produce your report. State explicitly which todos you did NOT complete and " <>
-      "what remains for each, so the orchestrator can re-delegate them as separate steps. " <>
-      "An honest partial report is worth far more than being cut off mid-exploration."
+      "Verifying your work is still your job — but under budget pressure it is the FIRST " <>
+      "thing to cut, not the last. Pick the state you are in:\n" <>
+      "- Deliverable NOT yet produced: reduce scope NOW. Stop gathering, produce what you " <>
+      "can, and state explicitly which todos you did NOT complete and what remains for " <>
+      "each, so the orchestrator can re-delegate them as separate steps.\n" <>
+      "- Deliverable produced but NOT fully verified: hand it back NOW, in this turn. Do " <>
+      "not start another verification pass — a pass you do not survive loses the report as " <>
+      "well as the check. Open your report with UNVERIFIED, name the artifact and where it " <>
+      "is, and list the checks you did not run so the orchestrator can re-delegate " <>
+      "verification as its own cheap step.\n" <>
+      "An honest partial report is worth far more than being cut off mid-exploration, and " <>
+      "an unverified artifact the orchestrator knows about beats a verified one it never " <>
+      "hears about."
   end
 
   # Tolerates both the string keys the tool receives and the atom keys the

@@ -352,6 +352,29 @@ defmodule ExAthena.Modes.ReAct do
             result = Messages.tool_result(call.id, stringify(payload))
             after_post_hook(state, call, result)
 
+          # A failure the model must READ but the loop must not SCORE.
+          #
+          # The tool result is byte-identical to any other error — `is_error:
+          # true`, red in both UIs, `is_error: true` on the wire, masked by the
+          # compactor, rejected by `Provenance` — so nothing downstream needs to
+          # learn a third state. Only the counter changes: no `bump_mistake/1`,
+          # and `any_tool_success?/1` already returns false for `is_error:
+          # true`, so the turn is neither a success nor a mistake.
+          #
+          # The one caller today is `SpawnAgent` reporting a worker that ran out
+          # of budget: a fact about the worker, not a mistake by the parent.
+          {:error, :uncounted, text} ->
+            result = Messages.tool_result(call.id, stringify(text), true)
+
+            _ =
+              ExAthena.Hooks.run_lifecycle(state.hooks, :PostToolUseFailure, %{
+                tool_name: call.name,
+                tool_use_id: call.id,
+                reason: text
+              })
+
+            after_post_hook(state, call, result)
+
           {:error, reason} ->
             result = Messages.tool_result(call.id, "error: #{stringify(reason)}", true)
             state = bump_mistake(state)
