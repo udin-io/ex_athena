@@ -21,6 +21,25 @@ defmodule ExAthena.Provenance do
       returns `{:ok, …}` whatever the exit code, so without this a worker
       could watch the suite go red and still satisfy a rail asking whether
       the change was exercised.
+    * `{:bash_write, path}` — a path a shell command *appears* to have
+      written. A candidate, never evidence: `changed_files/1` ignores it and
+      `footer/1` never renders it until `verify/2` has found it on disk.
+
+  ## Why bash writes are candidates and not facts
+
+  Worker `T2cuzVsh` wrote a 113 KB file with a bash heredoc and its footer
+  read `files changed: none`, because `bash` was only ever classified as a
+  command. Closing that gap means guessing what a shell command touched, and
+  the guess cannot be allowed to be wrong: the whole value of this module is
+  that an orchestrator can check its claims, so a fabricated path is worse
+  than a missing one.
+
+  So the matcher recognises only unambiguous forms — `> path`, `>> path`,
+  `tee path` — refuses any target carrying a shell metacharacter it would
+  have to expand (`$`, `~`, `*`, a quote), and emits a distinct event kind
+  that only becomes a `{:write, _}` once `verify/2` has stat'd it. Misses are
+  expected and acceptable: `sed -i`, a Python heredoc opening its own file,
+  and redirection into a variable are all invisible here by design.
 
   Order is preserved because it carries information a set cannot: "wrote a
   test, ran it, then edited source" and "edited source, then added a test"
@@ -42,10 +61,22 @@ defmodule ExAthena.Provenance do
   @max_listed 15
   @max_command_chars 120
 
+  # `>` / `>>` that is not part of `2>`, `&>` or `>&`. The target runs to the
+  # next shell separator; `@safe_target` then decides whether it is a path we
+  # are willing to claim.
+  @redirect_re ~r/(?<![0-9&>])>>?\s*([^\s;|&<>()]+)/
+  @tee_re ~r/\btee\s+(?:-a\s+)?([^\s;|&<>()]+)/
+
+  # Everything a POSIX shell would leave alone. Anything else — `$VAR`, `~`,
+  # a glob, a quote — means the literal text is not the path that was written,
+  # so the candidate is dropped rather than guessed at.
+  @safe_target ~r|^[A-Za-z0-9._/+-]+$|
+
   @type event ::
           {:write, String.t()}
           | {:command, String.t()}
           | {:failed_command, String.t()}
+          | {:bash_write, String.t()}
 
   @doc """
   Ordered events derived from a run's messages.
@@ -69,9 +100,34 @@ defmodule ExAthena.Provenance do
     |> Enum.flat_map(&classify(&1, extra, results[&1.id]))
   end
 
-  @doc "Distinct files the run mutated, in first-seen order."
+  @doc """
+  Distinct files the run mutated, in first-seen order.
+
+  Unverified `{:bash_write, _}` candidates are deliberately absent — a rail
+  asking "what did this change?" must not be answered with a guess. Run the
+  events through `verify/2` first to include the ones that are really there.
+  """
   @spec changed_files([event()]) :: [String.t()]
   def changed_files(events), do: for({:write, p} <- events, do: p) |> Enum.uniq()
+
+  @doc """
+  Promote every `{:bash_write, _}` candidate that is on disk, and drop the rest.
+
+  Resolution is against `cwd`, so this has to run while the worker's directory
+  still exists. A `nil` cwd drops every candidate: with nothing to check
+  against, a claim cannot be made checkable, and an unverifiable claim is
+  exactly what this module refuses to emit.
+
+  Everything that is already evidence — tool writes, commands — passes through
+  untouched.
+  """
+  @spec verify([event()], String.t() | nil) :: [event()]
+  def verify(events, cwd) do
+    Enum.flat_map(events, fn
+      {:bash_write, path} -> if on_disk?(path, cwd), do: [{:write, path}], else: []
+      other -> [other]
+    end)
+  end
 
   @doc """
   Distinct commands the run executed, in first-seen order — including ones
@@ -234,7 +290,13 @@ defmodule ExAthena.Provenance do
     case arg(args, "command") do
       cmd when is_binary(cmd) ->
         cmd = String.trim(cmd)
-        if failed_exit?(result), do: [{:failed_command, cmd}], else: [{:command, cmd}]
+
+        # A command that exited non-zero proves nothing about what it wrote —
+        # a failed heredoc leaves a truncated file or none at all — so only a
+        # clean exit contributes candidates.
+        if failed_exit?(result),
+          do: [{:failed_command, cmd}],
+          else: [{:command, cmd} | write_candidates(cmd)]
 
       _ ->
         []
@@ -307,6 +369,30 @@ defmodule ExAthena.Provenance do
   end
 
   defp arg(_args, _key), do: nil
+
+  # Only the forms a reader can resolve without running a shell.
+  defp write_candidates(cmd) do
+    (Regex.scan(@redirect_re, cmd, capture: :all_but_first) ++
+       Regex.scan(@tee_re, cmd, capture: :all_but_first))
+    |> List.flatten()
+    |> Enum.filter(&safe_target?/1)
+    |> Enum.uniq()
+    |> Enum.map(&{:bash_write, &1})
+  end
+
+  # /dev/null and friends are not deliverables, and reporting one as a changed
+  # file is the same lie as reporting a path that was never written.
+  defp safe_target?(target) do
+    Regex.match?(@safe_target, target) and not String.starts_with?(target, "/dev/")
+  end
+
+  defp on_disk?(_path, nil), do: false
+
+  defp on_disk?(path, cwd) when is_binary(cwd) do
+    File.regular?(Path.expand(path, cwd))
+  end
+
+  defp on_disk?(_path, _cwd), do: false
 
   defp render([]), do: "none"
 

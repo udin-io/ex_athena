@@ -33,6 +33,90 @@ defmodule ExAthena.ProvenanceTest do
     }
   end
 
+  # Worker T2cuzVsh wrote a 113 KB file with a bash heredoc and its footer read
+  # "files changed: none". Provenance only ever classified `bash` as a command,
+  # never as a change, so an orchestrator reading the footer concluded the
+  # worker had produced nothing.
+  #
+  # The matcher is deliberately narrow. Discovering what an arbitrary shell
+  # command touched is unbounded, and a WRONG entry is worse than a missing
+  # one: the entire value of this footer is that its claims are checkable. So
+  # candidates are only unambiguous forms, they are a distinct event kind until
+  # verified, and `verify/2` drops every one that is not on disk.
+  describe "bash write targets" do
+    defp bash(cmd, id \\ "1") do
+      [assistant([call(id, "bash", %{"command" => cmd})]), results([{id, {:exit, 0}}])]
+    end
+
+    test "a heredoc redirect is a write candidate, not a write" do
+      assert Provenance.events(bash("cat > plan/extract.md <<'EOF'\nhello\nEOF")) ==
+               [
+                 {:command, "cat > plan/extract.md <<'EOF'\nhello\nEOF"},
+                 {:bash_write, "plan/extract.md"}
+               ]
+    end
+
+    test "recognises append and tee" do
+      assert {:bash_write, "log.txt"} in Provenance.events(bash("echo hi >> log.txt"))
+      assert {:bash_write, "out.json"} in Provenance.events(bash("curl -s x | tee out.json"))
+      assert {:bash_write, "out.json"} in Provenance.events(bash("gen | tee -a out.json"))
+    end
+
+    test "an unverified candidate is not a changed file" do
+      events = Provenance.events(bash("echo hi > log.txt"))
+      assert Provenance.changed_files(events) == []
+    end
+
+    test "misses rather than guesses on ambiguous forms" do
+      for cmd <- [
+            "echo hi > $OUT",
+            "echo hi > ~/notes.md",
+            "echo hi > *.txt",
+            "mix test 2>&1",
+            "diff a b > /dev/null",
+            "sed -i s/a/b/ lib/a.ex",
+            "python - <<'PY'\nopen('x.txt','w')\nPY"
+          ] do
+        assert Enum.filter(Provenance.events(bash(cmd)), &match?({:bash_write, _}, &1)) == [],
+               "should not have guessed a write target from: #{cmd}"
+      end
+    end
+
+    test "a command that failed contributes no write candidate" do
+      msgs = [
+        assistant([call("1", "bash", %{"command" => "gen > out.txt"})]),
+        results([{"1", {:exit, 1}}])
+      ]
+
+      assert Enum.filter(Provenance.events(msgs), &match?({:bash_write, _}, &1)) == []
+    end
+  end
+
+  describe "verify/2 — a candidate that is not on disk never becomes evidence" do
+    @tag :tmp_dir
+    test "promotes a candidate whose file exists", %{tmp_dir: dir} do
+      File.write!(Path.join(dir, "out.txt"), "hello")
+
+      assert Provenance.verify([{:bash_write, "out.txt"}], dir) == [{:write, "out.txt"}]
+    end
+
+    @tag :tmp_dir
+    test "drops a candidate whose file does not exist", %{tmp_dir: dir} do
+      assert Provenance.verify([{:bash_write, "ghost.txt"}], dir) == []
+    end
+
+    @tag :tmp_dir
+    test "leaves tool writes and commands untouched", %{tmp_dir: dir} do
+      events = [{:write, "lib/a.ex"}, {:command, "mix test"}, {:failed_command, "mix compile"}]
+      assert Provenance.verify(events, dir) == events
+    end
+
+    test "drops every candidate when there is no cwd to check against" do
+      assert Provenance.verify([{:bash_write, "out.txt"}, {:command, "ls"}], nil) ==
+               [{:command, "ls"}]
+    end
+  end
+
   describe "events/1 — what the worker actually did" do
     test "records file writes from write and edit, in call order" do
       msgs = [
