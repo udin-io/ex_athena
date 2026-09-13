@@ -48,6 +48,23 @@ defmodule ExAthena.Storage.SweeperTuningTest do
     assert File.exists?(history)
   end
 
+  # A settings file is hand-editable, and nothing coerces an integer field on
+  # the way back in. A garbage retention must not decide how long data lives.
+  @tag :tmp_dir
+  test "falls back to the default retention when the configured one is not a number",
+       %{tmp_dir: tmp} do
+    Application.put_env(:ex_athena, :storage, session_retention_days: "forever")
+
+    assert Sweeper.targets() == [
+             {".exathena/file-history", 30 * @day},
+             {".exathena/sessions", 30 * @day}
+           ]
+
+    sessions = stale_dir(Path.join(tmp, ".exathena/sessions"))
+    assert :ok = Sweeper.run(cwd: tmp)
+    assert File.exists?(sessions)
+  end
+
   # Two days old: past a one-day retention, well inside the 30-day default.
   defp stale_dir(root) do
     dir = Path.join(root, "session-id")

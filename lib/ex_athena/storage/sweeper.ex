@@ -106,10 +106,15 @@ defmodule ExAthena.Storage.Sweeper do
     ]
   end
 
+  # A settings file is hand-editable and nothing coerces its values on the way
+  # back in, so a string or a negative number must not decide how long the
+  # user's history lives. Anything that is not a whole number of days falls
+  # back to the default rather than disabling the sweep or crashing it.
   defp retention(key) do
-    :storage
-    |> Tuning.get(key, @default_retention_days)
-    |> Kernel.*(@day_seconds)
+    case Tuning.get(:storage, key, @default_retention_days) do
+      days when is_integer(days) and days >= 0 -> days * @day_seconds
+      _ -> @default_retention_days * @day_seconds
+    end
   end
 
   @doc """
