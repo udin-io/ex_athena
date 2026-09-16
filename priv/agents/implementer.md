@@ -1,7 +1,7 @@
 ---
 name: implementer
 description: Read-write worker that implements a focused change — edits code, runs commands, verifies
-tools: [read, glob, grep, write, edit, apply_patch, bash, web_fetch, web_search, usage_rules, lsp, todo_write]
+tools: [read, glob, grep, write, edit, apply_patch, bash, gh, web_fetch, web_search, usage_rules, lsp, todo_write]
 permissions: default
 mode: react
 isolation: in_process

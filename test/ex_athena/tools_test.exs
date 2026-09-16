@@ -119,7 +119,7 @@ defmodule ExAthena.ToolsTest do
     end
 
     test "tools that only observe are declared read-only" do
-      for name <- ~w(read read_summary glob grep lsp usage_rules web_fetch web_search) do
+      for name <- ~w(read read_summary glob grep lsp usage_rules web_fetch web_search gh) do
         assert flag(name), "expected #{name} to declare itself read-only"
       end
     end

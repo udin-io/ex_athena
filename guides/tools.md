@@ -14,6 +14,7 @@ a tool-result message.
 | `ExAthena.Tools.Write` | Create/overwrite a file | ❌ |
 | `ExAthena.Tools.Edit` | Exact-string replacement in a file | ❌ |
 | `ExAthena.Tools.Bash` | Shell execution with timeout | ❌ |
+| `ExAthena.Tools.Gh` | Read-only GitHub access (issues/PRs/repo/releases/runs/search) via the `gh` CLI | ✅ |
 | `ExAthena.Tools.WebFetch` | HTTP GET (http/https only, 1 MB cap) | ✅ |
 | `ExAthena.Tools.TodoWrite` | Agent todo list | ❌ |
 | `ExAthena.Tools.PlanMode` | Request phase transition | ✅ |

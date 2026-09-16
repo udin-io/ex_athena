@@ -31,6 +31,7 @@ defmodule ExAthena.Tools do
     ExAthena.Tools.Edit,
     ExAthena.Tools.ApplyPatch,
     ExAthena.Tools.Bash,
+    ExAthena.Tools.Gh,
     ExAthena.Tools.WebFetch,
     ExAthena.Tools.WebSearch,
     ExAthena.Tools.UsageRules,
