@@ -1,7 +1,7 @@
 ---
 name: research
 description: Online-first research worker — searches the web and fetches sources to answer questions the codebase can't
-tools: [web_search, web_fetch, usage_rules, read, glob, grep]
+tools: [web_search, web_fetch, usage_rules, read, glob, grep, gh]
 permissions: plan
 mode: react
 isolation: in_process

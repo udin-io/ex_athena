@@ -105,7 +105,7 @@ defmodule ExAthena.Permissions do
   alias ExAthena.Permissions.Denial
   alias ExAthena.ToolContext
 
-  @readonly_tools ~w(read glob grep web_fetch web_search usage_rules plan_mode spawn_agent lsp)
+  @readonly_tools ~w(read glob grep web_fetch web_search usage_rules plan_mode spawn_agent lsp gh)
 
   # A phase denial is a property of the run, not of how the command was
   # spelled — but nothing said so, and a worker read it as something to get
