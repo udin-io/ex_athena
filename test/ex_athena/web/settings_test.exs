@@ -86,6 +86,27 @@ defmodule ExAthena.Web.SettingsTest do
       assert Tuning.get(:agents, :result_chars, 64_000) == 32_000
     end
 
+    # #230: the gh tool's three Tuning keys had no schema field, so a value a
+    # user set for them was silently dropped rather than reaching Tuning.
+    test "a value set for each gh field survives a restart", %{path: path} do
+      pairs = [
+        {"tools.gh_default_timeout_ms", :gh_default_timeout_ms, 30_000},
+        {"tools.gh_max_timeout_ms", :gh_max_timeout_ms, 90_000},
+        {"tools.gh_output_chars", :gh_output_chars, 24_000}
+      ]
+
+      form = for {form_key, _, value} <- pairs, into: %{}, do: {form_key, to_string(value)}
+      assert {:ok, _} = Settings.save(form)
+
+      Application.delete_env(:ex_athena, :tools)
+      assert File.exists?(path)
+      Settings.load()
+
+      for {_form_key, tuning_key, value} <- pairs do
+        assert Tuning.get(:tools, tuning_key, :not_set) == value
+      end
+    end
+
     test "rejects a non-numeric value for a numeric field and names the field" do
       assert {:error, errors} = Settings.save(%{"orchestrate.max_planning_turns" => "twelve"})
       assert errors[{:orchestrate, :max_planning_turns}] =~ "number"
