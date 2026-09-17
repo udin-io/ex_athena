@@ -582,17 +582,16 @@ defmodule ExAthena.Modes.Orchestrate do
     # Only a SUCCESSFUL spawn counts as delegation — live testing showed a
     # model repeating an invalid spawn call verbatim every turn, which must
     # not keep resetting the watchdog.
-    spawn_ids = for tc <- calls, tc.name == "spawn_agent", do: tc.id
+    #
+    # An answered `ask_user` resets it too. Waiting for the user is the one
+    # other legitimate reason to take a turn without delegating, and the todo
+    # it is waiting on is exactly the one the watchdog would hand to a worker:
+    # session 227f7f480afa spent 23 minutes and a worker slot writing a mock
+    # while the user was already answering whether to approve one.
+    delegated_or_asked? = succeeded?(new_msgs, calls, ["spawn_agent", "ask_user"])
 
-    spawned? =
-      new_msgs
-      |> Enum.flat_map(fn
-        %{role: :tool, tool_results: trs} when is_list(trs) -> trs
-        _ -> []
-      end)
-      |> Enum.any?(fn tr -> tr.tool_call_id in spawn_ids and tr.is_error != true end)
-
-    turns = if spawned?, do: 0, else: (state.mode_state[:turns_without_spawn] || 0) + 1
+    turns =
+      if delegated_or_asked?, do: 0, else: (state.mode_state[:turns_without_spawn] || 0) + 1
 
     # Never auto-delegate the same todo twice — a model that doesn't
     # rewrite its todos would otherwise respawn the same first pending
@@ -635,6 +634,20 @@ defmodule ExAthena.Modes.Orchestrate do
       true ->
         {:continue, put_watch(state, turns)}
     end
+  end
+
+  # Whether one of `names` was called this turn and its result was not an
+  # error. A model that repeats an invalid call verbatim every turn must not
+  # keep the watchdog at bay — live behaviour, not a hypothetical.
+  defp succeeded?(new_msgs, calls, names) do
+    ids = for tc <- calls, tc.name in names, do: tc.id
+
+    new_msgs
+    |> Enum.flat_map(fn
+      %{role: :tool, tool_results: trs} when is_list(trs) -> trs
+      _ -> []
+    end)
+    |> Enum.any?(fn tr -> tr.tool_call_id in ids and tr.is_error != true end)
   end
 
   # One dictated implementation can be a deliberate, well-founded choice
