@@ -25,6 +25,7 @@ defmodule ExAthena.Modes.Orchestrate do
 
   @behaviour ExAthena.Loop.Mode
 
+  alias ExAthena.Agents.Quota
   alias ExAthena.Loop.{Parallel, State}
   alias ExAthena.Messages.ToolCall
   alias ExAthena.Permissions.Denial
@@ -198,6 +199,10 @@ defmodule ExAthena.Modes.Orchestrate do
     assigns =
       state.ctx.assigns
       |> Map.put(:strict_spawn, true)
+      # The orchestrator holds only todo_write / spawn_agent / finish /
+      # ask_user, so any refusal telling it to do the work itself is an
+      # instruction it cannot follow. SpawnAgent words its refusals from this.
+      |> Map.put(:delegate_only, true)
       |> Map.put_new(:subagent_prompt_suffix, String.trim(@worker_suffix))
 
     request_template = %{
@@ -334,7 +339,17 @@ defmodule ExAthena.Modes.Orchestrate do
     # handled below, and scanning the transcript is wasted work otherwise.
     ev = if match?({:submitted, _}, halted.halted_reason), do: evidence(halted), else: nil
 
+    # Every gate below asks for ONE more worker. With the allowance spent
+    # there is none, so the demand is one the run cannot meet: session
+    # 227f7f480afa was told twice to spawn, refused twice, and failed. The
+    # checks still matter, so they are named in the deliverable instead —
+    # unverified work reported as unverified (issue 216).
+    quota_spent? = ev != nil and Quota.exhausted?(halted.ctx.assigns || %{})
+
     cond do
+      quota_spent? ->
+        {:halt, note_unverified(halted, ev)}
+
       # Gate 1 — nothing ran at all. Fires on an otherwise CLEAN finish,
       # because that is exactly the shape of the failure: every todo marked
       # completed (self-reported, so it proves nothing) and a deliverable
@@ -353,7 +368,7 @@ defmodule ExAthena.Modes.Orchestrate do
       # run tested a private helper it had just written, reported 252 passing,
       # and shipped a page that raised on every load.
       gate?(halted, ev, :coverage_nudged, &(&1.uncovered != [])) ->
-        nudge(halted, :coverage_nudged, coverage_note(ev.uncovered))
+        nudge(halted, :coverage_nudged, coverage_note(ev.uncovered, ev.test_runs))
 
       # Gate 4 — everything mechanical is satisfied, but nothing has compared
       # the delivered work to what was actually asked for. A live run was
@@ -389,6 +404,40 @@ defmodule ExAthena.Modes.Orchestrate do
     end
   end
 
+  # The deliverable is what the caller reads; a runtime note anywhere else is
+  # not part of the answer. Appended, never substituted — the orchestrator's
+  # own words stay first.
+  defp note_unverified(halted, ev) do
+    case unverified(ev) do
+      [] ->
+        halted
+
+      checks ->
+        {:submitted, deliverable} = halted.halted_reason
+
+        note =
+          "\n\n[orchestration runtime] UNVERIFIED — the run's worker allowance " <>
+            "(#{Quota.limit(halted.ctx.assigns || %{})}) was spent, so these checks did not run:\n" <>
+            Enum.map_join(checks, "\n", &("- " <> &1))
+
+        %{halted | halted_reason: {:submitted, to_string(deliverable) <> note}}
+    end
+  end
+
+  # One line per gate that is still deficient, in the gates' own order.
+  defp unverified(ev) do
+    [
+      {ev.changed != [] and not ev.acted?,
+       "no command was run to check " <> Enum.join(ev.changed, ", ")},
+      {ev.source_changed != [] and not ev.tested?,
+       "no test run covered " <> Enum.join(ev.source_changed, ", ")},
+      {ev.uncovered != [], "no test executed " <> Enum.join(ev.uncovered, ", ")},
+      {ev.source_changed != [], "the delivered work was not audited against the original request"}
+    ]
+    |> Enum.filter(&elem(&1, 0))
+    |> Enum.map(&elem(&1, 1))
+  end
+
   # Each gate is one-shot: it raises the floor without ever trapping a run that
   # genuinely cannot verify, and the run terminates after at most one extra
   # iteration per gate.
@@ -411,15 +460,24 @@ defmodule ExAthena.Modes.Orchestrate do
   # `acted?` is a FLOOR, not a proof: any non-read-only command clears it, so a
   # worker that ran `mkdir` counts. It exists to make "nothing was checked"
   # impossible to finish through silently. `tested?` is the sharper check —
-  # a test runner that actually exited zero.
+  # a test run that neither failed nor hid its result behind a pipe (see
+  # `ExAthena.Provenance.command_outcome/3`).
   defp evidence(state) do
     transcript = transcript_text(state)
     events = ExAthena.Provenance.scan(transcript)
     files = ExAthena.Provenance.changed_files(events)
     commands = ExAthena.Provenance.commands(events)
-    failed = ExAthena.Provenance.failed_commands(events)
+
+    not_passing =
+      ExAthena.Provenance.failed_commands(events) ++
+        ExAthena.Provenance.unconfirmed_commands(events)
+
     source_changed = Enum.reject(files, &ExAthena.Provenance.test_file?/1)
-    tested? = Enum.any?(commands, &(ExAthena.Provenance.test_command?(&1) and &1 not in failed))
+
+    test_runs =
+      Enum.filter(commands, &(ExAthena.Provenance.test_command?(&1) and &1 not in not_passing))
+
+    tested? = test_runs != []
 
     %{
       changed: files,
@@ -427,6 +485,7 @@ defmodule ExAthena.Modes.Orchestrate do
       acted?:
         Enum.any?(commands, &(not ExAthena.Tools.Bash.read_only_command?(%{"command" => &1}))),
       tested?: tested?,
+      test_runs: test_runs,
       # Only asked once tests are green: before that, gates 1 and 2 own the
       # conversation and a coverage demand would be noise on top of them.
       uncovered: if(tested?, do: uncovered(source_changed, transcript, state.ctx.cwd), else: [])
@@ -499,10 +558,16 @@ defmodule ExAthena.Modes.Orchestrate do
       "ORIGINAL REQUEST:\n" <> request
   end
 
-  defp coverage_note(files) do
-    "[orchestration runtime] The suite is green but no test executed " <>
+  # States what the runtime observed — a command, its exit code, the absence of
+  # a failure summary — and never "the suite is green". Session 227f7f480afa's
+  # orchestrator repeated that sentence in its deliverable over 4 failing tests.
+  defp coverage_note(files, test_runs) do
+    "[orchestration runtime] A test run exited zero with no failure summary " <>
+      "in its output (" <>
+      Enum.join(test_runs, "; ") <>
+      "), but no test executed " <>
       Enum.join(files, ", ") <>
-      " — a passing suite proves a test EXISTS, not that it covers your " <>
+      " — a passing run proves a test EXISTS, not that it covers your " <>
       "change. Spawn ONE worker to add a test that calls the changed code " <>
       "through its real entry point (the function or route a caller actually " <>
       "uses, not a private helper), run the suite WITH COVERAGE " <>
@@ -566,17 +631,16 @@ defmodule ExAthena.Modes.Orchestrate do
     # Only a SUCCESSFUL spawn counts as delegation — live testing showed a
     # model repeating an invalid spawn call verbatim every turn, which must
     # not keep resetting the watchdog.
-    spawn_ids = for tc <- calls, tc.name == "spawn_agent", do: tc.id
+    #
+    # An answered `ask_user` resets it too. Waiting for the user is the one
+    # other legitimate reason to take a turn without delegating, and the todo
+    # it is waiting on is exactly the one the watchdog would hand to a worker:
+    # session 227f7f480afa spent 23 minutes and a worker slot writing a mock
+    # while the user was already answering whether to approve one.
+    delegated_or_asked? = succeeded?(new_msgs, calls, ["spawn_agent", "ask_user"])
 
-    spawned? =
-      new_msgs
-      |> Enum.flat_map(fn
-        %{role: :tool, tool_results: trs} when is_list(trs) -> trs
-        _ -> []
-      end)
-      |> Enum.any?(fn tr -> tr.tool_call_id in spawn_ids and tr.is_error != true end)
-
-    turns = if spawned?, do: 0, else: (state.mode_state[:turns_without_spawn] || 0) + 1
+    turns =
+      if delegated_or_asked?, do: 0, else: (state.mode_state[:turns_without_spawn] || 0) + 1
 
     # Never auto-delegate the same todo twice — a model that doesn't
     # rewrite its todos would otherwise respawn the same first pending
@@ -619,6 +683,20 @@ defmodule ExAthena.Modes.Orchestrate do
       true ->
         {:continue, put_watch(state, turns)}
     end
+  end
+
+  # Whether one of `names` was called this turn and its result was not an
+  # error. A model that repeats an invalid call verbatim every turn must not
+  # keep the watchdog at bay — live behaviour, not a hypothetical.
+  defp succeeded?(new_msgs, calls, names) do
+    ids = for tc <- calls, tc.name in names, do: tc.id
+
+    new_msgs
+    |> Enum.flat_map(fn
+      %{role: :tool, tool_results: trs} when is_list(trs) -> trs
+      _ -> []
+    end)
+    |> Enum.any?(fn tr -> tr.tool_call_id in ids and tr.is_error != true end)
   end
 
   # One dictated implementation can be a deliberate, well-founded choice
@@ -847,6 +925,8 @@ defmodule ExAthena.Modes.Orchestrate do
       "max_result_chars" => 8_000
     }
 
+    exhausted? = Quota.exhausted?(state.ctx.assigns || %{})
+
     case gated_auto_spawn(state, args, "auto_delegate_#{System.unique_integer([:positive])}") do
       {:halt, reason} ->
         halt_early(state, reason)
@@ -854,6 +934,15 @@ defmodule ExAthena.Modes.Orchestrate do
       gate_result ->
         note =
           case gate_result do
+            # Every refusal reads the same once the allowance is gone: there
+            # is no worker left to take a smaller slice or a sharper brief,
+            # and the orchestrator holds no tools to do the step itself.
+            {:ok, {:error, _}} when exhausted? ->
+              quota_spent_note(state, content)
+
+            {:ok, {:error, :uncounted, _}} when exhausted? ->
+              quota_spent_note(state, content)
+
             {:ok, {:ok, text, _ui}} ->
               "[orchestration runtime] You did not delegate, so the runtime delegated the " <>
                 ~s(pending todo "#{content}" to a worker. Worker summary:\n#{text}\n) <>
@@ -878,6 +967,13 @@ defmodule ExAthena.Modes.Orchestrate do
 
         %{state | messages: state.messages ++ [ExAthena.Messages.user(note)]}
     end
+  end
+
+  defp quota_spent_note(state, content) do
+    "[orchestration runtime] Auto-delegation of \"#{content}\" was refused: this run has " <>
+      "spawned its full allowance of #{Quota.limit(state.ctx.assigns || %{})} workers. " <>
+      "No worker can start, so do not plan another one. Finish with what you have and name " <>
+      "in your deliverable which checks are unverified."
   end
 
   # When a worker already attempted this exact todo and failed, its digest of

@@ -306,15 +306,83 @@ defmodule ExAthena.Tools.SpawnAgent do
   defp claim_and_spawn(args, prompt, ctx, assigns, deadline, now, resolved) do
     case Quota.claim(assigns) do
       :exhausted ->
-        {:error,
-         "not started: this run has already spawned its full allowance of " <>
-           "#{Quota.limit(assigns)} workers. " <>
-           "Do the remaining work yourself, or finish with what you already have."}
+        quota_refusal(assigns)
 
-      {:ok, _spawned} ->
-        do_execute(args, prompt, ctx, deadline, deadline - now, resolved)
+      {:ok, spawned} ->
+        args
+        |> do_execute(prompt, ctx, deadline, deadline - now, resolved)
+        |> annotate_allowance(allowance_line(assigns, spawned))
     end
   end
+
+  # The allowance running out is a fact about the run, not a mistake by the
+  # model that asked for a worker, so the first refusal is `:uncounted` — a
+  # counted one killed session 5906635b743d's shape of orchestrator, whose
+  # only turn-based guard is the mistake counter. Asking AGAIN after being
+  # told no is a mistake, and that is what still bounds a model which keeps
+  # calling: `Quota.record_refusal/1` counts them.
+  #
+  # The advice depends on what the caller can do. An orchestrator holds no
+  # read or write tools, so "do the remaining work yourself" is an
+  # instruction it cannot follow — it sent session 227f7f480afa in circles.
+  defp quota_refusal(assigns) do
+    text =
+      "not started: this run has already spawned its full allowance of " <>
+        "#{Quota.limit(assigns)} workers (#{allowance_text(Quota.limit(assigns), Quota.limit(assigns))}). " <>
+        advice(assigns)
+
+    case Quota.record_refusal(assigns) do
+      :first -> {:error, :uncounted, text}
+      :repeat -> {:error, text}
+    end
+  end
+
+  defp advice(assigns) do
+    if Map.get(assigns, :delegate_only, false) do
+      "You hold no tools to do this step with, so finish now with what you " <>
+        "already have and name in your deliverable which checks are unverified."
+    else
+      "Do the remaining work yourself, or finish with what you already have."
+    end
+  end
+
+  # Every spawn result carries the count. Nothing else tells the caller how
+  # many workers are left: session 227f7f480afa learned its allowance was gone
+  # only when a spawn was refused, having spent its last two slots on
+  # 30-minute retries of one bug.
+  defp allowance_line(assigns, spawned) do
+    case Quota.remaining(assigns) do
+      :unbounded -> nil
+      remaining -> "[runtime] " <> allowance_text(spawned, Quota.limit(assigns), remaining)
+    end
+  end
+
+  defp allowance_text(spawned, limit, remaining \\ 0)
+
+  defp allowance_text(spawned, limit, 1),
+    do: "worker #{spawned} of #{limit} this run; 1 left — this is your LAST worker."
+
+  defp allowance_text(spawned, limit, 0),
+    do: "worker #{spawned} of #{limit} this run; none left."
+
+  defp allowance_text(spawned, limit, remaining),
+    do: "worker #{spawned} of #{limit} this run; #{remaining} left."
+
+  defp annotate_allowance(result, nil), do: result
+
+  defp annotate_allowance(result, line) do
+    case result do
+      {:ok, text, ui} -> {:ok, append_line(text, line), ui}
+      {:ok, text} -> {:ok, append_line(text, line)}
+      {:error, :uncounted, text} -> {:error, :uncounted, append_line(text, line)}
+      {:error, reason} when is_binary(reason) -> {:error, append_line(reason, line)}
+      other -> other
+    end
+  end
+
+  # Its own line, so `ExAthena.Provenance.scan/1` still reads the footer above
+  # it and a worker's report is never run together with the runtime's note.
+  defp append_line(text, line), do: to_string(text) <> "\n" <> line
 
   # 30 min wall clock — covers the 25-iteration budget on a local model at
   # 30–90s/turn plus single-slot queue waits. NOT model-controllable: small
@@ -660,7 +728,8 @@ defmodule ExAthena.Tools.SpawnAgent do
   # make. The counter is not what bounds a parent that keeps re-spawning a
   # brief that reliably kills its worker: `ExAthena.Agents.Quota` claims one
   # slot per spawn and never releases it, so a crash loop runs out of workers
-  # (24 by default) and then meets a COUNTED refusal from `claim_and_spawn/6`.
+  # (24 by default) and then meets a refusal that is uncounted once and
+  # COUNTED every time after (`quota_refusal/1`).
   # `ExAthena.Agents.Deadline` bounds it in time on the same terms.
   defp crashed(ctx, sub_id, reason, worker_cwd) do
     died = describe_reason(reason)
@@ -1064,6 +1133,8 @@ defmodule ExAthena.Tools.SpawnAgent do
       |> Map.put(:todo_writer, todo_writer)
       |> Map.put(:agent_depth, child_depth)
       |> Map.put(:current_agent_id, sub_id)
+      # Describes the CALLER, not the tree: a worker holds real tools.
+      |> Map.put(:delegate_only, false)
 
     sub_opts
     |> Keyword.put(:on_event, tagged_on_event)
@@ -1075,6 +1146,8 @@ defmodule ExAthena.Tools.SpawnAgent do
       (ctx.assigns || %{})
       |> Map.put(:agent_depth, child_depth)
       |> Map.put(:current_agent_id, sub_id)
+      # Describes the CALLER, not the tree: a worker holds real tools.
+      |> Map.put(:delegate_only, false)
 
     Keyword.put(sub_opts, :assigns, sub_assigns)
   end

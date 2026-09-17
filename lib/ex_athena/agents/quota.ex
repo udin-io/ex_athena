@@ -34,19 +34,65 @@ defmodule ExAthena.Agents.Quota do
   @limit_key :max_agents_per_run
   @default_limit 24
 
+  # Slot 1 counts workers spawned, slot 2 counts refusals. Both live in the
+  # one counter the whole tree shares, for the reason the counter exists: no
+  # message passing and no second source of truth.
+  @spawns 1
+  @refusals 2
+
   @doc """
   Seed the run's worker counter, keeping one a subagent already inherited.
   """
   @spec install(map()) :: map()
   def install(assigns),
-    do: Map.put_new_lazy(assigns, @quota_key, fn -> :counters.new(1, [:write_concurrency]) end)
+    do: Map.put_new_lazy(assigns, @quota_key, fn -> :counters.new(2, [:write_concurrency]) end)
 
   @doc "Workers this run has spawned so far."
   @spec spawned(map()) :: non_neg_integer()
   def spawned(assigns) do
     case Map.get(assigns, @quota_key) do
       nil -> 0
-      counter -> :counters.get(counter, 1)
+      counter -> :counters.get(counter, @spawns)
+    end
+  end
+
+  @doc """
+  Worker slots left, or `:unbounded` for a run with no counter.
+
+  The orchestrator cannot see the count any other way: session 227f7f480afa
+  spent its last two slots on 30-minute retries of one bug and learned the
+  allowance was gone only when a spawn was refused.
+  """
+  @spec remaining(map()) :: non_neg_integer() | :unbounded
+  def remaining(assigns) do
+    case Map.get(assigns, @quota_key) do
+      nil -> :unbounded
+      _counter -> max(limit(assigns) - spawned(assigns), 0)
+    end
+  end
+
+  @doc "Whether the run's allowance is spent."
+  @spec exhausted?(map()) :: boolean()
+  def exhausted?(assigns), do: remaining(assigns) == 0
+
+  @doc """
+  Record that a spawn was refused, and say whether it was the run's first.
+
+  `ExAthena.Tools.SpawnAgent` returns the first refusal `:uncounted` — the
+  allowance running out is a fact about the run, not a mistake by the model
+  that asked. A model that asks again after being told no IS making one, and
+  in orchestrate mode (`max_iterations: :infinity`) the mistake counter is the
+  only turn-based guard left once every slot is spent.
+  """
+  @spec record_refusal(map()) :: :first | :repeat
+  def record_refusal(assigns) do
+    case Map.get(assigns, @quota_key) do
+      nil ->
+        :first
+
+      counter ->
+        :counters.add(counter, @refusals, 1)
+        if :counters.get(counter, @refusals) == 1, do: :first, else: :repeat
     end
   end
 
@@ -72,11 +118,11 @@ defmodule ExAthena.Agents.Quota do
         {:ok, 0}
 
       counter ->
-        if :counters.get(counter, 1) >= limit(assigns) do
+        if :counters.get(counter, @spawns) >= limit(assigns) do
           :exhausted
         else
-          :counters.add(counter, 1, 1)
-          {:ok, :counters.get(counter, 1)}
+          :counters.add(counter, @spawns, 1)
+          {:ok, :counters.get(counter, @spawns)}
         end
     end
   end

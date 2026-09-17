@@ -183,6 +183,29 @@ defmodule ExAthena.Modes.OrchestrateVerificationGateTest do
     assert transcript(result) =~ @no_test_note
   end
 
+  # Session 227f7f480afa: `mix test <file> 2>&1 | tail -60` exited 0 over 4
+  # failing tests, and the orchestrator's deliverable called the suite green.
+  test "a piped test run that printed failures does not count as tested", %{dir: dir} do
+    npm_project(dir, "echo 12 tests, 4 failures")
+    calls = wrote_a_file() ++ [call("b1", "bash", %{"command" => "npm test 2>&1 | tail -60"})]
+
+    assert {:ok, result} = run(calls, [ExAthena.Tools.Write, ExAthena.Tools.Bash], dir)
+
+    text = transcript(result)
+    assert text =~ @no_test_note
+    refute text =~ "suite is green"
+  end
+
+  test "a piped test run with no summary in its output does not count as tested",
+       %{dir: dir} do
+    npm_project(dir, "true")
+    calls = wrote_a_file() ++ [call("b1", "bash", %{"command" => "npm test | head -80"})]
+
+    assert {:ok, result} = run(calls, [ExAthena.Tools.Write, ExAthena.Tools.Bash], dir)
+
+    assert transcript(result) =~ @no_test_note
+  end
+
   test "changing only a test file is not treated as unexercised source", %{dir: dir} do
     npm_project(dir, "true")
 
@@ -265,6 +288,10 @@ defmodule ExAthena.Modes.OrchestrateVerificationGateTest do
       text = transcript(result)
       assert text =~ @uncovered_note
       assert text =~ "lib/a.ex"
+      # The runtime saw an exit code and an output, never a suite. It says
+      # what it saw rather than asserting the suite is green.
+      refute text =~ "suite is green"
+      assert text =~ "npm test"
     end
 
     test "accepts a change the tests did execute", %{dir: dir} do
@@ -369,6 +396,69 @@ defmodule ExAthena.Modes.OrchestrateVerificationGateTest do
       assert {:ok, result} = audit_run(calls, [ExAthena.Tools.Write, ExAthena.Tools.Bash], dir)
 
       assert result.finish_reason == :submitted
+    end
+  end
+
+  # Session 227f7f480afa reached its cap of 10 workers. Gates 3 and 4 then each
+  # told the orchestrator to "Spawn ONE worker"; both spawns were refused. The
+  # gates were demanding what the run could no longer do.
+  describe "with the worker allowance spent" do
+    defp capped_run(worker_calls, worker_tools, dir) do
+      Loop.run("add a doctor filter",
+        provider: :mock,
+        mock: [responder: scripted(orchestrator_script())],
+        cwd: dir,
+        tools: ExAthena.Tools.builtins(),
+        mode: :orchestrate,
+        memory: false,
+        max_iterations: 12,
+        assigns: %{
+          max_agents_per_run: 1,
+          spawn_agent_opts: [
+            provider: :mock,
+            mock: [responder: worker(worker_calls)],
+            tools: worker_tools,
+            memory: false
+          ]
+        }
+      )
+    end
+
+    test "no gate demands a spawn, and finish goes through", %{dir: dir} do
+      assert {:ok, result} = capped_run(wrote_a_file(), [ExAthena.Tools.Write], dir)
+
+      text = transcript(result)
+
+      refute text =~ @ran_nothing_note
+      refute text =~ @no_test_note
+      refute text =~ "against the ORIGINAL request"
+      assert result.finish_reason == :submitted
+    end
+
+    # #216's rule: work that was not verified is reported as unverified.
+    test "the deliverable names the checks that did not run", %{dir: dir} do
+      assert {:ok, result} = capped_run(wrote_a_file(), [ExAthena.Tools.Write], dir)
+
+      assert result.deliverable =~ "compiles cleanly"
+      assert result.deliverable =~ "UNVERIFIED"
+      assert result.deliverable =~ "worker allowance"
+      assert result.deliverable =~ "no command was run"
+      assert result.deliverable =~ "no test run"
+      assert result.deliverable =~ "against the original request"
+    end
+
+    test "a run with nothing left unverified adds no note", %{dir: dir} do
+      npm_project(dir, "true")
+
+      calls = [
+        call("w1", "write", %{"path" => "test/a_test.exs", "content" => "# a test\n"}),
+        call("b1", "bash", %{"command" => "npm test"})
+      ]
+
+      assert {:ok, result} =
+               capped_run(calls, [ExAthena.Tools.Write, ExAthena.Tools.Bash], dir)
+
+      refute result.deliverable =~ "UNVERIFIED"
     end
   end
 

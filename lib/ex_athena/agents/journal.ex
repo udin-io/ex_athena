@@ -215,6 +215,11 @@ defmodule ExAthena.Agents.Journal do
         do: id
   end
 
+  defp command_event(%{"outcome" => "failed"}, cmd), do: {:failed_command, cmd}
+  defp command_event(%{"outcome" => "unconfirmed"}, cmd), do: {:unconfirmed_command, cmd}
+  defp command_event(%{"outcome" => "passed"}, cmd), do: {:command, cmd}
+
+  # Journals written before `outcome` was recorded.
   defp command_event(%{"exit_code" => 0}, cmd), do: {:command, cmd}
 
   defp command_event(%{"exit_code" => code}, cmd) when is_integer(code),
@@ -316,6 +321,14 @@ defmodule ExAthena.Agents.Journal do
     %{
       cmd: cap_chars(command, opts),
       exit_code: Map.get(payload, :exit_code),
+      # Judged here, while the output is in hand: the journal keeps no stdout,
+      # and a piped test run's exit code alone says nothing (issue 228).
+      outcome:
+        Provenance.command_outcome(
+          command,
+          Map.get(payload, :exit_code),
+          Map.get(payload, :stdout)
+        ),
       writes: confirmed_writes(command, Keyword.get(opts, :cwd))
     }
   end

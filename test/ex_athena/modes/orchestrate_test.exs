@@ -649,6 +649,206 @@ defmodule ExAthena.Modes.OrchestrateTest do
            end)
   end
 
+  # Session 227f7f480afa: the orchestrator called ask_user for mock approval,
+  # as its ticket required. Waiting for the answer cost it a spawn-less turn,
+  # the watchdog hit 2, and the runtime delegated the very step the user was
+  # answering to a worker — 23 minutes, a 25 KB mock nobody asked for, and one
+  # of the run's 10 worker slots.
+  test "asking the user resets the no-spawn count, so nothing is auto-delegated",
+       %{dir: dir} do
+    test_pid = self()
+
+    todos_args = %{
+      "todos" => [%{"content" => "draft the mock and get approval", "status" => "pending"}]
+    }
+
+    counter = :counters.new(1, [:atomics])
+
+    responder = fn _request ->
+      :counters.add(counter, 1, 1)
+
+      case :counters.get(counter, 1) do
+        1 ->
+          %Response{text: "the plan", tool_calls: [], finish_reason: :stop, provider: :mock}
+
+        2 ->
+          %Response{
+            text: "recording the plan",
+            tool_calls: [%ToolCall{id: "t2", name: "todo_write", arguments: todos_args}],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+
+        3 ->
+          %Response{
+            text: "asking",
+            tool_calls: [
+              %ToolCall{
+                id: "a3",
+                name: "ask_user",
+                arguments: %{"question" => "Approve the mock?", "options" => ["yes", "no"]}
+              }
+            ],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+
+        4 ->
+          %Response{
+            text: "acting on the answer",
+            tool_calls: [%ToolCall{id: "t4", name: "todo_write", arguments: todos_args}],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+
+        _ ->
+          %Response{
+            text: "done",
+            tool_calls: [%ToolCall{id: "f5", name: "finish", arguments: %{}}],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+      end
+    end
+
+    on_event = fn ev -> send(test_pid, {:event, ev}) end
+
+    task =
+      Task.async(fn ->
+        Loop.run("go",
+          provider: :mock,
+          mock: [responder: responder],
+          cwd: dir,
+          memory: false,
+          tools: [
+            ExAthena.Tools.TodoWrite,
+            ExAthena.Tools.SpawnAgent,
+            ExAthena.Tools.AskUser,
+            ExAthena.Tools.Finish
+          ],
+          mode: :orchestrate,
+          max_iterations: 8,
+          on_event: on_event,
+          assigns: %{
+            ask_user: test_pid,
+            spawn_agent_opts: [
+              provider: :mock,
+              mock: [
+                responder: fn _ ->
+                  %Response{text: "worker", finish_reason: :stop, provider: :mock}
+                end
+              ],
+              tools: [],
+              memory: false
+            ]
+          }
+        )
+      end)
+
+    assert_receive {:athena_ask_user, %{tool_call_id: id}}, 5_000
+    send(task.pid, {:athena_user_answer, id, "yes"})
+
+    assert {:ok, %Result{}} = Task.await(task, 15_000)
+
+    refute_receive {:event, {:subagent_spawn, _}}, 100
+  end
+
+  # The runtime's own auto-delegation spends a worker slot like any other
+  # spawn. When there is none left, the note it writes back must not tell a
+  # tool-less orchestrator to "delegate it yourself with spawn_agent".
+  test "auto-delegation refused by a spent allowance says to finish, not to retry",
+       %{dir: dir} do
+    test_pid = self()
+    counter = :counters.new(1, [:atomics])
+
+    todos_args = %{
+      "todos" => [%{"content" => "fix the template", "status" => "pending"}]
+    }
+
+    responder = fn request ->
+      :counters.add(counter, 1, 1)
+      n = :counters.get(counter, 1)
+      send(test_pid, {:main_request, n, request.messages})
+
+      case n do
+        1 ->
+          %Response{text: "the plan", tool_calls: [], finish_reason: :stop, provider: :mock}
+
+        2 ->
+          %Response{
+            text: "delegating",
+            tool_calls: [
+              %ToolCall{id: "t2", name: "todo_write", arguments: todos_args},
+              %ToolCall{
+                id: "s2",
+                name: "spawn_agent",
+                arguments: %{"prompt" => "fix the template", "todo" => "fix the template"}
+              }
+            ],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+
+        n when n in [3, 4] ->
+          %Response{
+            text: "thinking about it",
+            tool_calls: [%ToolCall{id: "t#{n}", name: "todo_write", arguments: todos_args}],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+
+        _ ->
+          %Response{
+            text: "done",
+            tool_calls: [%ToolCall{id: "f5", name: "finish", arguments: %{}}],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+      end
+    end
+
+    sub_responder = fn _request ->
+      %Response{text: "worker report", tool_calls: [], finish_reason: :stop, provider: :mock}
+    end
+
+    assert {:ok, %Result{} = result} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: responder],
+               cwd: dir,
+               memory: false,
+               tools: [
+                 ExAthena.Tools.TodoWrite,
+                 ExAthena.Tools.SpawnAgent,
+                 ExAthena.Tools.Finish
+               ],
+               mode: :orchestrate,
+               max_iterations: 8,
+               assigns: %{
+                 max_agents_per_run: 1,
+                 spawn_agent_opts: [
+                   provider: :mock,
+                   mock: [responder: sub_responder],
+                   tools: [],
+                   memory: false
+                 ]
+               }
+             )
+
+    notes =
+      result.messages
+      |> Enum.filter(&match?(%{role: :user}, &1))
+      |> Enum.map_join("\n", &to_string(&1.content || ""))
+
+    assert notes =~ "allowance"
+    assert notes =~ "unverified"
+    refute notes =~ "delegate it yourself"
+    # Neither a smaller slice nor a sharper brief can be delegated: there is
+    # no worker left to take one.
+    refute notes =~ "Split this todo"
+    refute notes =~ "ran out of budget"
+  end
+
   # A failed worker's digest goes to the ORCHESTRATOR, not to whoever retries
   # the step. When the runtime auto-delegated a todo a worker had just failed,
   # the retry therefore started from nothing: live, it re-derived the same
