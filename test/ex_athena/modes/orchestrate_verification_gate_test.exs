@@ -399,6 +399,69 @@ defmodule ExAthena.Modes.OrchestrateVerificationGateTest do
     end
   end
 
+  # Session 227f7f480afa reached its cap of 10 workers. Gates 3 and 4 then each
+  # told the orchestrator to "Spawn ONE worker"; both spawns were refused. The
+  # gates were demanding what the run could no longer do.
+  describe "with the worker allowance spent" do
+    defp capped_run(worker_calls, worker_tools, dir) do
+      Loop.run("add a doctor filter",
+        provider: :mock,
+        mock: [responder: scripted(orchestrator_script())],
+        cwd: dir,
+        tools: ExAthena.Tools.builtins(),
+        mode: :orchestrate,
+        memory: false,
+        max_iterations: 12,
+        assigns: %{
+          max_agents_per_run: 1,
+          spawn_agent_opts: [
+            provider: :mock,
+            mock: [responder: worker(worker_calls)],
+            tools: worker_tools,
+            memory: false
+          ]
+        }
+      )
+    end
+
+    test "no gate demands a spawn, and finish goes through", %{dir: dir} do
+      assert {:ok, result} = capped_run(wrote_a_file(), [ExAthena.Tools.Write], dir)
+
+      text = transcript(result)
+
+      refute text =~ @ran_nothing_note
+      refute text =~ @no_test_note
+      refute text =~ "against the ORIGINAL request"
+      assert result.finish_reason == :submitted
+    end
+
+    # #216's rule: work that was not verified is reported as unverified.
+    test "the deliverable names the checks that did not run", %{dir: dir} do
+      assert {:ok, result} = capped_run(wrote_a_file(), [ExAthena.Tools.Write], dir)
+
+      assert result.deliverable =~ "compiles cleanly"
+      assert result.deliverable =~ "UNVERIFIED"
+      assert result.deliverable =~ "worker allowance"
+      assert result.deliverable =~ "no command was run"
+      assert result.deliverable =~ "no test run"
+      assert result.deliverable =~ "against the original request"
+    end
+
+    test "a run with nothing left unverified adds no note", %{dir: dir} do
+      npm_project(dir, "true")
+
+      calls = [
+        call("w1", "write", %{"path" => "test/a_test.exs", "content" => "# a test\n"}),
+        call("b1", "bash", %{"command" => "npm test"})
+      ]
+
+      assert {:ok, result} =
+               capped_run(calls, [ExAthena.Tools.Write, ExAthena.Tools.Bash], dir)
+
+      refute result.deliverable =~ "UNVERIFIED"
+    end
+  end
+
   # The rails raise the floor; they must never trap a run that genuinely
   # cannot verify. Each fires at most once, so the run always terminates.
   test "both gates together still let the run complete", %{dir: dir} do

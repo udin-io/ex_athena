@@ -339,7 +339,17 @@ defmodule ExAthena.Modes.Orchestrate do
     # handled below, and scanning the transcript is wasted work otherwise.
     ev = if match?({:submitted, _}, halted.halted_reason), do: evidence(halted), else: nil
 
+    # Every gate below asks for ONE more worker. With the allowance spent
+    # there is none, so the demand is one the run cannot meet: session
+    # 227f7f480afa was told twice to spawn, refused twice, and failed. The
+    # checks still matter, so they are named in the deliverable instead —
+    # unverified work reported as unverified (issue 216).
+    quota_spent? = ev != nil and Quota.exhausted?(halted.ctx.assigns || %{})
+
     cond do
+      quota_spent? ->
+        {:halt, note_unverified(halted, ev)}
+
       # Gate 1 — nothing ran at all. Fires on an otherwise CLEAN finish,
       # because that is exactly the shape of the failure: every todo marked
       # completed (self-reported, so it proves nothing) and a deliverable
@@ -392,6 +402,40 @@ defmodule ExAthena.Modes.Orchestrate do
          |> put_in([Access.key(:mode_state), :stop_nudged], true)
          |> Map.put(:meta, Map.delete(halted.meta, :finish_reason))}
     end
+  end
+
+  # The deliverable is what the caller reads; a runtime note anywhere else is
+  # not part of the answer. Appended, never substituted — the orchestrator's
+  # own words stay first.
+  defp note_unverified(halted, ev) do
+    case unverified(ev) do
+      [] ->
+        halted
+
+      checks ->
+        {:submitted, deliverable} = halted.halted_reason
+
+        note =
+          "\n\n[orchestration runtime] UNVERIFIED — the run's worker allowance " <>
+            "(#{Quota.limit(halted.ctx.assigns || %{})}) was spent, so these checks did not run:\n" <>
+            Enum.map_join(checks, "\n", &("- " <> &1))
+
+        %{halted | halted_reason: {:submitted, to_string(deliverable) <> note}}
+    end
+  end
+
+  # One line per gate that is still deficient, in the gates' own order.
+  defp unverified(ev) do
+    [
+      {ev.changed != [] and not ev.acted?,
+       "no command was run to check " <> Enum.join(ev.changed, ", ")},
+      {ev.source_changed != [] and not ev.tested?,
+       "no test run covered " <> Enum.join(ev.source_changed, ", ")},
+      {ev.uncovered != [], "no test executed " <> Enum.join(ev.uncovered, ", ")},
+      {ev.source_changed != [], "the delivered work was not audited against the original request"}
+    ]
+    |> Enum.filter(&elem(&1, 0))
+    |> Enum.map(&elem(&1, 1))
   end
 
   # Each gate is one-shot: it raises the floor without ever trapping a run that
