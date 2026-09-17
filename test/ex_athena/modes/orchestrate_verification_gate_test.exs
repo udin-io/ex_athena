@@ -112,14 +112,15 @@ defmodule ExAthena.Modes.OrchestrateVerificationGateTest do
   end
 
   # Every message body, including runtime redirects delivered as tool results.
-  defp transcript(%Result{messages: messages}) do
-    messages
-    |> Enum.flat_map(fn msg ->
+  defp message_texts(messages) when is_list(messages) do
+    Enum.flat_map(messages, fn msg ->
       [to_string(msg.content || "")] ++
         Enum.map(msg.tool_results || [], &to_string(&1.content || ""))
     end)
-    |> Enum.join("\n")
   end
+
+  defp transcript(%Result{messages: messages}), do: transcript(messages)
+  defp transcript(messages) when is_list(messages), do: Enum.join(message_texts(messages), "\n")
 
   defp wrote_a_file,
     do: [call("w1", "write", %{"path" => "lib/a.ex", "content" => "defmodule A do\nend\n"})]
@@ -344,16 +345,18 @@ defmodule ExAthena.Modes.OrchestrateVerificationGateTest do
   describe "requirements audit" do
     @request "add a doctor filter dropdown populated with all records in the Employee table"
 
-    defp audit_run(worker_calls, worker_tools, dir) do
+    @memory_marker "AGENTS-MD-NOT-THE-REQUEST"
+
+    defp audit_run(worker_calls, worker_tools, dir, opts \\ []) do
       npm_project(dir, "true")
 
-      Loop.run(@request,
+      Loop.run(Keyword.get(opts, :prompt, @request),
         provider: :mock,
         mock: [responder: scripted(orchestrator_script())],
         cwd: dir,
         tools: ExAthena.Tools.builtins(),
         mode: :orchestrate,
-        memory: false,
+        memory: Keyword.get(opts, :memory, false),
         max_iterations: 12,
         assigns: %{
           spawn_agent_opts: [
@@ -365,6 +368,21 @@ defmodule ExAthena.Modes.OrchestrateVerificationGateTest do
         }
       )
     end
+
+    # The real `Memory.discover/2` output: a user-role message named "memory",
+    # sitting in front of the human's first turn. `user_dir` points at an empty
+    # directory so the developer's own ~/.config memory cannot leak in.
+    defp project_memory(dir) do
+      File.write!(Path.join(dir, "AGENTS.md"), "# Project notes\n\n#{@memory_marker}\n")
+      empty = Path.join(dir, "no_user_memory")
+      File.mkdir_p!(empty)
+      ExAthena.Memory.discover(dir, user_dir: empty)
+    end
+
+    defp audit_notes(%Result{messages: messages}), do: audit_notes(messages)
+
+    defp audit_notes(messages) when is_list(messages),
+      do: Enum.filter(message_texts(messages), &(&1 =~ "against the ORIGINAL request"))
 
     test "refuses the first finish after a code change until the work is audited",
          %{dir: dir} do
@@ -378,6 +396,36 @@ defmodule ExAthena.Modes.OrchestrateVerificationGateTest do
       # The audit is worthless without the original ask in front of it — the
       # orchestrator must not audit against its own paraphrase.
       assert text =~ "all records in the Employee table"
+    end
+
+    # Memory is injected as a user-role message in front of the human's turn,
+    # so "the first user message" is AGENTS.md. Session 227f7f480afa was told
+    # to audit its delivery against 1500 characters of project conventions.
+    test "quotes the human's turn, never the injected project memory", %{dir: dir} do
+      calls = wrote_a_file() ++ [call("b1", "bash", %{"command" => "npm test"})]
+
+      assert {:ok, result} =
+               audit_run(calls, [ExAthena.Tools.Write, ExAthena.Tools.Bash], dir,
+                 memory: project_memory(dir)
+               )
+
+      assert [note | _] = audit_notes(result)
+      assert note =~ "all records in the Employee table"
+      refute note =~ @memory_marker
+    end
+
+    test "pastes no request when no human turn has been taken yet", %{dir: dir} do
+      calls = wrote_a_file() ++ [call("b1", "bash", %{"command" => "npm test"})]
+
+      assert {:ok, result} =
+               audit_run(calls, [ExAthena.Tools.Write, ExAthena.Tools.Bash], dir,
+                 prompt: "",
+                 memory: project_memory(dir)
+               )
+
+      assert [note | _] = audit_notes(result)
+      refute note =~ @memory_marker
+      refute note =~ "ORIGINAL REQUEST:"
     end
 
     test "a read-only run is never asked to audit", %{dir: dir} do
@@ -396,6 +444,70 @@ defmodule ExAthena.Modes.OrchestrateVerificationGateTest do
       assert {:ok, result} = audit_run(calls, [ExAthena.Tools.Write, ExAthena.Tools.Bash], dir)
 
       assert result.finish_reason == :submitted
+    end
+  end
+
+  # Each gate is one-shot, but `mode_state` is rebuilt by `init/1` on every
+  # `Loop.run`, and a resumed session is a new run over the stored messages.
+  # So every gate fired again on the same evidence, and the orchestrator was
+  # made to re-argue an audit it had already run.
+  describe "a resumed session" do
+    @resume_prompt "carry on"
+
+    # A second run over the first run's messages: plan, then finish. No worker
+    # touches anything, so the only evidence is what the first run recorded.
+    defp resumed_run(dir, messages) do
+      script = [
+        todo("completed"),
+        tool_turn([call("f2", "finish", %{"deliverable" => "Already delivered and audited."})])
+      ]
+
+      Loop.run(@resume_prompt,
+        provider: :mock,
+        mock: [responder: scripted(script)],
+        cwd: dir,
+        tools: ExAthena.Tools.builtins(),
+        mode: :orchestrate,
+        memory: false,
+        messages: messages,
+        max_iterations: 12,
+        assigns: %{
+          spawn_agent_opts: [
+            provider: :mock,
+            mock: [responder: worker([])],
+            tools: [],
+            memory: false
+          ]
+        }
+      )
+    end
+
+    test "does not re-fire a gate that already fired in an earlier run", %{dir: dir} do
+      calls = wrote_a_file() ++ [call("b1", "bash", %{"command" => "npm test"})]
+
+      assert {:ok, first} = audit_run(calls, [ExAthena.Tools.Write, ExAthena.Tools.Bash], dir)
+      assert audit_notes(first) != []
+      assert transcript(first) =~ @uncovered_note
+
+      assert {:ok, second} = resumed_run(dir, first.messages)
+
+      resumed = Enum.drop(second.messages, length(first.messages))
+
+      assert audit_notes(resumed) == []
+      refute transcript(resumed) =~ @uncovered_note
+      assert second.finish_reason == :submitted
+    end
+
+    # The flags must not go the other way either: a gate whose deficiency is
+    # still real on resume, and which never fired before, still fires.
+    test "still fires a gate the earlier run never reached", %{dir: dir} do
+      assert {:ok, first} = capped_run(wrote_a_file(), [ExAthena.Tools.Write], dir)
+      assert first.deliverable =~ "UNVERIFIED"
+      refute transcript(first) =~ @ran_nothing_note
+
+      assert {:ok, second} = resumed_run(dir, first.messages)
+
+      assert transcript(Enum.drop(second.messages, length(first.messages))) =~ @ran_nothing_note
     end
   end
 

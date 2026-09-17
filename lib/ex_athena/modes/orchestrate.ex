@@ -441,19 +441,41 @@ defmodule ExAthena.Modes.Orchestrate do
   # Each gate is one-shot: it raises the floor without ever trapping a run that
   # genuinely cannot verify, and the run terminates after at most one extra
   # iteration per gate.
+  #
+  # "Once" spans a RESUME, and `mode_state` cannot carry that: `init/1` rebuilds
+  # it on every `Loop.run`, and resuming a session is a new run over the stored
+  # messages. Every gate therefore re-fired on evidence it had already gated,
+  # and the orchestrator was made to re-argue an audit it had run (issue 232).
+  # The transcript is the one thing a resume does carry, so each note names its
+  # own gate and `ev.fired` reads those names back. `mode_state` stays as the
+  # in-run answer, because a compaction can drop the note but not the flag.
   defp gate?(_halted, nil, _flag, _deficient?), do: false
 
   defp gate?(halted, ev, flag, deficient?),
-    do: halted.mode_state[flag] != true and deficient?.(ev)
+    do: halted.mode_state[flag] != true and flag not in ev.fired and deficient?.(ev)
 
   defp nudge(halted, flag, note) do
     {:continue,
      halted
-     |> redirect(note)
+     |> redirect(gate_prefix(flag) <> note)
      |> Map.put(:halted_reason, nil)
      |> put_in([Access.key(:mode_state), flag], true)
      |> Map.put(:meta, Map.delete(halted.meta, :finish_reason))}
   end
+
+  @gate_names %{
+    verify_nudged: "verification",
+    test_nudged: "test",
+    coverage_nudged: "coverage",
+    audit_nudged: "audit"
+  }
+
+  # Doubles as the note's own header, so nothing invisible rides along in the
+  # prompt or the chat UI just to be read back on the next run.
+  defp gate_prefix(flag), do: "[orchestration runtime: #{@gate_names[flag]} gate] "
+
+  defp fired_gates(transcript),
+    do: Enum.filter(Map.keys(@gate_names), &String.contains?(transcript, gate_prefix(&1)))
 
   # What the workers' own tool calls prove about this run.
   #
@@ -486,6 +508,8 @@ defmodule ExAthena.Modes.Orchestrate do
         Enum.any?(commands, &(not ExAthena.Tools.Bash.read_only_command?(%{"command" => &1}))),
       tested?: tested?,
       test_runs: test_runs,
+      # Gates this session has already fired, in this run or an earlier one.
+      fired: fired_gates(transcript),
       # Only asked once tests are green: before that, gates 1 and 2 own the
       # conversation and a coverage demand would be noise on top of them.
       uncovered: if(tested?, do: uncovered(source_changed, transcript, state.ctx.cwd), else: [])
@@ -513,8 +537,10 @@ defmodule ExAthena.Modes.Orchestrate do
     |> Enum.join("\n")
   end
 
+  # The gate prefix is added by `nudge/3`, which is also what reads it back
+  # on a resume — see `fired_gates/1`.
   defp verify_note(files) do
-    "[orchestration runtime] Workers changed " <>
+    "Workers changed " <>
       Enum.join(files, ", ") <>
       " but no command was run to check them — a completed todo is your own " <>
       "claim, not evidence. Spawn ONE worker whose brief is to run this " <>
@@ -523,28 +549,32 @@ defmodule ExAthena.Modes.Orchestrate do
       "finish again and say so in the deliverable."
   end
 
-  # The FIRST user turn, verbatim. The audit must run against what was
+  # The human's FIRST turn, verbatim. The audit must run against what was
   # actually asked, never the orchestrator's own restatement of it — a
   # paraphrase is where the dropped requirement went missing in the first
   # place. (Compaction was not the cause: the live failure ran 37 iterations
   # with zero compaction events, so the request was in context throughout and
   # simply was never re-read.)
+  #
+  # `ExAthena.Memory` injects each AGENTS.md / CLAUDE.md file as a user-role
+  # message in FRONT of the prompt, so "the first user message" is the project
+  # memory in every session that has one. Skipping those is what makes this the
+  # request rather than the conventions (issue 232). "" when the run has no
+  # human turn yet — `audit_note/1` then quotes nothing.
   defp original_request(%State{messages: messages}) do
     Enum.find_value(messages, "", fn
-      %{role: :user, content: content} when is_binary(content) -> content
-      _ -> nil
+      %{role: :user, content: content} = message when is_binary(content) ->
+        if ExAthena.Memory.memory_message?(message), do: nil, else: content
+
+      _ ->
+        nil
     end)
   end
 
   @audit_request_chars 1_500
 
   defp audit_note(request) do
-    request =
-      if String.length(request) > tuning(:audit_request_chars, @audit_request_chars),
-        do: String.slice(request, 0, tuning(:audit_request_chars, @audit_request_chars)) <> "…",
-        else: request
-
-    "[orchestration runtime] Before finishing: nothing has checked the " <>
+    "Before finishing: nothing has checked the " <>
       "delivered work against the ORIGINAL request. Compiling, passing tests " <>
       "and covered code do not show that you built what was asked. Spawn ONE " <>
       "worker to audit it. Give that worker the request below VERBATIM and " <>
@@ -554,15 +584,33 @@ defmodule ExAthena.Modes.Orchestrate do
       "compares against real data (enum codes, status strings, column values) " <>
       "by querying or reading the data — a value that was assumed rather than " <>
       "observed is NOT MET. It must actively look for requirements that were " <>
-      "narrowed, widened or dropped. Fix anything NOT MET, then finish.\n\n" <>
-      "ORIGINAL REQUEST:\n" <> request
+      "narrowed, widened or dropped. Fix anything NOT MET, then finish." <>
+      quoted_request(request)
+  end
+
+  # No human turn, no quotation: an empty "ORIGINAL REQUEST:" heading invites
+  # the model to fill it in from the nearest text it can see, which is the
+  # project memory this fix just removed.
+  defp quoted_request(request) do
+    limit = tuning(:audit_request_chars, @audit_request_chars)
+
+    if String.trim(request) == "" do
+      ""
+    else
+      body =
+        if String.length(request) > limit,
+          do: String.slice(request, 0, limit) <> "…",
+          else: request
+
+      "\n\nORIGINAL REQUEST:\n" <> body
+    end
   end
 
   # States what the runtime observed — a command, its exit code, the absence of
   # a failure summary — and never "the suite is green". Session 227f7f480afa's
   # orchestrator repeated that sentence in its deliverable over 4 failing tests.
   defp coverage_note(files, test_runs) do
-    "[orchestration runtime] A test run exited zero with no failure summary " <>
+    "A test run exited zero with no failure summary " <>
       "in its output (" <>
       Enum.join(test_runs, "; ") <>
       "), but no test executed " <>
@@ -577,7 +625,7 @@ defmodule ExAthena.Modes.Orchestrate do
   end
 
   defp test_note(files) do
-    "[orchestration runtime] Workers changed " <>
+    "Workers changed " <>
       Enum.join(files, ", ") <>
       " and no test run covered them — a build proves the code parses, not " <>
       "that it works. Spawn ONE worker to run this project's test suite, and " <>
