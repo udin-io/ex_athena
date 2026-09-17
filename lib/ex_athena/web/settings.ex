@@ -430,6 +430,30 @@ defmodule ExAthena.Web.Settings do
           type: :integer,
           min: 1000,
           help: "How much of a file is fed to the summarizer."
+        },
+        %{
+          key: :gh_default_timeout_ms,
+          label: "gh: default timeout (ms)",
+          default: 20_000,
+          type: :integer,
+          min: 1_000,
+          help: "Deadline when a gh call names none."
+        },
+        %{
+          key: :gh_max_timeout_ms,
+          label: "gh: max timeout (ms)",
+          default: 60_000,
+          type: :integer,
+          min: 1_000,
+          help: "Ceiling a caller-supplied gh timeout is clamped to."
+        },
+        %{
+          key: :gh_output_chars,
+          label: "gh: output cap (chars)",
+          default: 16_000,
+          type: :integer,
+          min: 1_000,
+          help: "Head + tail kept when a gh command's output is truncated."
         }
       ]
     },
