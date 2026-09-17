@@ -183,6 +183,29 @@ defmodule ExAthena.Modes.OrchestrateVerificationGateTest do
     assert transcript(result) =~ @no_test_note
   end
 
+  # Session 227f7f480afa: `mix test <file> 2>&1 | tail -60` exited 0 over 4
+  # failing tests, and the orchestrator's deliverable called the suite green.
+  test "a piped test run that printed failures does not count as tested", %{dir: dir} do
+    npm_project(dir, "echo 12 tests, 4 failures")
+    calls = wrote_a_file() ++ [call("b1", "bash", %{"command" => "npm test 2>&1 | tail -60"})]
+
+    assert {:ok, result} = run(calls, [ExAthena.Tools.Write, ExAthena.Tools.Bash], dir)
+
+    text = transcript(result)
+    assert text =~ @no_test_note
+    refute text =~ "suite is green"
+  end
+
+  test "a piped test run with no summary in its output does not count as tested",
+       %{dir: dir} do
+    npm_project(dir, "true")
+    calls = wrote_a_file() ++ [call("b1", "bash", %{"command" => "npm test | head -80"})]
+
+    assert {:ok, result} = run(calls, [ExAthena.Tools.Write, ExAthena.Tools.Bash], dir)
+
+    assert transcript(result) =~ @no_test_note
+  end
+
   test "changing only a test file is not treated as unexercised source", %{dir: dir} do
     npm_project(dir, "true")
 
@@ -265,6 +288,10 @@ defmodule ExAthena.Modes.OrchestrateVerificationGateTest do
       text = transcript(result)
       assert text =~ @uncovered_note
       assert text =~ "lib/a.ex"
+      # The runtime saw an exit code and an output, never a suite. It says
+      # what it saw rather than asserting the suite is green.
+      refute text =~ "suite is green"
+      assert text =~ "npm test"
     end
 
     test "accepts a change the tests did execute", %{dir: dir} do

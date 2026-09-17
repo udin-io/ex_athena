@@ -420,6 +420,104 @@ defmodule ExAthena.ProvenanceTest do
     end
   end
 
+  # Session 227f7f480afa: workers ran `mix test <file> 2>&1 | tail -60`. The
+  # pipeline exits with tail's status, so a red suite exited 0, the run
+  # recorded a passing test, and the deliverable claimed a green suite that had
+  # 4 failing tests. A test command's output decides alongside its exit code.
+  describe "command_outcome/3 — a test run is judged by what it printed" do
+    test "a failure summary fails a test run that exited zero" do
+      for {cmd, output} <- [
+            {"mix test test/a_test.exs 2>&1 | tail -60",
+             "Finished in 0.1 seconds\n12 tests, 4 failures\n"},
+            {"mix test | head -80", "1 doctest, 5 tests, 1 failure\n"},
+            {"mix test | tail", "== Compilation error in file lib/a.ex ==\n"},
+            {"mix test | tail", "** (CompileError) lib/a.ex:3: undefined function x/0\n"},
+            {"pytest -q | tail", "===== 2 failed, 10 passed in 0.3s =====\n"},
+            {"npx jest | tail", "Tests:       1 failed, 3 passed, 4 total\n"},
+            {"npx vitest run | tail", " Tests  2 failed | 5 passed (7)\n"},
+            {"go test ./... | tail", "--- FAIL: TestA (0.00s)\nFAIL\n"},
+            {"cargo test | tail", "test result: FAILED. 3 passed; 1 failed\n"},
+            {"bundle exec rspec | tail", "10 examples, 2 failures\n"},
+            {"phpunit | tail", "FAILURES!\nTests: 3, Assertions: 3, Failures: 1.\n"},
+            {"dotnet test | tail", "Failed!  - Failed: 1, Passed: 2\n"},
+            {"gradle test | tail", "BUILD FAILED in 2s\n"},
+            {"mvn test | tail", "[INFO] BUILD FAILURE\n"}
+          ] do
+        assert Provenance.command_outcome(cmd, 0, output) == :failed,
+               "expected #{inspect(output)} to fail #{cmd}"
+      end
+    end
+
+    test "a pass summary with zero failures passes" do
+      for {cmd, output} <- [
+            {"mix test | tail -60", "12 tests, 0 failures\n"},
+            {"pytest -q | tail", "===== 10 passed in 0.3s =====\n"},
+            {"npx jest | tail", "Tests:       4 passed, 4 total\n"},
+            {"go test ./... | tail", "ok  \texample.com/a\t0.01s\n"},
+            {"cargo test | tail", "test result: ok. 3 passed; 0 failed\n"},
+            {"bundle exec rspec | tail", "10 examples, 0 failures\n"},
+            {"gradle test | tail", "BUILD SUCCESSFUL in 2s\n"}
+          ] do
+        assert Provenance.command_outcome(cmd, 0, output) == :passed,
+               "expected #{inspect(output)} to pass #{cmd}"
+      end
+    end
+
+    # `| head -80` can cut the summary off. With no summary line, the exit code
+    # belongs to `head`, so nothing shows whether the suite passed.
+    test "a piped test run whose output shows no summary is unconfirmed" do
+      assert Provenance.command_outcome("mix test | head -80", 0, "....\n") == :unconfirmed
+    end
+
+    test "an unpiped test run with no summary still goes by its exit code" do
+      assert Provenance.command_outcome("npm test", 0, "") == :passed
+      assert Provenance.command_outcome("npm test", 1, "") == :failed
+    end
+
+    test "a non-zero exit fails whatever the output says" do
+      assert Provenance.command_outcome("mix test", 2, "12 tests, 0 failures") == :failed
+    end
+
+    test "output never judges a command that is not a test run" do
+      assert Provenance.command_outcome("grep failures log.txt | tail", 0, "3 tests, 2 failures") ==
+               :passed
+    end
+
+    test "a `||` fallback is not a pipe" do
+      assert Provenance.command_outcome("mix test || true", 0, "") == :passed
+    end
+
+    test "events/1 reads the bash result's output" do
+      msgs = [
+        assistant([call("1", "bash", %{"command" => "mix test 2>&1 | tail -60"})]),
+        %Message{
+          role: :tool,
+          tool_results: [
+            %ToolResult{
+              tool_call_id: "1",
+              content: "exit 0\n12 tests, 4 failures\n",
+              ui_payload: %{kind: :process, payload: %{exit_code: 0}}
+            }
+          ]
+        }
+      ]
+
+      assert Provenance.events(msgs) == [{:failed_command, "mix test 2>&1 | tail -60"}]
+    end
+
+    test "an unconfirmed run ran, is not failed, and survives the footer round-trip" do
+      events = [{:write, "lib/a.ex"}, {:unconfirmed_command, "mix test | head -80"}]
+      footer = Provenance.footer(events)
+
+      assert footer =~ "mix test | head -80 (no test summary seen)"
+
+      scanned = Provenance.scan(footer)
+      assert Provenance.commands(scanned) == ["mix test | head -80"]
+      assert Provenance.failed_commands(scanned) == []
+      assert Provenance.unconfirmed_commands(scanned) == ["mix test | head -80"]
+    end
+  end
+
   describe "changed_files/1, commands/1 and failed_commands/1" do
     test "project the event list for the rails that gate on it" do
       events = [{:write, "lib/a.ex"}, {:command, "mix test"}, {:write, "lib/a.ex"}]

@@ -353,7 +353,7 @@ defmodule ExAthena.Modes.Orchestrate do
       # run tested a private helper it had just written, reported 252 passing,
       # and shipped a page that raised on every load.
       gate?(halted, ev, :coverage_nudged, &(&1.uncovered != [])) ->
-        nudge(halted, :coverage_nudged, coverage_note(ev.uncovered))
+        nudge(halted, :coverage_nudged, coverage_note(ev.uncovered, ev.test_runs))
 
       # Gate 4 — everything mechanical is satisfied, but nothing has compared
       # the delivered work to what was actually asked for. A live run was
@@ -411,15 +411,24 @@ defmodule ExAthena.Modes.Orchestrate do
   # `acted?` is a FLOOR, not a proof: any non-read-only command clears it, so a
   # worker that ran `mkdir` counts. It exists to make "nothing was checked"
   # impossible to finish through silently. `tested?` is the sharper check —
-  # a test runner that actually exited zero.
+  # a test run that neither failed nor hid its result behind a pipe (see
+  # `ExAthena.Provenance.command_outcome/3`).
   defp evidence(state) do
     transcript = transcript_text(state)
     events = ExAthena.Provenance.scan(transcript)
     files = ExAthena.Provenance.changed_files(events)
     commands = ExAthena.Provenance.commands(events)
-    failed = ExAthena.Provenance.failed_commands(events)
+
+    not_passing =
+      ExAthena.Provenance.failed_commands(events) ++
+        ExAthena.Provenance.unconfirmed_commands(events)
+
     source_changed = Enum.reject(files, &ExAthena.Provenance.test_file?/1)
-    tested? = Enum.any?(commands, &(ExAthena.Provenance.test_command?(&1) and &1 not in failed))
+
+    test_runs =
+      Enum.filter(commands, &(ExAthena.Provenance.test_command?(&1) and &1 not in not_passing))
+
+    tested? = test_runs != []
 
     %{
       changed: files,
@@ -427,6 +436,7 @@ defmodule ExAthena.Modes.Orchestrate do
       acted?:
         Enum.any?(commands, &(not ExAthena.Tools.Bash.read_only_command?(%{"command" => &1}))),
       tested?: tested?,
+      test_runs: test_runs,
       # Only asked once tests are green: before that, gates 1 and 2 own the
       # conversation and a coverage demand would be noise on top of them.
       uncovered: if(tested?, do: uncovered(source_changed, transcript, state.ctx.cwd), else: [])
@@ -499,10 +509,16 @@ defmodule ExAthena.Modes.Orchestrate do
       "ORIGINAL REQUEST:\n" <> request
   end
 
-  defp coverage_note(files) do
-    "[orchestration runtime] The suite is green but no test executed " <>
+  # States what the runtime observed — a command, its exit code, the absence of
+  # a failure summary — and never "the suite is green". Session 227f7f480afa's
+  # orchestrator repeated that sentence in its deliverable over 4 failing tests.
+  defp coverage_note(files, test_runs) do
+    "[orchestration runtime] A test run exited zero with no failure summary " <>
+      "in its output (" <>
+      Enum.join(test_runs, "; ") <>
+      "), but no test executed " <>
       Enum.join(files, ", ") <>
-      " — a passing suite proves a test EXISTS, not that it covers your " <>
+      " — a passing run proves a test EXISTS, not that it covers your " <>
       "change. Spawn ONE worker to add a test that calls the changed code " <>
       "through its real entry point (the function or route a caller actually " <>
       "uses, not a private helper), run the suite WITH COVERAGE " <>

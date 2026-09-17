@@ -108,6 +108,42 @@ defmodule ExAthena.Agents.JournalTest do
     end
   end
 
+  # A dead worker's evidence is rebuilt from its journal, so the journal must
+  # judge a piped test run the way a live worker's footer does: by its output,
+  # not by the exit code `tail` returned.
+  describe "a test run is judged by its output" do
+    defp piped_test_result(stdout) do
+      %ToolResult{
+        tool_call_id: "b1",
+        content: "exit 0\n" <> stdout,
+        ui_payload: %{
+          kind: :process,
+          payload: %{command: "mix test 2>&1 | tail -60", exit_code: 0, stdout: stdout}
+        }
+      }
+    end
+
+    @tag :tmp_dir
+    test "a failure summary behind a pipe comes back failed", %{tmp_dir: dir} do
+      path = journal(dir)
+      cb = Journal.compose(nil, path, cwd: dir)
+      cb.({:tool_result, piped_test_result("12 tests, 4 failures\n")})
+
+      assert Journal.provenance_events(Journal.read(path)) ==
+               [{:failed_command, "mix test 2>&1 | tail -60"}]
+    end
+
+    @tag :tmp_dir
+    test "a pipe with no summary comes back unconfirmed", %{tmp_dir: dir} do
+      path = journal(dir)
+      cb = Journal.compose(nil, path, cwd: dir)
+      cb.({:tool_result, piped_test_result("....\n")})
+
+      assert Journal.provenance_events(Journal.read(path)) ==
+               [{:unconfirmed_command, "mix test 2>&1 | tail -60"}]
+    end
+  end
+
   # The size is taken here, in the worker's own process and directory, because
   # this is the one moment the file certainly exists. A :worktree worker's
   # directory is deleted by finalize_isolation/1 before the parent could stat

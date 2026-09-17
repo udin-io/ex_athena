@@ -17,10 +17,14 @@ defmodule ExAthena.Provenance do
 
     * `{:write, path}` — a file the run mutated.
     * `{:command, cmd}` — a shell command that ran and exited zero.
-    * `{:failed_command, cmd}` — one that ran and exited non-zero. Bash
-      returns `{:ok, …}` whatever the exit code, so without this a worker
-      could watch the suite go red and still satisfy a rail asking whether
-      the change was exercised.
+    * `{:failed_command, cmd}` — one that ran and exited non-zero, or a test
+      run whose output shows a failure summary. Bash returns `{:ok, …}`
+      whatever the exit code, so without this a worker could watch the suite
+      go red and still satisfy a rail asking whether the change was
+      exercised.
+    * `{:unconfirmed_command, cmd}` — a piped test run whose output shows no
+      summary line, so nothing shows whether it passed. See
+      `command_outcome/3`.
     * `{:bash_write, path}` — a path a shell command *appears* to have
       written. A candidate, never evidence: `changed_files/1` ignores it and
       `footer/1` never renders it until `verify/2` has found it on disk.
@@ -79,10 +83,50 @@ defmodule ExAthena.Provenance do
   # suite into a green one.
   @annotation_re ~r/\s*\((?:\d+ B(?:, not re-checked)?|missing|written, not re-checked)\)$/
 
+  # A test run's summary line, per runner `test_command?/1` recognises. The
+  # failure forms are checked first: output carrying both is a red run.
+  @failure_summaries [
+    # ExUnit, RSpec
+    ~r/\b\d+ (?:tests?|examples?), [1-9]\d* failures?\b/,
+    # Elixir compile errors, Rust compile errors
+    ~r/^== Compilation error|\*\* \(CompileError\)|error: could not compile/m,
+    # pytest
+    ~r/^=+ .*\b[1-9]\d* (?:failed|errors?)\b/m,
+    # Jest, Vitest
+    ~r/^\s*Tests:?\s+[1-9]\d* failed/m,
+    # go test
+    ~r/^(?:--- )?FAIL\b/m,
+    # cargo test
+    ~r/test result: FAILED/,
+    # PHPUnit
+    ~r/^(?:FAILURES|ERRORS)!/m,
+    # dotnet test
+    ~r/^\s*Failed!/m,
+    # Gradle, Maven
+    ~r/BUILD FAIL(?:ED|URE)/
+  ]
+
+  @pass_summaries [
+    ~r/\b\d+ (?:tests?|examples?), 0 failures\b/,
+    ~r/^=+ .*\b\d+ passed|no tests ran/m,
+    ~r/^\s*Tests:?\s+.*\b\d+ passed/m,
+    ~r/^(?:ok\s|PASS$)/m,
+    ~r/test result: ok/,
+    ~r/^OK \(/m,
+    ~r/^\s*Passed!/m,
+    ~r/BUILD SUCCESS/
+  ]
+
+  # A single `|`, never the `||` of a fallback.
+  @pipe_re ~r/(?<!\|)\|(?!\|)/
+
+  @unconfirmed_suffix " (no test summary seen)"
+
   @type event ::
           {:write, String.t()}
           | {:command, String.t()}
           | {:failed_command, String.t()}
+          | {:unconfirmed_command, String.t()}
           | {:bash_write, String.t()}
 
   @doc """
@@ -146,6 +190,7 @@ defmodule ExAthena.Provenance do
     |> Enum.flat_map(fn
       {:command, c} -> [c]
       {:failed_command, c} -> [c]
+      {:unconfirmed_command, c} -> [c]
       _ -> []
     end)
     |> Enum.uniq()
@@ -159,6 +204,44 @@ defmodule ExAthena.Provenance do
   """
   @spec failed_commands([event()]) :: [String.t()]
   def failed_commands(events), do: for({:failed_command, c} <- events, do: c) |> Enum.uniq()
+
+  @doc """
+  Distinct piped test runs whose output showed no summary line.
+
+  They ran, and they did not visibly fail, but they are not passing runs
+  either: the exit code belongs to the last command in the pipe.
+  """
+  @spec unconfirmed_commands([event()]) :: [String.t()]
+  def unconfirmed_commands(events),
+    do: for({:unconfirmed_command, c} <- events, do: c) |> Enum.uniq()
+
+  @doc """
+  Judge one shell command from its exit code and its output.
+
+  Returns `:passed`, `:failed` or `:unconfirmed`. A non-zero exit is always
+  `:failed`. A command that is not a test run (`test_command?/1`) goes by its
+  exit code alone. A test run also fails when its output carries a failure
+  summary, because `mix test | tail -60` exits with `tail`'s status: session
+  227f7f480afa recorded exactly that as a passing run over 4 failing tests. A
+  piped test run whose output shows no summary line at all is `:unconfirmed`,
+  since `| head -80` can cut the summary off. An unpiped one keeps its exit
+  code, because then the code is the runner's own.
+  """
+  @spec command_outcome(String.t(), integer() | nil, String.t() | nil) ::
+          :passed | :failed | :unconfirmed
+  def command_outcome(_cmd, code, _output) when is_integer(code) and code != 0, do: :failed
+
+  def command_outcome(cmd, _code, output) do
+    output = if is_binary(output), do: output, else: ""
+
+    cond do
+      not test_command?(cmd) -> :passed
+      Enum.any?(@failure_summaries, &Regex.match?(&1, output)) -> :failed
+      Enum.any?(@pass_summaries, &Regex.match?(&1, output)) -> :passed
+      Regex.match?(@pipe_re, cmd) -> :unconfirmed
+      true -> :passed
+    end
+  end
 
   @doc """
   A one-line factual summary to append to a worker's report, or `nil` when the
@@ -205,12 +288,15 @@ defmodule ExAthena.Provenance do
 
   defp do_footer(events, cwd, sizes) do
     failed = MapSet.new(failed_commands(events))
+    unconfirmed = MapSet.new(unconfirmed_commands(events))
 
     rendered_commands =
       Enum.map(commands(events), fn cmd ->
-        if MapSet.member?(failed, cmd),
-          do: truncate(cmd) <> " (failed)",
-          else: truncate(cmd)
+        cond do
+          MapSet.member?(failed, cmd) -> truncate(cmd) <> " (failed)"
+          MapSet.member?(unconfirmed, cmd) -> truncate(cmd) <> @unconfirmed_suffix
+          true -> truncate(cmd)
+        end
       end)
 
     rendered_files = Enum.map(changed_files(events), &annotate(&1, cwd, sizes))
@@ -364,9 +450,11 @@ defmodule ExAthena.Provenance do
         # A command that exited non-zero proves nothing about what it wrote —
         # a failed heredoc leaves a truncated file or none at all — so only a
         # clean exit contributes candidates.
-        if failed_exit?(result),
-          do: [{:failed_command, cmd}],
-          else: [{:command, cmd} | write_candidates(cmd)]
+        case command_outcome(cmd, exit_code(result), output(result)) do
+          :failed -> [{:failed_command, cmd}]
+          :unconfirmed -> [{:unconfirmed_command, cmd} | write_candidates(cmd)]
+          :passed -> [{:command, cmd} | write_candidates(cmd)]
+        end
 
       _ ->
         []
@@ -389,16 +477,25 @@ defmodule ExAthena.Provenance do
 
   # Bash reports a non-zero exit through the structured UI payload, not by
   # returning an error — so a red suite reaches here as an ordinary result.
-  defp failed_exit?(%ToolResult{ui_payload: %{payload: %{exit_code: code}}})
+  defp exit_code(%ToolResult{ui_payload: %{payload: %{exit_code: code}}})
        when is_integer(code),
-       do: code != 0
+       do: code
 
-  defp failed_exit?(_), do: false
+  defp exit_code(_), do: nil
+
+  defp output(%ToolResult{content: content}) when is_binary(content), do: content
+  defp output(_), do: nil
 
   defp command_event(rendered) do
-    case String.replace_suffix(rendered, " (failed)", "") do
-      ^rendered -> {:command, rendered}
-      stripped -> {:failed_command, stripped}
+    cond do
+      String.ends_with?(rendered, " (failed)") ->
+        {:failed_command, String.replace_suffix(rendered, " (failed)", "")}
+
+      String.ends_with?(rendered, @unconfirmed_suffix) ->
+        {:unconfirmed_command, String.replace_suffix(rendered, @unconfirmed_suffix, "")}
+
+      true ->
+        {:command, rendered}
     end
   end
 
