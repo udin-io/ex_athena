@@ -523,27 +523,31 @@ defmodule ExAthena.Modes.Orchestrate do
       "finish again and say so in the deliverable."
   end
 
-  # The FIRST user turn, verbatim. The audit must run against what was
+  # The human's FIRST turn, verbatim. The audit must run against what was
   # actually asked, never the orchestrator's own restatement of it — a
   # paraphrase is where the dropped requirement went missing in the first
   # place. (Compaction was not the cause: the live failure ran 37 iterations
   # with zero compaction events, so the request was in context throughout and
   # simply was never re-read.)
+  #
+  # `ExAthena.Memory` injects each AGENTS.md / CLAUDE.md file as a user-role
+  # message in FRONT of the prompt, so "the first user message" is the project
+  # memory in every session that has one. Skipping those is what makes this the
+  # request rather than the conventions (issue 232). "" when the run has no
+  # human turn yet — `audit_note/1` then quotes nothing.
   defp original_request(%State{messages: messages}) do
     Enum.find_value(messages, "", fn
-      %{role: :user, content: content} when is_binary(content) -> content
-      _ -> nil
+      %{role: :user, content: content} = message when is_binary(content) ->
+        if ExAthena.Memory.memory_message?(message), do: nil, else: content
+
+      _ ->
+        nil
     end)
   end
 
   @audit_request_chars 1_500
 
   defp audit_note(request) do
-    request =
-      if String.length(request) > tuning(:audit_request_chars, @audit_request_chars),
-        do: String.slice(request, 0, tuning(:audit_request_chars, @audit_request_chars)) <> "…",
-        else: request
-
     "[orchestration runtime] Before finishing: nothing has checked the " <>
       "delivered work against the ORIGINAL request. Compiling, passing tests " <>
       "and covered code do not show that you built what was asked. Spawn ONE " <>
@@ -554,8 +558,26 @@ defmodule ExAthena.Modes.Orchestrate do
       "compares against real data (enum codes, status strings, column values) " <>
       "by querying or reading the data — a value that was assumed rather than " <>
       "observed is NOT MET. It must actively look for requirements that were " <>
-      "narrowed, widened or dropped. Fix anything NOT MET, then finish.\n\n" <>
-      "ORIGINAL REQUEST:\n" <> request
+      "narrowed, widened or dropped. Fix anything NOT MET, then finish." <>
+      quoted_request(request)
+  end
+
+  # No human turn, no quotation: an empty "ORIGINAL REQUEST:" heading invites
+  # the model to fill it in from the nearest text it can see, which is the
+  # project memory this fix just removed.
+  defp quoted_request(request) do
+    limit = tuning(:audit_request_chars, @audit_request_chars)
+
+    if String.trim(request) == "" do
+      ""
+    else
+      body =
+        if String.length(request) > limit,
+          do: String.slice(request, 0, limit) <> "…",
+          else: request
+
+      "\n\nORIGINAL REQUEST:\n" <> body
+    end
   end
 
   # States what the runtime observed — a command, its exit code, the absence of
