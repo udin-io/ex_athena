@@ -441,19 +441,41 @@ defmodule ExAthena.Modes.Orchestrate do
   # Each gate is one-shot: it raises the floor without ever trapping a run that
   # genuinely cannot verify, and the run terminates after at most one extra
   # iteration per gate.
+  #
+  # "Once" spans a RESUME, and `mode_state` cannot carry that: `init/1` rebuilds
+  # it on every `Loop.run`, and resuming a session is a new run over the stored
+  # messages. Every gate therefore re-fired on evidence it had already gated,
+  # and the orchestrator was made to re-argue an audit it had run (issue 232).
+  # The transcript is the one thing a resume does carry, so each note names its
+  # own gate and `ev.fired` reads those names back. `mode_state` stays as the
+  # in-run answer, because a compaction can drop the note but not the flag.
   defp gate?(_halted, nil, _flag, _deficient?), do: false
 
   defp gate?(halted, ev, flag, deficient?),
-    do: halted.mode_state[flag] != true and deficient?.(ev)
+    do: halted.mode_state[flag] != true and flag not in ev.fired and deficient?.(ev)
 
   defp nudge(halted, flag, note) do
     {:continue,
      halted
-     |> redirect(note)
+     |> redirect(gate_prefix(flag) <> note)
      |> Map.put(:halted_reason, nil)
      |> put_in([Access.key(:mode_state), flag], true)
      |> Map.put(:meta, Map.delete(halted.meta, :finish_reason))}
   end
+
+  @gate_names %{
+    verify_nudged: "verification",
+    test_nudged: "test",
+    coverage_nudged: "coverage",
+    audit_nudged: "audit"
+  }
+
+  # Doubles as the note's own header, so nothing invisible rides along in the
+  # prompt or the chat UI just to be read back on the next run.
+  defp gate_prefix(flag), do: "[orchestration runtime: #{@gate_names[flag]} gate] "
+
+  defp fired_gates(transcript),
+    do: Enum.filter(Map.keys(@gate_names), &String.contains?(transcript, gate_prefix(&1)))
 
   # What the workers' own tool calls prove about this run.
   #
@@ -486,6 +508,8 @@ defmodule ExAthena.Modes.Orchestrate do
         Enum.any?(commands, &(not ExAthena.Tools.Bash.read_only_command?(%{"command" => &1}))),
       tested?: tested?,
       test_runs: test_runs,
+      # Gates this session has already fired, in this run or an earlier one.
+      fired: fired_gates(transcript),
       # Only asked once tests are green: before that, gates 1 and 2 own the
       # conversation and a coverage demand would be noise on top of them.
       uncovered: if(tested?, do: uncovered(source_changed, transcript, state.ctx.cwd), else: [])
@@ -513,8 +537,10 @@ defmodule ExAthena.Modes.Orchestrate do
     |> Enum.join("\n")
   end
 
+  # The gate prefix is added by `nudge/3`, which is also what reads it back
+  # on a resume — see `fired_gates/1`.
   defp verify_note(files) do
-    "[orchestration runtime] Workers changed " <>
+    "Workers changed " <>
       Enum.join(files, ", ") <>
       " but no command was run to check them — a completed todo is your own " <>
       "claim, not evidence. Spawn ONE worker whose brief is to run this " <>
@@ -548,7 +574,7 @@ defmodule ExAthena.Modes.Orchestrate do
   @audit_request_chars 1_500
 
   defp audit_note(request) do
-    "[orchestration runtime] Before finishing: nothing has checked the " <>
+    "Before finishing: nothing has checked the " <>
       "delivered work against the ORIGINAL request. Compiling, passing tests " <>
       "and covered code do not show that you built what was asked. Spawn ONE " <>
       "worker to audit it. Give that worker the request below VERBATIM and " <>
@@ -584,7 +610,7 @@ defmodule ExAthena.Modes.Orchestrate do
   # a failure summary — and never "the suite is green". Session 227f7f480afa's
   # orchestrator repeated that sentence in its deliverable over 4 failing tests.
   defp coverage_note(files, test_runs) do
-    "[orchestration runtime] A test run exited zero with no failure summary " <>
+    "A test run exited zero with no failure summary " <>
       "in its output (" <>
       Enum.join(test_runs, "; ") <>
       "), but no test executed " <>
@@ -599,7 +625,7 @@ defmodule ExAthena.Modes.Orchestrate do
   end
 
   defp test_note(files) do
-    "[orchestration runtime] Workers changed " <>
+    "Workers changed " <>
       Enum.join(files, ", ") <>
       " and no test run covered them — a build proves the code parses, not " <>
       "that it works. Spawn ONE worker to run this project's test suite, and " <>

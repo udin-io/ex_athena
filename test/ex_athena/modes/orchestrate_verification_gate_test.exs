@@ -447,6 +447,70 @@ defmodule ExAthena.Modes.OrchestrateVerificationGateTest do
     end
   end
 
+  # Each gate is one-shot, but `mode_state` is rebuilt by `init/1` on every
+  # `Loop.run`, and a resumed session is a new run over the stored messages.
+  # So every gate fired again on the same evidence, and the orchestrator was
+  # made to re-argue an audit it had already run.
+  describe "a resumed session" do
+    @resume_prompt "carry on"
+
+    # A second run over the first run's messages: plan, then finish. No worker
+    # touches anything, so the only evidence is what the first run recorded.
+    defp resumed_run(dir, messages) do
+      script = [
+        todo("completed"),
+        tool_turn([call("f2", "finish", %{"deliverable" => "Already delivered and audited."})])
+      ]
+
+      Loop.run(@resume_prompt,
+        provider: :mock,
+        mock: [responder: scripted(script)],
+        cwd: dir,
+        tools: ExAthena.Tools.builtins(),
+        mode: :orchestrate,
+        memory: false,
+        messages: messages,
+        max_iterations: 12,
+        assigns: %{
+          spawn_agent_opts: [
+            provider: :mock,
+            mock: [responder: worker([])],
+            tools: [],
+            memory: false
+          ]
+        }
+      )
+    end
+
+    test "does not re-fire a gate that already fired in an earlier run", %{dir: dir} do
+      calls = wrote_a_file() ++ [call("b1", "bash", %{"command" => "npm test"})]
+
+      assert {:ok, first} = audit_run(calls, [ExAthena.Tools.Write, ExAthena.Tools.Bash], dir)
+      assert audit_notes(first) != []
+      assert transcript(first) =~ @uncovered_note
+
+      assert {:ok, second} = resumed_run(dir, first.messages)
+
+      resumed = Enum.drop(second.messages, length(first.messages))
+
+      assert audit_notes(resumed) == []
+      refute transcript(resumed) =~ @uncovered_note
+      assert second.finish_reason == :submitted
+    end
+
+    # The flags must not go the other way either: a gate whose deficiency is
+    # still real on resume, and which never fired before, still fires.
+    test "still fires a gate the earlier run never reached", %{dir: dir} do
+      assert {:ok, first} = capped_run(wrote_a_file(), [ExAthena.Tools.Write], dir)
+      assert first.deliverable =~ "UNVERIFIED"
+      refute transcript(first) =~ @ran_nothing_note
+
+      assert {:ok, second} = resumed_run(dir, first.messages)
+
+      assert transcript(Enum.drop(second.messages, length(first.messages))) =~ @ran_nothing_note
+    end
+  end
+
   # Session 227f7f480afa reached its cap of 10 workers. Gates 3 and 4 then each
   # told the orchestrator to "Spawn ONE worker"; both spawns were refused. The
   # gates were demanding what the run could no longer do.
