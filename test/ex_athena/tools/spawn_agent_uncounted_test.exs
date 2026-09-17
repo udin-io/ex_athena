@@ -156,7 +156,8 @@ defmodule ExAthena.Tools.SpawnAgentUncountedTest do
   # task, and it was the last one still charged to the parent (issue 221).
   # Unbounded retry is not the risk it looks like: `Agents.Quota` claims one
   # slot per spawn and never gives it back, so a brief that reliably kills its
-  # worker runs out of workers and then meets a COUNTED refusal.
+  # worker runs out of workers, and the refusal that follows is uncounted
+  # once and counted every time after.
   @tag :capture_log
   test "three consecutive worker crashes leave the orchestrator running", %{dir: dir} do
     assert {:ok, result} = run(dir, 3, crashing_worker(), max_iterations: 5)

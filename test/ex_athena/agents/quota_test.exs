@@ -67,6 +67,49 @@ defmodule ExAthena.Agents.QuotaTest do
     end
   end
 
+  describe "remaining/1" do
+    test "counts the slots left" do
+      assigns = Quota.install(%{max_agents_per_run: 3})
+      assert Quota.remaining(assigns) == 3
+
+      {:ok, _} = Quota.claim(assigns)
+      assert Quota.remaining(assigns) == 2
+    end
+
+    test "never goes below zero" do
+      assigns = Quota.install(%{max_agents_per_run: 1})
+      {:ok, _} = Quota.claim(assigns)
+      :exhausted = Quota.claim(assigns)
+
+      assert Quota.remaining(assigns) == 0
+      assert Quota.exhausted?(assigns)
+    end
+
+    test "a run with no counter is unbounded and never exhausted" do
+      assert Quota.remaining(%{}) == :unbounded
+      refute Quota.exhausted?(%{})
+    end
+  end
+
+  # A quota refusal is a fact about the run, not a mistake by the model, so the
+  # first one is uncounted (see ExAthena.Tool). Repeating a call the runtime
+  # has already refused IS a mistake, and with orchestrate's
+  # `max_iterations: :infinity` the mistake counter is the only turn-based
+  # guard left once the allowance is gone.
+  describe "record_refusal/1" do
+    test "the first refusal of a run is first, the rest are repeats" do
+      assigns = Quota.install(%{max_agents_per_run: 1})
+
+      assert Quota.record_refusal(assigns) == :first
+      assert Quota.record_refusal(assigns) == :repeat
+      assert Quota.record_refusal(assigns) == :repeat
+    end
+
+    test "a run with no counter cannot be refused twice over" do
+      assert Quota.record_refusal(%{}) == :first
+    end
+  end
+
   describe "limit/1" do
     test "per-run assigns win over application config" do
       assert Quota.limit(%{max_agents_per_run: 7}) == 7

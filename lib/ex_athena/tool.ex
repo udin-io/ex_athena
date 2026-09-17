@@ -73,7 +73,8 @@ defmodule ExAthena.Tool do
       fault, or when some OTHER rail bounds the repetition: `SpawnAgent`
       reports a crashed worker this way, and a brief that kills its worker
       every time still terminates because `ExAthena.Agents.Quota` spends one
-      of the run's worker slots per spawn and never returns one.
+      of the run's worker slots per spawn and never returns one, and the
+      refusal that follows is uncounted only the first time.
     * `{:halt, reason}` — end the run.
   """
   @callback execute(arguments :: map(), ctx :: ToolContext.t()) ::

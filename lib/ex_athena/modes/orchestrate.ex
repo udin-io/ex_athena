@@ -25,6 +25,7 @@ defmodule ExAthena.Modes.Orchestrate do
 
   @behaviour ExAthena.Loop.Mode
 
+  alias ExAthena.Agents.Quota
   alias ExAthena.Loop.{Parallel, State}
   alias ExAthena.Messages.ToolCall
   alias ExAthena.Permissions.Denial
@@ -198,6 +199,10 @@ defmodule ExAthena.Modes.Orchestrate do
     assigns =
       state.ctx.assigns
       |> Map.put(:strict_spawn, true)
+      # The orchestrator holds only todo_write / spawn_agent / finish /
+      # ask_user, so any refusal telling it to do the work itself is an
+      # instruction it cannot follow. SpawnAgent words its refusals from this.
+      |> Map.put(:delegate_only, true)
       |> Map.put_new(:subagent_prompt_suffix, String.trim(@worker_suffix))
 
     request_template = %{
@@ -876,6 +881,8 @@ defmodule ExAthena.Modes.Orchestrate do
       "max_result_chars" => 8_000
     }
 
+    exhausted? = Quota.exhausted?(state.ctx.assigns || %{})
+
     case gated_auto_spawn(state, args, "auto_delegate_#{System.unique_integer([:positive])}") do
       {:halt, reason} ->
         halt_early(state, reason)
@@ -883,6 +890,15 @@ defmodule ExAthena.Modes.Orchestrate do
       gate_result ->
         note =
           case gate_result do
+            # Every refusal reads the same once the allowance is gone: there
+            # is no worker left to take a smaller slice or a sharper brief,
+            # and the orchestrator holds no tools to do the step itself.
+            {:ok, {:error, _}} when exhausted? ->
+              quota_spent_note(state, content)
+
+            {:ok, {:error, :uncounted, _}} when exhausted? ->
+              quota_spent_note(state, content)
+
             {:ok, {:ok, text, _ui}} ->
               "[orchestration runtime] You did not delegate, so the runtime delegated the " <>
                 ~s(pending todo "#{content}" to a worker. Worker summary:\n#{text}\n) <>
@@ -907,6 +923,13 @@ defmodule ExAthena.Modes.Orchestrate do
 
         %{state | messages: state.messages ++ [ExAthena.Messages.user(note)]}
     end
+  end
+
+  defp quota_spent_note(state, content) do
+    "[orchestration runtime] Auto-delegation of \"#{content}\" was refused: this run has " <>
+      "spawned its full allowance of #{Quota.limit(state.ctx.assigns || %{})} workers. " <>
+      "No worker can start, so do not plan another one. Finish with what you have and name " <>
+      "in your deliverable which checks are unverified."
   end
 
   # When a worker already attempted this exact todo and failed, its digest of
