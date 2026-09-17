@@ -16,11 +16,13 @@ defmodule ExAthena.Web.Live.ChatLiveFilesUITest do
 
   setup %{tmp_dir: tmp_dir} do
     # Start the (server: false) endpoint in-process so `live/2` can mount the
-    # connected LiveView. Linked to the test process, so it's reaped on exit.
-    case Endpoint.start_link() do
-      {:ok, _pid} -> :ok
-      {:error, {:already_started, _pid}} -> :ok
-    end
+    # connected LiveView. `start_supervised!/1` makes ExUnit own the
+    # lifecycle: on exit it stops the endpoint and WAITS for it to actually
+    # terminate before the next test runs, unlike a hand-rolled
+    # `start_link/0` + `{:error, {:already_started, _}}` swallow, which let
+    # the next test mount against an endpoint still tearing down its ETS
+    # table (issue #234).
+    start_supervised!(Endpoint)
 
     # Temp fixture: a root with one subdirectory holding one text file, plus a
     # root-level text file, so the lazy tree + viewer are meaningful.
