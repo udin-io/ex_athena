@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Quota-aware finish gates</title>
+<style>
+:root{
+  --bg:#f7f7f5; --panel:#fff; --ink:#1c1c1a; --muted:#6b6b66; --line:#d8d8d2;
+  --bad:#a32b2b; --bad-bg:#fbeeee;
+  --good:#1f6b3a; --good-bg:#edf6f0;
+  --accent:#2a4c86; --accent-bg:#eef2f9;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+.wrap{max-width:1400px;margin:0 auto;padding:40px 24px 80px}
+h1{font-size:26px;line-height:1.25;margin:0 0 12px;letter-spacing:-.01em}
+.sub{color:var(--muted);max-width:62ch;margin:0 0 28px}
+h2{font-size:17px;margin:44px 0 12px;letter-spacing:-.01em}
+h2:first-of-type{margin-top:0}
+h3{font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--muted);margin:22px 0 8px;font-weight:600}
+p{margin:0 0 12px;max-width:62ch}
+ul{margin:0 0 12px;padding-left:20px;max-width:62ch}
+li{margin:0 0 6px}
+code{font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+  background:#efefea;padding:1px 5px;border-radius:3px}
+
+/* Two columns: prose scrolls, diagram stays. */
+.cols{display:grid;grid-template-columns:minmax(0,1fr) 560px;gap:32px;align-items:start}
+.diagram-col{position:sticky;top:24px}
+@media (max-width:1100px){
+  .cols{grid-template-columns:minmax(0,1fr)}
+  .diagram-col{position:static}
+}
+
+.panel{background:var(--panel);border:1px solid var(--line);
+  border-radius:8px;padding:20px;margin:0 0 16px}
+.plain{background:var(--accent-bg);border:1px solid #c9d5ea;border-radius:8px;
+  padding:18px 20px;margin:0 0 28px;max-width:74ch}
+.plain h3{margin-top:0;color:var(--accent)}
+.plain p{max-width:none;margin-bottom:0}
+
+.note{border-left:3px solid var(--accent);background:var(--accent-bg);
+  padding:12px 16px;margin:0 0 14px;border-radius:0 6px 6px 0;max-width:62ch}
+.note.warn{border-color:var(--bad);background:var(--bad-bg)}
+.note.ok{border-color:var(--good);background:var(--good-bg)}
+.note p:last-child{margin-bottom:0}
+
+.tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+  border-radius:10px;vertical-align:1px}
+.t-bad{background:var(--bad-bg);color:var(--bad)}
+.t-good{background:var(--good-bg);color:var(--good)}
+.t-acc{background:var(--accent-bg);color:var(--accent)}
+
+table{border-collapse:collapse;width:100%;font-size:14px;margin:0 0 12px}
+th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--muted);font-weight:600;padding:0 12px 7px 0;
+  border-bottom:1px solid var(--line)}
+td{padding:9px 12px 9px 0;border-bottom:1px solid var(--line);vertical-align:top}
+
+/* Diagram panel: toolbar, viewport, node index. */
+.dia{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  overflow:hidden}
+.dia-bar{display:flex;align-items:center;gap:6px;padding:8px 10px;
+  border-bottom:1px solid var(--line);background:#fcfcfa}
+.dia-bar .title{font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--muted);font-weight:600;margin-right:auto}
+.dia-bar button{font:inherit;font-size:12px;line-height:1;padding:5px 9px;
+  border:1px solid var(--line);background:#fff;border-radius:5px;cursor:pointer;
+  color:var(--ink)}
+.dia-bar button:hover{background:#f0f0ec}
+.viewport{height:60vh;min-height:380px;overflow:hidden;cursor:grab;
+  background:#fdfdfb;position:relative}
+.viewport.grabbing{cursor:grabbing}
+.stage{transform-origin:0 0;will-change:transform}
+.hint{position:absolute;right:10px;bottom:8px;font-size:11px;color:var(--muted);
+  background:#fdfdfbcc;padding:2px 7px;border-radius:4px;pointer-events:none}
+
+.index{padding:10px 12px;border-top:1px solid var(--line);background:#fcfcfa}
+.index h3{margin:0 0 7px}
+.index button{display:block;width:100%;text-align:left;font:inherit;font-size:13px;
+  padding:5px 8px;border:0;background:none;border-radius:5px;cursor:pointer;
+  color:var(--ink)}
+.index button:hover{background:#efefea}
+.index button.on{background:var(--accent-bg);color:var(--accent);font-weight:600}
+g.node.lit rect,g.node.lit polygon{stroke:#2a4c86!important;stroke-width:3px!important}
+
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:12.5px;color:var(--muted);
+  padding:10px 12px;border-top:1px solid var(--line)}
+.legend span{display:flex;align-items:center;gap:6px}
+.sw{width:11px;height:11px;border-radius:3px;display:inline-block}
+
+/* Dark only for the Mermaid SOURCE. Mermaid draws into a <pre class="mermaid">,
+   so an unscoped pre rule paints every diagram dark and unreadable. */
+pre:not(.mermaid){background:#1c1c1a;color:#e8e8e2;padding:14px 16px;border-radius:8px;
+  overflow:auto;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
+pre.mermaid{background:var(--panel);color:var(--ink);margin:0;padding:12px}
+details{margin:0 0 12px}
+summary{cursor:pointer;font-size:13px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Orchestrate: no finish gate demands a worker the quota refuses</h1>
+
+<p class="sub">Session <code>227f7f480afa</code> ran 3h27m, failed, and
+claimed a green suite with 4 failing tests. The five fixes in issue 228 touch
+four modules
+(<code>Orchestrate</code>, <code>Provenance</code>, <code>SpawnAgent</code>,
+<code>Agents.Quota</code>), so this page is the architecture gate. Approving it
+settles the five changes and the two open choices in section 2.</p>
+
+<div class="plain">
+<h3>In plain words</h3>
+<p>The coordinator can hire a fixed number of helpers per run. Today it cannot
+see how many it has left, it is punished when the last one is refused, and the
+final checks still order it to hire more. Trimmed test output hides failures,
+so failing tests read as passing. We show the count, stop demanding helpers
+once none are left, list what went unchecked, and read test output for
+failures.</p>
+</div>
+
+<div class="cols">
+<div class="prose">
+
+<h2>1. What breaks, and the change</h2>
+
+<table>
+<tr><th>Defect</th><th>Today</th><th>Change</th></tr>
+<tr><td>1 <code>ask_user</code></td>
+  <td><span class="tag t-bad">auto-delegates</span> the step the user is answering</td>
+  <td>A successful <code>ask_user</code> resets <code>turns_without_spawn</code> to 0 in <code>watchdog/2</code></td></tr>
+<tr><td>2 piped tests</td>
+  <td><span class="tag t-bad">green</span> on <code>mix test x | tail -60</code> with 4 failures</td>
+  <td><code>Provenance</code> records <code>{:failed_command, _}</code> when a test command's output shows a failure summary (ExUnit, pytest, jest/vitest, go, cargo, rspec, phpunit, dotnet, gradle/mvn, compile error). <code>coverage_note/1</code> names the command it saw instead of asserting &ldquo;the suite is green&rdquo;</td></tr>
+<tr><td>3 gates</td>
+  <td><span class="tag t-bad">demand a spawn</span> the quota refuses</td>
+  <td>With <code>spawned &gt;= limit</code>, gates 1&ndash;4 let <code>finish</code> through and append an &ldquo;Unverified&rdquo; list to the deliverable</td></tr>
+<tr><td>4 refusal</td>
+  <td><span class="tag t-bad">counted</span>, says &ldquo;do the work yourself&rdquo;</td>
+  <td><code>{:error, :uncounted, text}</code>. A delegate-only caller reads &ldquo;finish now and name what is unverified&rdquo;. Same wording in <code>auto_delegate/2</code></td></tr>
+<tr><td>5 allowance</td>
+  <td><span class="tag t-bad">invisible</span> until refused</td>
+  <td>Every spawn result and refusal ends <code>[runtime] worker 9 of 10 this run; 1 left.</code></td></tr>
+</table>
+
+<div class="note">
+<p><strong>How <code>SpawnAgent</code> knows the caller holds no tools.</strong>
+<code>Orchestrate.init/1</code> sets <code>assigns[:delegate_only]</code>;
+<code>SpawnAgent</code> clears it on every child. <code>:strict_spawn</code>
+cannot serve: workers inherit it.</p>
+</div>
+
+<div class="panel"><pre class="mermaid" id="m2"></pre></div>
+
+<h2>2. Open choices</h2>
+
+<div class="note warn">
+<p><strong>A. Repeat refusals.</strong> <code>ExAthena.Tool</code> documents the
+counted refusal as the bound on a crash loop. The orchestrator runs with
+<code>max_iterations: :infinity</code>. If every refusal is uncounted, a model
+that varies its brief each time is bounded only by the no-progress guard.
+Proposed: the first refusal is uncounted, later ones are counted.</p>
+</div>
+
+<div class="note warn">
+<p><strong>B. Summary cut off.</strong> <code>mix test | head -80</code> can drop
+the summary line. Proposed: a piped test command whose output shows no summary
+line at all is not a passing run for <code>tested?</code>.</p>
+</div>
+
+<h2>3. Not in scope</h2>
+<ul>
+<li>The <code>:if={not @link}</code> bug in fudu 476.</li>
+<li>Gates when the run <em>deadline</em> is spent.</li>
+<li>Unrecognised test runners: exit status still decides.</li>
+</ul>
+
+<h2>4. Definitions</h2>
+<table>
+<tr><th>Term</th><th>Here it means</th></tr>
+<tr><td>gate</td><td>A one-shot check in <code>maybe_nudge_stop/1</code> that turns a <code>finish</code> back into another turn.</td></tr>
+<tr><td>uncounted</td><td>A tool error the model reads that leaves the mistake counter alone.</td></tr>
+<tr><td>quota</td><td><code>max_agents_per_run</code>, default 24, shared by the whole worker tree.</td></tr>
+</table>
+
+<details><summary>Mermaid source: modules</summary>
+<pre id="src">flowchart TD
+  ASK["ask_user tool&lt;br/&gt;turn counted as spawn-less"]
+  WD["Orchestrate.watchdog/2&lt;br/&gt;2 spawn-less turns auto-delegate"]
+  WDN["ask_user resets the count ((NEW))"]
+  AD["auto_delegate/2 note&lt;br/&gt;says delegate it yourself after a refusal"]
+  SA["SpawnAgent.claim_and_spawn/7&lt;br/&gt;refusal counted, says do the work yourself"]
+  SAN["refusal uncounted, worded for delegate-only caller&lt;br/&gt;every result ends worker N of M ((NEW))"]
+  Q["Agents.Quota&lt;br/&gt;claim/1 limit/1 spawned/1"]
+  BASH["bash tool&lt;br/&gt;mix test x pipe tail -60 exits 0"]
+  PROV["Provenance.classify/3&lt;br/&gt;exit 0 records a passing command"]
+  PN["test output with a failure summary&lt;br/&gt;records failed_command ((NEW))"]
+  FOOT["worker provenance footer"]
+  EV["Orchestrate.evidence/1&lt;br/&gt;tested? true on a red suite"]
+  GATES["maybe_nudge_stop/1 gates 1-4&lt;br/&gt;demand Spawn ONE worker with quota spent"]
+  CN["coverage_note/1 claim&lt;br/&gt;The suite is green ((DELETED))"]
+  GN["quota spent: finish passes,&lt;br/&gt;deliverable lists unverified checks ((NEW))"]
+  FIN["finish tool&lt;br/&gt;Result.deliverable"]
+  ASK --&gt; WD --&gt; AD --&gt; SA --&gt;|claim| Q
+  WD ==&gt; WDN
+  SA ==&gt; SAN
+  BASH --&gt;|output, exit code| PROV --&gt; FOOT --&gt;|scan| EV --&gt; GATES
+  PROV ==&gt; PN
+  GATES -.-&gt; CN
+  GATES ==&gt; GN
+  Q --&gt;|spawned, limit| GN
+  GN --&gt; FIN
+  classDef bad fill:#fbeeee,stroke:#a32b2b,stroke-width:2px,color:#1c1c1a
+  classDef del fill:#fff,stroke:#a32b2b,stroke-width:1px,stroke-dasharray:5 4,color:#a32b2b
+  classDef good fill:#edf6f0,stroke:#1f6b3a,stroke-width:2px,color:#1c1c1a
+  classDef ok fill:#fff,stroke:#c9c9c2,stroke-width:1px,color:#1c1c1a
+  class ASK,WD,AD,SA,PROV,EV,GATES bad
+  class CN del
+  class WDN,SAN,PN,GN good
+  class Q,BASH,FOOT,FIN ok</pre>
+</details>
+
+<details><summary>Mermaid source: one run, after the fix</summary>
+<pre id="src2">sequenceDiagram
+  participant U as User
+  participant O as Orchestrator model
+  participant R as Orchestrate runtime
+  participant S as SpawnAgent
+  participant Q as Agents.Quota
+  participant W as Worker
+  O-&gt;&gt;R: ask_user, approve the mock?
+  R-&gt;&gt;U: question
+  U--&gt;&gt;R: answer
+  Note over R: turns_without_spawn reset to 0, no auto-delegation
+  O-&gt;&gt;S: spawn_agent
+  S-&gt;&gt;Q: claim
+  Q--&gt;&gt;S: ok, 10 of 10
+  S-&gt;&gt;W: run brief
+  W--&gt;&gt;S: mix test x pipe tail -60 shows 4 failures
+  Note over S: Provenance records failed_command
+  S--&gt;&gt;O: report, worker 10 of 10 this run, none left
+  O-&gt;&gt;S: spawn_agent
+  S-&gt;&gt;Q: claim
+  Q--&gt;&gt;S: exhausted
+  S--&gt;&gt;O: uncounted error, finish now and name what is unverified
+  O-&gt;&gt;R: finish
+  Note over R: quota spent, gates demand no spawn
+  R--&gt;&gt;U: deliverable plus Unverified, test run failed, audit not run</pre>
+</details>
+
+</div><!-- /prose -->
+
+<div class="diagram-col">
+  <div class="dia">
+    <div class="dia-bar">
+      <span class="title">Modules the five defects cross</span>
+      <button id="zo">&minus;</button>
+      <button id="zi">+</button>
+      <button id="fit">Fit</button>
+    </div>
+    <div class="viewport" id="vp">
+      <div class="stage" id="stage"><pre class="mermaid" id="m"></pre></div>
+      <div class="hint">drag to pan &middot; scroll to zoom</div>
+    </div>
+    <div class="index">
+      <h3>Jump to</h3>
+      <button data-k="WD">1 &middot; ask_user trips auto-delegation</button>
+      <button data-k="SA">2 &middot; Refusal is counted and misworded</button>
+      <button data-k="PROV">3 &middot; Piped tests read as passing</button>
+      <button data-k="GATES">4 &middot; Gates demand a refused spawn</button>
+      <button data-k="GN">5 &middot; Finish passes, unverified named</button>
+      <button data-k="SAN">6 &middot; Allowance on every result</button>
+    </div>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--bad)"></i> wrong result today</span>
+      <span><i class="sw" style="background:#fff;border:1px dashed var(--bad)"></i> deleted</span>
+      <span><i class="sw" style="background:var(--good)"></i> added</span>
+      <span><i class="sw" style="background:#fff;border:1px solid var(--line)"></i> unchanged</span>
+    </div>
+  </div>
+</div>
+
+</div><!-- /cols -->
+</div><!-- /wrap -->
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<script>
+document.getElementById('m').textContent = document.getElementById('src').textContent;
+document.getElementById('m2').textContent = document.getElementById('src2').textContent;
+mermaid.initialize({startOnLoad:true, theme:'neutral', securityLevel:'loose'});
+
+const vp=document.getElementById('vp'), stage=document.getElementById('stage');
+let s=1,x=0,y=0,drag=false,px=0,py=0;
+const apply=()=>stage.style.transform=`translate(${x}px,${y}px) scale(${s})`;
+
+vp.addEventListener('wheel',e=>{
+  e.preventDefault();
+  const r=vp.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top;
+  const ns=Math.min(4,Math.max(.2,s*(e.deltaY<0?1.12:1/1.12)));
+  x=mx-(mx-x)*(ns/s); y=my-(my-y)*(ns/s); s=ns; apply();
+},{passive:false});
+
+vp.addEventListener('mousedown',e=>{drag=true;px=e.clientX;py=e.clientY;vp.classList.add('grabbing')});
+addEventListener('mousemove',e=>{if(!drag)return;x+=e.clientX-px;y+=e.clientY-py;px=e.clientX;py=e.clientY;apply()});
+addEventListener('mouseup',()=>{drag=false;vp.classList.remove('grabbing')});
+
+function fit(){
+  const svg=stage.querySelector('svg'); if(!svg)return;
+  svg.removeAttribute('width'); svg.removeAttribute('height');
+  svg.style.maxWidth='none';
+  const b=svg.getBBox(), r=vp.getBoundingClientRect();
+  s=Math.min((r.width-32)/b.width,(r.height-32)/b.height);
+  x=(r.width-b.width*s)/2-b.x*s; y=(r.height-b.height*s)/2-b.y*s; apply();
+}
+document.getElementById('fit').onclick=fit;
+document.getElementById('zi').onclick=()=>{s=Math.min(4,s*1.25);apply()};
+document.getElementById('zo').onclick=()=>{s=Math.max(.2,s/1.25);apply()};
+
+document.querySelectorAll('.index button').forEach(b=>{
+  b.onclick=()=>{
+    document.querySelectorAll('.index button').forEach(o=>o.classList.remove('on'));
+    document.querySelectorAll('g.node').forEach(n=>n.classList.remove('lit'));
+    b.classList.add('on');
+    const n=[...document.querySelectorAll('g.node')]
+      .find(n=>(n.id||'').includes('-'+b.dataset.k+'-'));
+    if(!n)return;
+    n.classList.add('lit');
+    const bb=n.getBBox(), r=vp.getBoundingClientRect();
+    x=r.width/2-(bb.x+bb.width/2)*s; y=r.height/2-(bb.y+bb.height/2)*s; apply();
+  };
+});
+setTimeout(fit,700);
+</script>
+</body>
+</html>
