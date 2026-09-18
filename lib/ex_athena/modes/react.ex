@@ -333,7 +333,28 @@ defmodule ExAthena.Modes.ReAct do
     {result, state}
   end
 
+  # Malformed call (issue 246): the parser scoped a fence badly and the
+  # whole fragment — newline, markup and all — became the "name". This is
+  # not a wrong tool choice, so `unknown_tool_error/2` (built for that case)
+  # is the wrong answer: there is no toolset to consult, and the near-match
+  # suggestion has nothing plausible to compare against. Checked before
+  # `Tools.find/2` so a malformed name is never mistaken for a lookup miss.
+  #
+  # Uncounted, same as a tool's own `{:error, :uncounted, text}` — a
+  # malformed shape is a fact about the parse, not a choice the model made
+  # among real options, and repeating it is bounded by the no-progress guard
+  # rather than the mistake counter.
   defp do_execute(%ToolCall{} = call, state) do
+    if well_formed_tool_name?(call.name) do
+      dispatch_tool_call(call, state)
+    else
+      result = Messages.tool_result(call.id, malformed_tool_call_error(call.name, state), true)
+      Parallel.emit_result_events(state, call, result)
+      {result, state}
+    end
+  end
+
+  defp dispatch_tool_call(%ToolCall{} = call, state) do
     ctx = %{state.ctx | tool_call_id: call.id}
 
     tool_meta =
@@ -928,6 +949,40 @@ defmodule ExAthena.Modes.ReAct do
 
   defp stringify(value) when is_binary(value), do: value
   defp stringify(value), do: inspect(value, pretty: true, limit: :infinity)
+
+  # A tool name is a short single-line token. Anything else (a newline, XML
+  # scraps like `</parameter`, a multi-KB blob) is not a wrong tool choice —
+  # it is syntax the parser could not scope correctly, and no toolset lookup
+  # or near-match suggestion is going to help the model recover from it.
+  @tool_name_regex ~r/^[a-zA-Z0-9_.\-]{1,64}$/
+
+  defp well_formed_tool_name?(name) when is_binary(name), do: Regex.match?(@tool_name_regex, name)
+  defp well_formed_tool_name?(_name), do: false
+
+  # A malformed name is answered with what was wrong plus one correct
+  # example in the protocol this run actually speaks, so the repair takes
+  # one turn instead of a guess at the toolset. Native-tool-call providers
+  # never see this shape from the loop's own prompt — the "example" there is
+  # just the rule the provider's own function-calling API already enforces.
+  # Non-native providers were taught exactly one shape by
+  # `ExAthena.ToolCalls.augment_system_prompt/2` (the `~~~tool_call` fence);
+  # naming that shape again is the fix.
+  defp malformed_tool_call_error(name, state) do
+    example =
+      if state.capabilities[:native_tool_calls] do
+        "call the tool by its exact name only — a short token such as " <>
+          ~s("read", never free text, markup or more than one line.)
+      else
+        "respond with the fenced shape your provider was taught:\n\n" <>
+          "    ~~~tool_call\n" <>
+          ~s[    {"name": "read", "arguments": {"path": "/foo/bar"}}\n] <>
+          "    ~~~"
+      end
+
+    "malformed tool call: the tool name must be a short single-line token " <>
+      ~s[(letters, digits, "_", ".", "-", max 64 chars) — got #{inspect(name)}. ] <>
+      example
+  end
 
   # A bare "unknown tool" gives small models nothing to act on — when the
   # name is a real builtin that just isn't in THIS loop's toolset (e.g. an
