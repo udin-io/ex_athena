@@ -314,9 +314,8 @@ defmodule ExAthena.Tools.SpawnAgent do
         quota_refusal(assigns)
 
       {:ok, spawned} ->
-        args
-        |> do_execute(prompt, ctx, deadline, deadline - now, resolved)
-        |> annotate_allowance(allowance_line(assigns, spawned))
+        {result, sub_id} = do_execute(args, prompt, ctx, deadline, deadline - now, resolved)
+        annotate_allowance(result, allowance_line(assigns, spawned, sub_id))
     end
   end
 
@@ -351,16 +350,30 @@ defmodule ExAthena.Tools.SpawnAgent do
     end
   end
 
-  # Every spawn result carries the count. Nothing else tells the caller how
-  # many workers are left: session 227f7f480afa learned its allowance was gone
-  # only when a spawn was refused, having spent its last two slots on
-  # 30-minute retries of one bug.
-  defp allowance_line(assigns, spawned) do
+  # Every spawn result carries the count AND the worker's id — the two things
+  # nothing else tells the caller. Session 227f7f480afa learned its allowance
+  # was gone only when a spawn was refused, having spent its last two slots on
+  # 30-minute retries of one bug. Session 272a4251558c had the count but not
+  # the id: "worker 1 of 24" was the only worker-ish number anywhere in its
+  # context, so it guessed `subagent_id: "1"`, then `"worker_1"`, and burned
+  # two mistakes before re-delegating work it already had. One line, not two —
+  # the id rides on the allowance line that already exists (#228) rather than
+  # adding a second `[runtime]` line to every result — and it is present even
+  # when the run is unbounded, because the worker it names is real either way.
+  defp allowance_line(assigns, spawned, sub_id) do
     case Quota.remaining(assigns) do
-      :unbounded -> nil
-      remaining -> "[runtime] " <> allowance_text(spawned, Quota.limit(assigns), remaining)
+      :unbounded ->
+        "[runtime] " <> worker_id_note(sub_id)
+
+      remaining ->
+        "[runtime] " <>
+          allowance_text(spawned, Quota.limit(assigns), remaining) <>
+          " " <> worker_id_note(sub_id)
     end
   end
+
+  defp worker_id_note(sub_id),
+    do: "Worker id: #{sub_id} — read its full report or journal with read_worker_report."
 
   defp allowance_text(spawned, limit, remaining \\ 0)
 
@@ -372,8 +385,6 @@ defmodule ExAthena.Tools.SpawnAgent do
 
   defp allowance_text(spawned, limit, remaining),
     do: "worker #{spawned} of #{limit} this run; #{remaining} left."
-
-  defp annotate_allowance(result, nil), do: result
 
   defp annotate_allowance(result, line) do
     case result do
@@ -676,7 +687,7 @@ defmodule ExAthena.Tools.SpawnAgent do
           )
       end
 
-    result
+    {result, sub_id}
   end
 
   # Wait for the worker on its WORKING clock, not the wall clock: time its

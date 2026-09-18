@@ -16,6 +16,13 @@ defmodule ExAthena.Tools.ReadWorkerReport do
   happened at, so the model asks for the remainder instead of re-running the
   worker.
 
+  Truncation is not the only reason to want it. Web session 272a4251558c
+  called this tool after a worker SUMMARISED instead of quoting — nothing was
+  truncated — and had no id to pass because back then only the truncation
+  notice carried one. `SpawnAgent` now names the worker's id on every spawn
+  result's runtime line (issue 245), truncated or not, so the id is always in
+  the conversation by the time it is needed.
+
   ## Pull, not push
 
   The runs that need a worker's detail are the runs with the least context
@@ -74,8 +81,9 @@ defmodule ExAthena.Tools.ReadWorkerReport do
       "returns its full untruncated summary when the tool result you received was " <>
       "cut short; `source: \"journal\"` returns the record it wrote as it worked — " <>
       "files with sizes, commands with exit codes — which survives even a worker " <>
-      "that was killed and reported nothing. Takes the subagent_id named in the " <>
-      "truncation notice. Never re-run a worker just to see what it did."
+      "that was killed and reported nothing. Takes the subagent_id named on the " <>
+      "runtime line at the end of the spawn result. Never re-run a worker just " <>
+      "to see what it did."
   end
 
   @impl true
@@ -85,7 +93,10 @@ defmodule ExAthena.Tools.ReadWorkerReport do
       properties: %{
         subagent_id: %{
           type: "string",
-          description: "The worker's id, as named in the truncation notice."
+          description:
+            "The worker's id, named on the \"Worker id:\" runtime line at the end " <>
+              "of the spawn result (also repeated in the truncation notice when a " <>
+              "report was cut short)."
         },
         from: %{
           type: "integer",
@@ -132,8 +143,9 @@ defmodule ExAthena.Tools.ReadWorkerReport do
       fetch(id, args, ctx)
     else
       {:error,
-       "#{inspect(id)} is not a worker id. Use the subagent_id from the " <>
-         "truncation notice (it looks like \"subagent_AbC123\")."}
+       "#{inspect(id)} is not a worker id. Take it from the \"Worker id:\" " <>
+         "line at the end of the spawn result you got back — it looks like " <>
+         "\"subagent_AbC123\"."}
     end
   end
 
