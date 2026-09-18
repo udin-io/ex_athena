@@ -84,6 +84,12 @@ defmodule ExAthena.Modes.OrchestrateTest do
     assert "ask_user" in names
     assert "todo_write" in names
     assert "finish" in names
+    # Coordination, not exploration: it reads a worker's OWN report off
+    # disk and cannot inspect the codebase, so it does not reopen the hole
+    # the toolset otherwise guards against. Without it, the truncation
+    # notice in SpawnAgent.recovery_hint/2 names a tool the orchestrator
+    # cannot call (#235).
+    assert "read_worker_report" in names
     refute "read" in names
     refute "glob" in names
     refute "grep" in names
@@ -555,9 +561,13 @@ defmodule ExAthena.Modes.OrchestrateTest do
     names = Enum.map(state.tool_specs, & &1.name)
 
     # Coordination tools ONLY — no specialist tools on the supervisor
-    # (LangGraph rule, no exceptions): even read/glob/grep let a small model
-    # burn all its iterations on self-investigation instead of delegating.
-    assert Enum.sort(names) == Enum.sort(~w(todo_write spawn_agent finish ask_user))
+    # (LangGraph rule): even read/glob/grep let a small model burn all its
+    # iterations on self-investigation instead of delegating.
+    # `read_worker_report` is the one addition: it reads a worker's OWN
+    # report off disk and cannot inspect the codebase, so it does not
+    # reopen that hole (#235).
+    assert Enum.sort(names) ==
+             Enum.sort(~w(todo_write spawn_agent finish ask_user read_worker_report))
   end
 
   test "auto-delegation: pending todos + 2 spawn-less turns → the runtime spawns the worker",
@@ -2413,5 +2423,76 @@ defmodule ExAthena.Modes.OrchestrateTest do
     assert text =~ "do step A"
     assert text =~ "implement step A"
     assert text =~ "only touch lib/a.ex"
+  end
+
+  # #235: the truncation notice tells the orchestrator to call
+  # `read_worker_report` to fetch the rest of a cut-off report. That
+  # instruction is worthless — worse, it drives a wasteful re-spawn — if the
+  # orchestrator's own toolset does not carry that tool.
+  test "a truncated worker report names a tool the orchestrator actually holds",
+       %{dir: dir} do
+    test_pid = self()
+
+    responses = [
+      %Response{text: "plan", tool_calls: [], finish_reason: :stop, provider: :mock},
+      %Response{
+        text: "delegating",
+        tool_calls: [
+          %ToolCall{
+            id: "t1",
+            name: "spawn_agent",
+            arguments: %{"prompt" => "do the step", "max_result_chars" => 10}
+          }
+        ],
+        finish_reason: :tool_calls,
+        provider: :mock
+      },
+      fn _n, request ->
+        send(test_pid, {:post_spawn_request, request})
+        %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+      end
+    ]
+
+    sub_responder = fn _request ->
+      %Response{
+        text: "0123456789ABCDEF — far more than the ten-character cap",
+        tool_calls: [],
+        finish_reason: :stop,
+        provider: :mock
+      }
+    end
+
+    assert {:ok, %Result{finish_reason: :stop}} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: scripted(responses)],
+               cwd: dir,
+               memory: false,
+               tools: ExAthena.Tools.builtins(),
+               mode: :orchestrate,
+               assigns: %{
+                 spawn_agent_opts: [
+                   provider: :mock,
+                   mock: [responder: sub_responder],
+                   tools: [],
+                   memory: false
+                 ]
+               }
+             )
+
+    assert_receive {:post_spawn_request, request}
+    names = schema_names(request.tools)
+
+    notice =
+      request.messages
+      |> Enum.filter(&match?(%{role: :tool}, &1))
+      |> Enum.flat_map(& &1.tool_results)
+      |> List.last()
+      |> Map.fetch!(:content)
+
+    assert notice =~ "truncated"
+
+    assert [_, named_tool] = Regex.run(~r/call (\w+) with/, notice)
+    assert named_tool in names
   end
 end
