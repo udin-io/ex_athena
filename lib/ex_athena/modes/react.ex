@@ -28,6 +28,7 @@ defmodule ExAthena.Modes.ReAct do
   alias ExAthena.Loop.{BudgetPressure, Events, Inference, Parallel, State}
   alias ExAthena.Messages.ToolCall
   alias ExAthena.Tools
+  alias ExAthena.Tools.Skill, as: SkillTool
 
   @impl true
   def init(%State{} = state), do: {:ok, state}
@@ -1049,30 +1050,23 @@ defmodule ExAthena.Modes.ReAct do
   # skill that does not exist has no such channel, and the catalog in the
   # system prompt is the answer to it.
   defp maybe_attach_skills(%State{meta: meta} = state, text, tool_calls, tool_messages) do
+    names =
+      (Skills.extract_sentinels(text) ++ skill_tool_names(tool_calls, tool_messages))
+      |> Enum.uniq()
+      |> Enum.reject(&MapSet.member?(Skills.loaded_skills(state.messages), &1))
+
     skills = meta |> Map.get(:skills, %{}) |> Skills.model_invocable()
-    names = Skills.extract_sentinels(text) ++ skill_tool_names(tool_calls, tool_messages)
 
-    case Enum.uniq(names) do
-      [] ->
-        state
+    case Enum.flat_map(names, &activation(skills, &1)) do
+      [] -> state
+      msgs -> %{state | messages: state.messages ++ msgs}
+    end
+  end
 
-      names ->
-        already = Skills.loaded_skills(state.messages)
-
-        extras =
-          names
-          |> Enum.reject(&MapSet.member?(already, &1))
-          |> Enum.flat_map(fn name ->
-            case Skills.activation_message(skills, name) do
-              {:ok, msg} -> [msg]
-              {:error, _} -> []
-            end
-          end)
-
-        case extras do
-          [] -> state
-          msgs -> %{state | messages: state.messages ++ msgs}
-        end
+  defp activation(skills, name) do
+    case Skills.activation_message(skills, name) do
+      {:ok, msg} -> [msg]
+      {:error, _} -> []
     end
   end
 
@@ -1080,7 +1074,7 @@ defmodule ExAthena.Modes.ReAct do
   # permission gate denied, or one the tool refused, attaches nothing.
   defp skill_tool_names(tool_calls, tool_messages) do
     succeeded = successful_call_ids(tool_messages)
-    skill_tool = ExAthena.Tools.Skill.name()
+    skill_tool = SkillTool.name()
 
     for %ToolCall{name: ^skill_tool, id: id, arguments: %{"name" => name}} <- tool_calls,
         MapSet.member?(succeeded, id),

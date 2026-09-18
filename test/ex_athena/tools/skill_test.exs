@@ -2,8 +2,8 @@ defmodule ExAthena.Tools.SkillTest do
   use ExUnit.Case, async: true
 
   alias ExAthena.Skills.Skill, as: SkillDef
-  alias ExAthena.Tools.Skill
   alias ExAthena.ToolContext
+  alias ExAthena.Tools.Skill
 
   defp skill(name, opts \\ []) do
     %SkillDef{

@@ -121,6 +121,7 @@ defmodule ExAthena.Loop do
   alias ExAthena.Loop.{Events, Mode, State, Terminations}
   alias ExAthena.Lsp.ImplicitDiagnostics
   alias ExAthena.Messages.Message
+  alias ExAthena.Tools.Skill, as: SkillTool
   alias ExAthena.Tuning
 
   @default_max_iterations 55
@@ -1158,7 +1159,7 @@ defmodule ExAthena.Loop do
   defp apply_skills_catalog(%Request{system_prompt: sp} = request, skills, tool_specs) do
     # The catalog teaches the entry point this run actually has: the tool
     # when it was granted, the sentinel when it was not (issue 247).
-    skill_tool? = Enum.any?(tool_specs, &(&1.name == ExAthena.Tools.Skill.name()))
+    skill_tool? = Enum.any?(tool_specs, &(&1.name == SkillTool.name()))
     catalog = Skills.catalog_section(skills, skill_tool: skill_tool?)
 
     new_sp =
