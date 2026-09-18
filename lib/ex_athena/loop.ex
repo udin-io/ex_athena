@@ -793,6 +793,12 @@ defmodule ExAthena.Loop do
           budget_opt(opts, :tool_timeout_ms, @default_tool_timeout_ms)
         )
         |> Map.put_new(:spawn_agent_opts, inherited_provider_opts)
+        # This run's discovered skills, so `ExAthena.Tools.Skill` can check a
+        # name against the same catalog the system prompt lists. Map.put, not
+        # put_new: a subagent inherits the parent's assigns, and it resolves
+        # its own skills from its own cwd — the inherited copy is the wrong
+        # catalog.
+        |> Map.put(:skills, skills)
         # THIS run's effective permission guardrails, read by SpawnAgent so a
         # child is never more privileged than its parent (issue #130): the
         # deny/allow lists and approval callback are clamped onto every

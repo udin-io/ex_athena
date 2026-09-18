@@ -254,7 +254,7 @@ defmodule ExAthena.Modes.ReAct do
                 do: reset_mistakes(state),
                 else: state
 
-            state = maybe_attach_skills(state, response.text)
+            state = maybe_attach_skills(state, response.text, tool_calls, tool_messages)
 
             {:continue, state}
 
@@ -527,14 +527,7 @@ defmodule ExAthena.Modes.ReAct do
 
   # Latest SUCCESSFUL todo_write list → state.meta[:todos] (Result.todos).
   defp record_todos(state, tool_calls, tool_messages) do
-    successful_ids =
-      tool_messages
-      |> Enum.flat_map(fn
-        %{role: :tool, tool_results: trs} when is_list(trs) -> trs
-        _ -> []
-      end)
-      |> Enum.reject(&(&1.is_error == true))
-      |> MapSet.new(& &1.tool_call_id)
+    successful_ids = successful_call_ids(tool_messages)
 
     tool_calls
     |> Enum.filter(&(&1.name == "todo_write" and MapSet.member?(successful_ids, &1.id)))
@@ -543,6 +536,17 @@ defmodule ExAthena.Modes.ReAct do
       nil -> state
       tc -> %{state | meta: Map.put(state.meta, :todos, List.wrap(tc.arguments["todos"]))}
     end
+  end
+
+  # The ids of the calls in this turn whose results were not errors.
+  defp successful_call_ids(tool_messages) do
+    tool_messages
+    |> Enum.flat_map(fn
+      %{role: :tool, tool_results: trs} when is_list(trs) -> trs
+      _ -> []
+    end)
+    |> Enum.reject(&(&1.is_error == true))
+    |> MapSet.new(& &1.tool_call_id)
   end
 
   defp record_conclusion(%State{meta: %{conclusions: false}} = state, _response, _calls),
@@ -1032,19 +1036,23 @@ defmodule ExAthena.Modes.ReAct do
     "Available tools: " <> Enum.join(names, ", ") <> "." <> suggestion
   end
 
-  # ── Skill auto-load via [skill: name] sentinel ────────────────────
+  # ── Skill loading: the `skill` tool and the [skill: name] sentinel ──
 
-  # When the model emits `[skill: name]` in its response text, append the
-  # skill body to the conversation so it's visible on the next iteration.
-  # Idempotent (already-loaded skills are no-ops). Unknown skill names
-  # are silently ignored — the catalog already lists what's available.
-  defp maybe_attach_skills(%State{} = state, nil), do: state
-  defp maybe_attach_skills(%State{} = state, ""), do: state
+  # Two entry points, one loader. A successful `skill` tool call and a
+  # `[skill: name]` sentinel in the response text both end here, and the
+  # body is appended as the same system message either way, so the model
+  # sees it on the next iteration. Idempotent (already-loaded skills are
+  # no-ops, whichever entry point loaded them first).
+  #
+  # An unknown name is silently ignored HERE because the tool already
+  # answered it with the list of names that do exist; a sentinel naming a
+  # skill that does not exist has no such channel, and the catalog in the
+  # system prompt is the answer to it.
+  defp maybe_attach_skills(%State{meta: meta} = state, text, tool_calls, tool_messages) do
+    skills = meta |> Map.get(:skills, %{}) |> Skills.model_invocable()
+    names = Skills.extract_sentinels(text) ++ skill_tool_names(tool_calls, tool_messages)
 
-  defp maybe_attach_skills(%State{meta: meta} = state, text) when is_binary(text) do
-    skills = Map.get(meta, :skills, %{})
-
-    case Skills.extract_sentinels(text) do
+    case Enum.uniq(names) do
       [] ->
         state
 
@@ -1066,6 +1074,18 @@ defmodule ExAthena.Modes.ReAct do
           msgs -> %{state | messages: state.messages ++ msgs}
         end
     end
+  end
+
+  # Names asked for by a `skill` call that actually ran — a call the
+  # permission gate denied, or one the tool refused, attaches nothing.
+  defp skill_tool_names(tool_calls, tool_messages) do
+    succeeded = successful_call_ids(tool_messages)
+    skill_tool = ExAthena.Tools.Skill.name()
+
+    for %ToolCall{name: ^skill_tool, id: id, arguments: %{"name" => name}} <- tool_calls,
+        MapSet.member?(succeeded, id),
+        is_binary(name),
+        do: String.trim(name)
   end
 
   # Emit a {:thinking, text} loop event when the provider surfaced any
