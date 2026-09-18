@@ -54,6 +54,18 @@ defmodule ExAthena.Web.Settings do
               "to reduce scope, finish what it can, and report which todos it is leaving."
         },
         %{
+          key: :handback_at_percent,
+          label: "Handback at (%)",
+          default: 83,
+          type: :integer,
+          min: 1,
+          help:
+            "How far through a WORKER's time budget before its tools are taken away and it " <>
+              "must report. The nudge above is advice a worker can ignore; this one it " <>
+              "cannot. Leave room for one whole turn — 83% of 30 minutes keeps the last five. " <>
+              "Set above 100 to switch it off."
+        },
+        %{
           key: :max_iterations,
           label: "Max iterations",
           default: 55,
@@ -191,6 +203,17 @@ defmodule ExAthena.Web.Settings do
           type: :integer,
           min: 1,
           help: "Floor on a worker's iteration budget."
+        },
+        %{
+          key: :timeout_ms,
+          label: "Time budget (ms)",
+          default: 1_800_000,
+          type: :integer,
+          min: 60_000,
+          help:
+            "Working time one worker gets before it is killed; queue waits are credited back, " <>
+              "so this is time it actually spent working. The last slice of it is reserved " <>
+              "for the worker's report — see Handback under Run budget."
         },
         %{
           key: :max_input_tokens,

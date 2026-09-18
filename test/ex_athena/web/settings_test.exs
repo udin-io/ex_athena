@@ -48,8 +48,10 @@ defmodule ExAthena.Web.SettingsTest do
         {{:loop, :max_consecutive_mistakes}, 3},
         {{:loop, :max_concurrency}, 4},
         {{:loop, :tool_timeout_ms}, 120_000},
+        {{:loop, :handback_at_percent}, 83},
         {{:agents, :max_iterations}, 50},
         {{:agents, :prompt_chars}, 160},
+        {{:agents, :timeout_ms}, 1_800_000},
         {{:bash, :max_output_chars}, 16_000}
       ]
 

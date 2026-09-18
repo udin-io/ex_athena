@@ -411,14 +411,18 @@ defmodule ExAthena.Tools.SpawnAgent do
   defp prepend_handback_notice(text, _sub_result), do: text
 
   # 30 min wall clock — covers the 25-iteration budget on a local model at
-  # 30–90s/turn plus single-slot queue waits. NOT model-controllable: small
-  # models supplied self-sabotaging 30–60s budgets that killed the worker
-  # after one turn (same lesson as cwd). Host override only, via
-  # spawn_agent_opts[:timeout_ms].
+  # 30–90s/turn plus single-slot queue waits.
+  #
+  # Still NOT model-controllable: small models supplied self-sabotaging 30–60s
+  # budgets that killed the worker after one turn (same lesson as cwd). The
+  # host's `spawn_agent_opts[:timeout_ms]` wins, because a host setting it per
+  # run means it; below that it resolves from config, which is what puts it in
+  # the settings modal beside `loop.handback_at_percent` — the stage that
+  # decides how much of this budget is kept back for the worker's report.
   defp configured_timeout(assigns) do
     case (assigns[:spawn_agent_opts] || [])[:timeout_ms] do
       n when is_integer(n) and n > 0 -> n
-      _ -> @default_timeout_ms
+      _ -> Tuning.get(:agents, :timeout_ms, @default_timeout_ms)
     end
   end
 
