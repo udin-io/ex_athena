@@ -71,7 +71,7 @@ ExAthena.run(prompt)   # implicitly memory: :auto
 
 ## Skills — `SKILL.md`
 
-Skills are **lazy-loaded capabilities**. ExAthena advertises a short descriptor in the system prompt and reveals the full body only when the model requests it via the `[skill: name]` sentinel in its response.
+Skills are **lazy-loaded capabilities**. ExAthena advertises a short descriptor in the system prompt and reveals the full body only when the model asks for it — by calling the `skill` tool, or by writing a `[skill: name]` sentinel in its response.
 
 This keeps the system prompt small (~50 tokens per skill) regardless of how many skills exist, while still making every one discoverable.
 
@@ -97,13 +97,17 @@ When you need to fetch a web page:
 ### Catalog section (added to system prompt)
 
 ```text
-## Skills available
+## Available Skills
 
-- `web_scraping` — How to fetch and parse web pages — includes selectors for common sites. Load with [skill: web_scraping].
-- `linear_api` — Authenticated Linear API patterns. Load with [skill: linear_api].
+Call the `skill` tool with a skill's name to load its full instructions, before you start the work it covers.
+
+  - `web_scraping` — How to fetch and parse web pages — includes selectors for common sites.
+  - `linear_api` — Authenticated Linear API patterns.
 ```
 
 About 50 tokens per skill thanks to the description budget.
+
+The catalog names one mechanism: the `skill` tool when the run granted it, the sentinel when it did not. The sentinel keeps working either way — it is the fallback for providers with no native tool calls — but a catalog offering two ways to do one thing invites the weaker one.
 
 ### Lazy loading
 
@@ -113,18 +117,22 @@ sequenceDiagram
   participant L as Loop
   participant Sk as Skills
 
-  LLM-->>L: response contains "[skill: web_scraping]"
-  L->>Sk: lookup body
-  Sk-->>L: full SKILL.md body
-  L->>L: inject as user message
+  LLM-->>L: skill(name: "web_scraping"), or "[skill: web_scraping]" in the text
+  L->>Sk: activation_message/2
+  Sk-->>L: full SKILL.md body, tagged skill:web_scraping
+  L->>L: append as a system message
   L->>LLM: next turn — full skill now in context
 ```
 
-Source: [`ExAthena.Skills`](../lib/ex_athena/skills.ex). The `[skill: name]` sentinel is parsed out of assistant content and replaced with the body before the next turn.
+Source: [`ExAthena.Skills`](../lib/ex_athena/skills.ex), [`ExAthena.Tools.Skill`](../lib/ex_athena/tools/skill.ex). Both entry points end at `activation_message/2`, so the body arrives identically whichever asked for it and `loaded_skills/1` counts it once — naming the same skill by tool and by sentinel loads it one time.
+
+Two things the tool does not do: it does not return the body itself (the loop attaches it, as `plan_mode` has the loop apply its phase change), and it does not load a skill marked `disable-model-invocation` — neither does the sentinel. `preload/3` still can: the host is not the model.
+
+An unknown name comes back as a tool error listing the names that do exist, so the model corrects itself instead of giving up on skills. Issue 247 has the session where it gave up: two unknown-tool errors for `skill: architecture-brief-and-mocks`, then the work done from the one-line descriptions alone.
 
 ### Preload skills
 
-If you know a skill will be needed up front, skip the sentinel round-trip:
+If you know a skill will be needed up front, skip the round-trip entirely:
 
 ```elixir
 ExAthena.run(prompt, preload_skills: ["web_scraping"])

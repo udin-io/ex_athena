@@ -226,7 +226,7 @@ Deep dive → [11 · Sessions](11-sessions.md).
 | [`Compactor.Pipeline`](../lib/ex_athena/compactor/pipeline.ex) | Default 5-stage orchestration. |
 | `Compactors.{BudgetReduction,Snip,Microcompact,ContextCollapse,Summary}` | The five stages. |
 | [`ExAthena.Memory`](../lib/ex_athena/memory.ex) | Discover and prepend `AGENTS.md` / `CLAUDE.md` from cwd + `~/.config/ex_athena/`. |
-| [`ExAthena.Skills`](../lib/ex_athena/skills.ex) | Discover `SKILL.md`; emit 50-token descriptors; lazy-load on `[skill: name]` sentinel. |
+| [`ExAthena.Skills`](../lib/ex_athena/skills.ex) | Discover `SKILL.md`; emit 50-token descriptors; lazy-load on a `skill` tool call or a `[skill: name]` sentinel. |
 
 Deep dives → [12 · Compaction](12-compaction.md) · [14 · Memory & skills](14-memory-and-skills.md).
 

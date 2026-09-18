@@ -343,7 +343,8 @@ not the loop itself.
 project root and ex_athena prepends it as user-context on every turn.
 Drop a `SKILL.md` with YAML frontmatter under `.exathena/skills/<name>/`
 and its description joins the system-prompt catalog at ~50 tokens; the
-body loads only when the model writes `[skill: <name>]`. See the
+body loads only when the model calls the `skill` tool (or writes
+`[skill: <name>]`, the fallback for providers without tool calls). See the
 [memory + skills guide](guides/memory_and_skills.md).
 
 **Five-stage compaction.** The default

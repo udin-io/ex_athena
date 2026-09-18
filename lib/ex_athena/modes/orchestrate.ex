@@ -187,7 +187,17 @@ defmodule ExAthena.Modes.Orchestrate do
   # already handed back. Without it, SpawnAgent's truncation notice
   # (`recovery_hint/2`) tells the orchestrator to call a tool it does not
   # have, so it re-spawns a worker to re-gather text already on disk (#235).
-  @orchestrator_tools ~w(todo_write spawn_agent finish ask_user read_worker_report)
+  #
+  # `skill` is the second, on the same test: it reads a file this runtime
+  # discovered and catalogued, and cannot reach the codebase. A skill body
+  # here is a procedure for COORDINATING — how to work a ticket, when to
+  # stop for a design review, what a report must contain — and the
+  # orchestrator is the one agent that cannot delegate to get it: the
+  # decisions it steers are the orchestrator's own. Without it the catalog
+  # names a tool the orchestrator does not have, which is what happened in
+  # session 66f4204cd532: two unknown-tool errors, then the work done from
+  # the one-line descriptions (#247).
+  @orchestrator_tools ~w(todo_write spawn_agent finish ask_user read_worker_report skill)
 
   # Exploration during planning is bounded — after this many planning turns
   # the runtime forces the transition to execution with what is known.

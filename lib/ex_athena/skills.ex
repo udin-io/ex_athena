@@ -5,9 +5,14 @@ defmodule ExAthena.Skills do
   A *skill* is a directory containing a `SKILL.md` markdown file with YAML
   frontmatter. The frontmatter is cheap (a sentence) and is injected into
   the system prompt as a one-line catalog entry. The body is loaded into
-  context only when the model decides it needs the skill — either by
-  emitting a `[skill: <name>]` sentinel in its response, or by the host
-  pre-attaching it via `preload/2`.
+  context only when the model decides it needs the skill — by calling the
+  `skill` tool (`ExAthena.Tools.Skill`), by emitting a `[skill: <name>]`
+  sentinel in its response, or by the host pre-attaching it via `preload/2`.
+
+  All three end at `activation_message/2`, so a body arrives the same way
+  however it was asked for and `loaded_skills/1` counts it once. The tool
+  is what models reach for unprompted (issue 247); the sentinel is the
+  fallback for providers with no native tool calls.
 
   This means dozens of skills can be available at ~50 tokens each in
   catalog form; only the ones the model actually wants pay the full body
@@ -35,20 +40,26 @@ defmodule ExAthena.Skills do
       splitting into linked files for anything larger.
 
   Only `name` and `description` are required. `disable-model-invocation`
-  hides the skill from the catalog (host can still `preload/2` it).
+  hides the skill from the catalog and from both model entry points (host
+  can still `preload/2` it — see `model_invocable/1`).
   `allowed-tools` (when set) restricts the tool list while the skill is
   loaded; PR3a wires this into `Permissions.check/4`.
 
   ## Catalog rendering
 
       Skills.catalog_section([%Skill{name: "deploy", description: "Deploy
-      this app to staging"}, ...])
+      this app to staging"}, ...], skill_tool: true)
       #=>
       ## Available Skills
 
-      Use `[skill: <name>]` to load a skill's full instructions.
+      Call the `skill` tool with a skill's name to load its full
+      instructions, before you start the work it covers.
 
         - `deploy` — Deploy this app to staging
+
+  Without `skill_tool: true` the same section teaches the sentinel instead.
+  The loop passes whether the run granted the tool, so the catalog only
+  ever names a mechanism the model actually has.
   """
 
   alias ExAthena.Messages.Message
@@ -108,12 +119,26 @@ defmodule ExAthena.Skills do
   Render the catalog section that's appended to the system prompt. Empty
   string when no model-invocable skills exist (so we don't pollute the
   prompt with a bare header).
-  """
-  @spec catalog_section(map() | [Skill.t()]) :: String.t()
-  def catalog_section(skills) when is_map(skills),
-    do: skills |> Map.values() |> catalog_section()
 
-  def catalog_section(skills) when is_list(skills) do
+  ## Options
+
+    * `:skill_tool` — whether this run granted the `skill` tool. `true`
+      tells the model to call it; `false` (the default) teaches the
+      `[skill: <name>]` sentinel instead.
+
+  One mechanism is named, never both. The sentinel keeps working whatever
+  the catalog says — it is the fallback for providers with no native tool
+  calls — but a catalog offering two ways to do one thing invites the
+  weaker one, and in a run that HAS tool calls the tool is the one the
+  model reaches for unprompted (issue 247).
+  """
+  @spec catalog_section(map() | [Skill.t()], keyword()) :: String.t()
+  def catalog_section(skills, opts \\ [])
+
+  def catalog_section(skills, opts) when is_map(skills),
+    do: skills |> Map.values() |> catalog_section(opts)
+
+  def catalog_section(skills, opts) when is_list(skills) do
     visible =
       Enum.reject(skills, fn %Skill{disable_model_invocation: hidden} -> hidden end)
 
@@ -131,12 +156,35 @@ defmodule ExAthena.Skills do
 
         ## Available Skills
 
-        Use `[skill: <name>]` in your response to load a skill's full instructions.
+        #{how_to_load(Keyword.get(opts, :skill_tool, false))}
 
         #{lines}
         """
         |> String.trim_trailing()
     end
+  end
+
+  defp how_to_load(true),
+    do:
+      "Call the `skill` tool with a skill's name to load its full instructions, " <>
+        "before you start the work it covers."
+
+  defp how_to_load(_),
+    do: "Use `[skill: <name>]` in your response to load a skill's full instructions."
+
+  @doc """
+  The subset of `skills` the model may load itself.
+
+  `disable-model-invocation: true` keeps a skill out of the catalog, and the
+  same rule applies to both channels the model loads through — the `skill`
+  tool and the `[skill: <name>]` sentinel. `preload/2` takes the unfiltered
+  map: the host is not the model.
+  """
+  @spec model_invocable(map()) :: map()
+  def model_invocable(skills) when is_map(skills) do
+    for {name, %Skill{disable_model_invocation: false} = skill} <- skills,
+        into: %{},
+        do: {name, skill}
   end
 
   @doc """
