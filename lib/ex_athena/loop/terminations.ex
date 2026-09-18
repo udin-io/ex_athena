@@ -17,6 +17,20 @@ defmodule ExAthena.Loop.Terminations do
     * `:stopped` — a human interrupted the run (the UI's stop button). Not a
       fault and not a success: whatever the run had produced by then is kept
       and persisted, exactly as a completed run's output is.
+    * `:budget_handback` — the run spent its last turn writing a report. Past
+      `loop.handback_at_percent` of its wall-clock budget the loop sends one
+      final turn with no tools at all (see
+      `ExAthena.Loop.BudgetPressure.handback?/2`), and that turn's text is the
+      run's own account of itself.
+
+      It is a SUCCESS, because the whole point of the stage is that the parent
+      reads the worker's words instead of a digest rebuilt from the
+      Coordinator's observations — `ExAthena.Tools.SpawnAgent` routes on
+      `success?/1`. It is also a `budget_exhaustion?/1` and category
+      `:capacity`, because the task did not finish and should be re-issued as a
+      smaller slice. `SpawnAgent` prefixes the returned text with a runtime line
+      saying so: anything counting successful spawns would otherwise read a
+      partial worker as a finished one.
     * `:error_max_turns` — iteration cap reached.
     * `:error_max_budget_usd` — cost ceiling tripped.
     * `:error_max_input_tokens` — cumulative input tokens crossed the cap.
@@ -56,6 +70,7 @@ defmodule ExAthena.Loop.Terminations do
           :stop
           | :submitted
           | :stopped
+          | :budget_handback
           | :error_max_turns
           | :error_max_budget_usd
           | :error_max_input_tokens
@@ -74,6 +89,7 @@ defmodule ExAthena.Loop.Terminations do
     :stop,
     :submitted,
     :stopped,
+    :budget_handback,
     :error_max_turns,
     :error_max_budget_usd,
     :error_max_input_tokens,
@@ -97,6 +113,7 @@ defmodule ExAthena.Loop.Terminations do
   @spec success?(subtype()) :: boolean()
   def success?(:stop), do: true
   def success?(:submitted), do: true
+  def success?(:budget_handback), do: true
   def success?(_), do: false
 
   @doc "Did a human end this run on purpose?"
@@ -109,6 +126,7 @@ defmodule ExAthena.Loop.Terminations do
   def error?(:stop), do: false
   def error?(:submitted), do: false
   def error?(:stopped), do: false
+  def error?(:budget_handback), do: false
   def error?(_), do: true
 
   @doc """
@@ -119,8 +137,10 @@ defmodule ExAthena.Loop.Terminations do
   `:error_consecutive_mistakes`, `:error_no_progress` and
   `:error_max_structured_output_retries` — a run that hallucinated, went in
   circles, or could not produce parseable output. Those are faults, and a
-  caller re-issuing the same work will reproduce them. The five below are
+  caller re-issuing the same work will reproduce them. The six below are
   budgets: the same work with more room, or less of it, would have finished.
+  `:budget_handback` is one of them even though `success?/1` is also true for
+  it — it reported, and it still ran out of room.
 
   `SpawnAgent` uses this to decide whether a worker's termination should
   advance its parent's consecutive-mistake counter. Session 5906635b743d died
@@ -134,6 +154,7 @@ defmodule ExAthena.Loop.Terminations do
   def budget_exhaustion?(:error_max_turns), do: true
   def budget_exhaustion?(:error_prompt_too_long), do: true
   def budget_exhaustion?(:error_thinking_starved), do: true
+  def budget_exhaustion?(:budget_handback), do: true
   def budget_exhaustion?(_), do: false
 
   @doc """
@@ -150,6 +171,7 @@ defmodule ExAthena.Loop.Terminations do
   def category(:stop), do: :success
   def category(:submitted), do: :success
   def category(:stopped), do: :interrupted
+  def category(:budget_handback), do: :capacity
   def category(:error_max_turns), do: :capacity
   def category(:error_max_budget_usd), do: :capacity
   def category(:error_max_input_tokens), do: :capacity

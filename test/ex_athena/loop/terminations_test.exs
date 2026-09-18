@@ -20,6 +20,7 @@ defmodule ExAthena.Loop.TerminationsTest do
       assert :error_provider_auth in Terminations.all()
       assert :error_thinking_starved in Terminations.all()
       assert :stopped in Terminations.all()
+      assert :budget_handback in Terminations.all()
     end
   end
 
@@ -43,8 +44,18 @@ defmodule ExAthena.Loop.TerminationsTest do
       assert Terminations.interrupted?(:stopped)
     end
 
+    # Issue 237. A worker that spent its last turn writing a report DID report,
+    # in its own words, so the parent must read it rather than the Coordinator's
+    # reconstruction. `SpawnAgent` routes on `success?/1`, which is what makes
+    # that happen.
+    test ":budget_handback is success, not error — it reported, it just ran out of room" do
+      assert Terminations.success?(:budget_handback)
+      refute Terminations.error?(:budget_handback)
+      refute Terminations.interrupted?(:budget_handback)
+    end
+
     test "every remaining subtype is error, not success" do
-      for subtype <- Terminations.all() -- [:stop, :submitted, :stopped] do
+      for subtype <- Terminations.all() -- [:stop, :submitted, :stopped, :budget_handback] do
         refute Terminations.success?(subtype), "#{subtype} should not be success"
         assert Terminations.error?(subtype), "#{subtype} should be error"
         refute Terminations.interrupted?(subtype), "#{subtype} should not be interrupted"
@@ -73,6 +84,13 @@ defmodule ExAthena.Loop.TerminationsTest do
       assert Terminations.category(:error_prompt_too_long) == :capacity
       assert Terminations.category(:error_no_progress) == :capacity
       assert Terminations.category(:error_thinking_starved) == :capacity
+    end
+
+    # It is a success AND a capacity outcome: the report arrived, the task did
+    # not finish. A caller reading category/1 is asking whether to re-issue the
+    # work, and the answer is yes, with a smaller slice.
+    test ":budget_handback is :capacity — it reported, it did not finish" do
+      assert Terminations.category(:budget_handback) == :capacity
     end
 
     test "execution errors are :retryable" do
@@ -104,6 +122,7 @@ defmodule ExAthena.Loop.TerminationsTest do
       assert Terminations.budget_exhaustion?(:error_max_turns)
       assert Terminations.budget_exhaustion?(:error_prompt_too_long)
       assert Terminations.budget_exhaustion?(:error_thinking_starved)
+      assert Terminations.budget_exhaustion?(:budget_handback)
     end
 
     test "a run that went wrong is NOT, even where category/1 says :capacity" do
@@ -119,7 +138,7 @@ defmodule ExAthena.Loop.TerminationsTest do
       end
     end
 
-    test "success, interruption and the fatal subtypes are not budgets" do
+    test "an ordinary success, an interruption and the fatal subtypes are not budgets" do
       for subtype <- [:stop, :submitted, :stopped, :error_halted, :error_provider_auth] do
         refute Terminations.budget_exhaustion?(subtype)
       end

@@ -116,7 +116,7 @@ defmodule ExAthena.Loop do
     Tuning
   }
 
-  alias ExAthena.Loop.{Events, Mode, State}
+  alias ExAthena.Loop.{Events, Mode, State, Terminations}
   alias ExAthena.Lsp.ImplicitDiagnostics
   alias ExAthena.Messages.Message
   alias ExAthena.Tuning
@@ -678,7 +678,9 @@ defmodule ExAthena.Loop do
       result: result
     }
 
-    if reason in [:stop, :submitted] do
+    # :budget_handback is a success (see Terminations): the run wrote its own
+    # report on a tool-free final turn. A Stop hook must see it as one.
+    if Terminations.success?(reason) do
       _ = ExAthena.Hooks.run_lifecycle(hooks, :Stop, payload)
     else
       _ = ExAthena.Hooks.run_lifecycle(hooks, :StopFailure, payload)
