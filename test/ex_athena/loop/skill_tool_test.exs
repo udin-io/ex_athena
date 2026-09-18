@@ -154,6 +154,58 @@ defmodule ExAthena.Loop.SkillToolTest do
     end
   end
 
+  describe "the catalog names the mechanism the run has" do
+    test "the skill tool when the run granted it", %{cwd: cwd} do
+      write_skill(cwd, "deploy", "", "body")
+      parent = self()
+      ref = make_ref()
+
+      responder = fn request ->
+        send(parent, {ref, request.system_prompt})
+        %Response{text: "ok", tool_calls: [], finish_reason: :stop, provider: :mock}
+      end
+
+      {:ok, _} =
+        Loop.run("go",
+          provider: :mock,
+          mock: [responder: responder],
+          tools: [ExAthena.Tools.Skill],
+          cwd: cwd,
+          memory: false,
+          skills: skills(cwd)
+        )
+
+      assert_receive {^ref, system_prompt}, 1_000
+      assert system_prompt =~ "Call the `skill` tool"
+      refute system_prompt =~ "[skill: <name>]"
+    end
+
+    test "the sentinel when the run has no skill tool", %{cwd: cwd} do
+      write_skill(cwd, "deploy", "", "body")
+      parent = self()
+      ref = make_ref()
+
+      responder = fn request ->
+        send(parent, {ref, request.system_prompt})
+        %Response{text: "ok", tool_calls: [], finish_reason: :stop, provider: :mock}
+      end
+
+      {:ok, _} =
+        Loop.run("go",
+          provider: :mock,
+          mock: [responder: responder],
+          tools: [ExAthena.Tools.Read],
+          cwd: cwd,
+          memory: false,
+          skills: skills(cwd)
+        )
+
+      assert_receive {^ref, system_prompt}, 1_000
+      assert system_prompt =~ "[skill: <name>]"
+      refute system_prompt =~ "Call the `skill` tool"
+    end
+  end
+
   describe "unknown and refused names" do
     test "an unknown name is a tool error naming the available skills", %{cwd: cwd} do
       write_skill(cwd, "deploy", "", "body")

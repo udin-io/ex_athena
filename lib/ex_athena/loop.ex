@@ -91,8 +91,10 @@ defmodule ExAthena.Loop do
       `<cwd>/.exathena/skills/` and `~/.config/ex_athena/skills/`),
       `false` (skip), or an explicit `%{name => %Skill{}}` map.
     * `:preload_skills` — list of skill names whose bodies should be
-      activated up-front (skips the `[skill: name]` sentinel
-      round-trip).
+      activated up-front (skips the round-trip the model would otherwise
+      pay through the `skill` tool or the `[skill: name]` sentinel).
+      Unlike those two, it also loads a skill marked
+      `disable-model-invocation`.
 
   ## Returns
 
@@ -746,7 +748,7 @@ defmodule ExAthena.Loop do
       request_template =
         prompt
         |> Request.new(opts)
-        |> apply_skills_catalog(skills)
+        |> apply_skills_catalog(skills, tool_specs)
         |> apply_conclusion_contract(conclusions?)
 
       permissions_opts = %{
@@ -1149,11 +1151,15 @@ defmodule ExAthena.Loop do
     end
   end
 
-  defp apply_skills_catalog(%Request{} = request, skills) when map_size(skills) == 0,
-    do: request
+  defp apply_skills_catalog(%Request{} = request, skills, _tool_specs)
+       when map_size(skills) == 0,
+       do: request
 
-  defp apply_skills_catalog(%Request{system_prompt: sp} = request, skills) do
-    catalog = Skills.catalog_section(skills)
+  defp apply_skills_catalog(%Request{system_prompt: sp} = request, skills, tool_specs) do
+    # The catalog teaches the entry point this run actually has: the tool
+    # when it was granted, the sentinel when it was not (issue 247).
+    skill_tool? = Enum.any?(tool_specs, &(&1.name == ExAthena.Tools.Skill.name()))
+    catalog = Skills.catalog_section(skills, skill_tool: skill_tool?)
 
     new_sp =
       case {sp, catalog} do

@@ -118,6 +118,47 @@ defmodule ExAthena.SkillsTest do
     end
   end
 
+  describe "catalog_section/2 — the text matches the run's entry points" do
+    test "names the skill tool when the run has it, and not the sentinel" do
+      skills = %{
+        "deploy" => %Skill{name: "deploy", description: "Ship it.", body: "", path: "/d"}
+      }
+
+      section = Skills.catalog_section(skills, skill_tool: true)
+
+      assert section =~ "`skill`"
+      refute section =~ "[skill: <name>]"
+      assert section =~ "deploy"
+    end
+
+    test "falls back to the sentinel when the run has no skill tool" do
+      skills = %{
+        "deploy" => %Skill{name: "deploy", description: "Ship it.", body: "", path: "/d"}
+      }
+
+      section = Skills.catalog_section(skills, skill_tool: false)
+      assert section =~ "[skill: <name>]"
+      refute section =~ "`skill` tool"
+    end
+  end
+
+  describe "model_invocable/1" do
+    test "drops the skills the model may not load itself" do
+      skills = %{
+        "deploy" => %Skill{name: "deploy", description: "d", body: "", path: "/d"},
+        "internal" => %Skill{
+          name: "internal",
+          description: "d",
+          body: "",
+          path: "/i",
+          disable_model_invocation: true
+        }
+      }
+
+      assert Skills.model_invocable(skills) |> Map.keys() == ["deploy"]
+    end
+  end
+
   describe "extract_sentinels/1" do
     test "extracts skill names from `[skill: name]` references" do
       assert Skills.extract_sentinels("Let me [skill: deploy] this.") == ["deploy"]
