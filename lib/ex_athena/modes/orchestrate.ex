@@ -179,7 +179,15 @@ defmodule ExAthena.Modes.Orchestrate do
   # on self-investigation instead of delegating. Any inspection now costs a
   # worker spawn, which is the point. It also shrinks the tool-schema
   # prompt for weak models.
-  @orchestrator_tools ~w(todo_write spawn_agent finish ask_user)
+  #
+  # `read_worker_report` is the one addition to that rule, and it does not
+  # break it: it reads a worker's OWN report back off
+  # `.exathena/sessions/<id>/sidechains/`, and cannot inspect the codebase —
+  # there is nothing to self-investigate with it beyond what a worker
+  # already handed back. Without it, SpawnAgent's truncation notice
+  # (`recovery_hint/2`) tells the orchestrator to call a tool it does not
+  # have, so it re-spawns a worker to re-gather text already on disk (#235).
+  @orchestrator_tools ~w(todo_write spawn_agent finish ask_user read_worker_report)
 
   # Exploration during planning is bounded — after this many planning turns
   # the runtime forces the transition to execution with what is known.
