@@ -68,7 +68,13 @@ defmodule ExAthena.Modes.ReAct do
 
   @impl true
   def iterate(%State{} = state) do
-    request = build_request(state)
+    # Issue 237. Past `loop.handback_at_percent` of its wall-clock budget a
+    # worker gets ONE more turn, and that turn is for the report: no tools, and
+    # whatever text comes back is its own account of itself. Decided here, at
+    # the top of the turn, so the transient-error retry inside `do_iterate/3`
+    # re-sends the same shape of request.
+    handback? = BudgetPressure.handback?(state, System.monotonic_time(:millisecond))
+    request = build_request(state, handback?)
 
     # ChatParams hooks fire just before the provider call so callers can
     # adjust temperature / tools / system_prompt per turn without
@@ -85,11 +91,11 @@ defmodule ExAthena.Modes.ReAct do
         {:halt, state}
 
       {:ok, request, state} ->
-        do_iterate(state, request)
+        do_iterate(state, request, handback?)
     end
   end
 
-  defp do_iterate(%State{} = state, request) do
+  defp do_iterate(%State{} = state, request, handback?) do
     {stream_cb, counters} = stream_callback(state)
 
     # The main turn is a full, turn-shaped call: a starved response
@@ -114,7 +120,7 @@ defmodule ExAthena.Modes.ReAct do
         # it for hosts to pass back as `resume:`.
         state = stash_session_id(state, response)
 
-        handle_turn(state, request, response, counters)
+        handle_turn(state, request, response, counters, handback?)
 
       {:error, {:error_thinking_starved, _info, %State{}}} = starved ->
         starved
@@ -144,7 +150,7 @@ defmodule ExAthena.Modes.ReAct do
           # Honors the server's Retry-After hint (capped) when the error
           # carries one; falls back to a 2s default. See Error.retry_delay_ms/2.
           Process.sleep(ExAthena.Error.retry_delay_ms(reason))
-          do_iterate(state, request)
+          do_iterate(state, request, handback?)
         else
           state =
             %{state | halted_reason: reason}
@@ -158,7 +164,29 @@ defmodule ExAthena.Modes.ReAct do
   # Everything after a healthy (non-starved) provider response: emit the
   # end-of-turn text/thinking, extract tool calls, and either terminate on a
   # tool-free answer or execute the batch and continue.
-  defp handle_turn(%State{} = state, request, response, counters) do
+  # The handback turn (issue 237). It carried no tools, so there is nothing to
+  # run and no next turn to run it in: the text IS the report. Any tool calls
+  # the model emitted anyway are dropped rather than executed — running them
+  # would spend the very budget this turn exists to protect, and the parent
+  # would still get nothing. `:budget_handback` is a success termination, so
+  # `SpawnAgent` hands the parent these words instead of a rebuilt digest.
+  defp handle_turn(%State{} = state, _request, response, counters, true) do
+    streamed_text? = counters != nil and :counters.get(counters, 1) > 0
+    streamed_thinking? = counters != nil and :counters.get(counters, 2) > 0
+
+    unless streamed_thinking?, do: maybe_emit_thinking(state.on_event, response)
+    unless streamed_text?, do: maybe_emit_content(state.on_event, response)
+
+    state = record_conclusion(state, response, [])
+
+    state =
+      %{state | messages: state.messages ++ [Messages.assistant(response.text)]}
+      |> set_finish_reason(:budget_handback)
+
+    {:halt, state}
+  end
+
+  defp handle_turn(%State{} = state, request, response, counters, false) do
     # When deltas already streamed to the host this turn, suppress the
     # end-of-turn full-text/full-thinking emission to avoid duplicates.
     # Counter-based (not static) because providers may export stream/3
@@ -780,7 +808,9 @@ defmodule ExAthena.Modes.ReAct do
 
   # ── Request building ──────────────────────────────────────────────
 
-  defp build_request(state) do
+  defp build_request(state, handback?)
+
+  defp build_request(state, false) do
     %{
       state.request_template
       | messages:
@@ -788,6 +818,34 @@ defmodule ExAthena.Modes.ReAct do
             phase_note(state) ++ budget_note(state) ++ research_note(state) ++ recitation(state),
         tools: tool_schemas(state.tool_specs, state.capabilities),
         system_prompt: effective_system_prompt(state)
+    }
+  end
+
+  # The handback turn (issue 237): the last turn of a worker's wall-clock
+  # budget, reserved for its report.
+  #
+  # No tool schemas, and — for a provider without native tool calls, whose
+  # toolset lives in the SYSTEM PROMPT — no tool protocol either. Dropping the
+  # schemas alone would leave such a model a protocol and nothing to call, and
+  # it would spend its last turn emitting `~~~tool_call` fences that nothing
+  # runs. That costs one prefix-cache miss on the final turn, which is the
+  # right trade for a report that arrives at all.
+  #
+  # The other tail notes go with them. The research note tells the model to
+  # call `web_search`, which it no longer has; the wrap-up note offers a choice
+  # between two states when there is no next turn to choose in; the phase note
+  # steers work that is over. The conclusions ledger stays, because a small
+  # model writing from memory writes a vague report — its own findings in front
+  # of it are what make the report name files and commands. The instruction
+  # goes last, where the model's attention is freshest.
+  defp build_request(state, true) do
+    %{
+      state.request_template
+      | messages:
+          state.messages ++
+            recitation(state) ++ [Messages.user(BudgetPressure.handback_note(state))],
+        tools: nil,
+        system_prompt: state.request_template.system_prompt
     }
   end
 
