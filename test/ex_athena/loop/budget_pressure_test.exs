@@ -167,4 +167,106 @@ defmodule ExAthena.Loop.BudgetPressureTest do
       assert note =~ "which todos you did NOT complete"
     end
   end
+
+  # Issue 237. The nudge above is advice, and for a small local model advice is
+  # not a rail: both workers killed at the wall in session 4ee9e00f1ebf read it
+  # and kept gathering. This stage is binding and later — the loop takes the
+  # tools away and the worker can only write.
+  describe "handback?/2 — the binding stage" do
+    defp timed(spent, opts \\ []) do
+      counter = Keyword.get(opts, :counter, ExAthena.Agents.Deadline.new_counter())
+
+      state(
+        iterations: Keyword.get(opts, :iterations, 5),
+        ctx: %{
+          assigns: %{
+            agent_deadline_at: 1000,
+            agent_deadline_from: 0,
+            agent_wait_counters: [counter]
+          }
+        }
+      )
+      |> then(&{&1, spent})
+    end
+
+    test "false while the worker still has room" do
+      {s, now} = timed(750)
+      refute BudgetPressure.handback?(s, now)
+    end
+
+    test "true once credited working time crosses the threshold" do
+      {s, now} = timed(830)
+      assert BudgetPressure.handback?(s, now)
+    end
+
+    test "later than the advisory nudge, so the worker is asked before it is forced" do
+      {s, now} = timed(780)
+
+      assert BudgetPressure.note(s, now) =~ "reduce scope"
+      refute BudgetPressure.handback?(s, now)
+    end
+
+    # The deadline pauses while a worker sits in the provider queue, so the
+    # stage must read credited time. Charging the wait would force a handback
+    # from a worker that has done nothing but wait.
+    test "queue time is credited back, so a queued worker is not forced to report" do
+      counter = ExAthena.Agents.Deadline.new_counter()
+      chain = %{agent_wait_counters: [counter]}
+      ExAthena.Agents.Deadline.begin_wait(chain)
+      ExAthena.Agents.Deadline.end_wait(chain, 500)
+
+      {s, now} = timed(900, counter: counter)
+      refute BudgetPressure.handback?(s, now)
+    end
+
+    test "false while the subtree is parked in the queue" do
+      counter = ExAthena.Agents.Deadline.new_counter()
+      ExAthena.Agents.Deadline.begin_wait(%{agent_wait_counters: [counter]})
+
+      {s, now} = timed(900, counter: counter)
+      refute BudgetPressure.handback?(s, now)
+    end
+
+    # The orchestrator's own budget is out of scope: a top-level run carries no
+    # deadline assigns, so the stage can never fire for it. Turns and tokens
+    # already stop the loop at a turn boundary; only the clock kills mid-thought.
+    test "never fires without a deadline, however spent the other budgets are" do
+      s = state(iterations: 49, max_input_tokens: 800_000) |> with_tokens(799_000)
+      refute BudgetPressure.handback?(s, 0)
+    end
+  end
+
+  describe "handback_note/1 — the instruction that replaces the toolset" do
+    test "says this is the final turn and that there are no tools" do
+      note = BudgetPressure.handback_note(state(iterations: 24))
+
+      assert note =~ ~r/final turn/i
+      assert note =~ ~r/no tools|tools have been/i
+      assert note =~ ~r/this text is your report|is your report/i
+    end
+
+    # Same shape the wrap-up note already asks for, so a worker that read one
+    # is not handed a different form to fill in.
+    test "asks for what was produced, what is unverified, and what remains" do
+      note = BudgetPressure.handback_note(state(iterations: 24))
+
+      assert note =~ ~r/produced/i
+      assert note =~ ~r/unverified/i
+      assert note =~ ~r/remains|remaining/i
+    end
+
+    test "names the todo progress when there is a list" do
+      todos = [
+        %{"content" => "build the console screen", "status" => "completed"},
+        %{"content" => "get the tests green", "status" => "in_progress"}
+      ]
+
+      assert BudgetPressure.handback_note(state(iterations: 24, meta: %{todos: todos})) =~
+               "1 of 2"
+    end
+
+    test "a worker with no todo list is not told about an empty one" do
+      refute BudgetPressure.handback_note(state(iterations: 24)) =~ " of 0 "
+    end
+  end
 end

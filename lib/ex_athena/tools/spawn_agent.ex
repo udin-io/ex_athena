@@ -179,6 +179,11 @@ defmodule ExAthena.Tools.SpawnAgent do
   # while blocked on it. Only bounds how late a deadline extension is noticed.
   @poll_ms 1_000
 
+  # Which terminations hand the parent the worker's OWN report rather than a
+  # digest rebuilt here. Derived, not written out, so a new success subtype
+  # cannot be added to `Terminations` and silently miss this branch.
+  @success_terminations Enum.filter(Terminations.all(), &Terminations.success?/1)
+
   # Where the worker's instruction comes from, in order of preference.
   #
   # The orchestration protocol asks the model for a four-field brief
@@ -384,15 +389,40 @@ defmodule ExAthena.Tools.SpawnAgent do
   # it and a worker's report is never run together with the runtime's note.
   defp append_line(text, line), do: to_string(text) <> "\n" <> line
 
+  # A `:budget_handback` worker took the success path, which is the point: the
+  # parent reads its own account of itself. But success is also what the
+  # orchestrate evidence gates, `any_tool_success?` and the Coordinator count,
+  # and by that reckoning a worker that ran out of clock now looks like one
+  # that finished. So the runtime says it did not, above the report.
+  #
+  # The RUNTIME writes this, rather than the brief asking the worker to say it.
+  # A model's compliance under budget pressure is exactly what is not
+  # dependable — it is why the handback stage takes the tools away instead of
+  # asking nicely (see `ExAthena.Loop.BudgetPressure`) — so a line that matters
+  # to the parent's planning cannot be left to the worker to remember.
+  defp prepend_handback_notice(text, %ExAthena.Result{finish_reason: :budget_handback}) do
+    "[runtime] This worker stopped on its TIME budget, not because it finished. " <>
+      "What follows is its own report, written on a final turn with no tools: what it " <>
+      "produced, what it left unverified, and what remains. Treat the remainder as " <>
+      "outstanding — re-delegate it as a smaller slice, or finish it without another worker.\n" <>
+      to_string(text)
+  end
+
+  defp prepend_handback_notice(text, _sub_result), do: text
+
   # 30 min wall clock — covers the 25-iteration budget on a local model at
-  # 30–90s/turn plus single-slot queue waits. NOT model-controllable: small
-  # models supplied self-sabotaging 30–60s budgets that killed the worker
-  # after one turn (same lesson as cwd). Host override only, via
-  # spawn_agent_opts[:timeout_ms].
+  # 30–90s/turn plus single-slot queue waits.
+  #
+  # Still NOT model-controllable: small models supplied self-sabotaging 30–60s
+  # budgets that killed the worker after one turn (same lesson as cwd). The
+  # host's `spawn_agent_opts[:timeout_ms]` wins, because a host setting it per
+  # run means it; below that it resolves from config, which is what puts it in
+  # the settings modal beside `loop.handback_at_percent` — the stage that
+  # decides how much of this budget is kept back for the worker's report.
   defp configured_timeout(assigns) do
     case (assigns[:spawn_agent_opts] || [])[:timeout_ms] do
       n when is_integer(n) and n > 0 -> n
-      _ -> @default_timeout_ms
+      _ -> Tuning.get(:agents, :timeout_ms, @default_timeout_ms)
     end
   end
 
@@ -521,8 +551,14 @@ defmodule ExAthena.Tools.SpawnAgent do
         # (error_max_turns, error_no_progress, …). An unfinished worker must
         # surface as a tool ERROR — returning its (usually empty) text as a
         # success left the orchestrator blind to the failure.
-        {:ok, {:ok, %ExAthena.Result{} = sub_result}}
-        when sub_result.finish_reason not in [:stop, :submitted] ->
+        #
+        # The list is derived from `Terminations.success?/1` rather than
+        # written out, so a new success subtype cannot be added without this
+        # branch learning about it — `:budget_handback` (issue 237) is one, and
+        # it takes the success path below precisely so the parent reads the
+        # worker's own report instead of the digest built here.
+        {:ok, {:ok, %ExAthena.Result{finish_reason: finish_reason} = sub_result}}
+        when finish_reason not in @success_terminations ->
           _ =
             ExAthena.Hooks.run_lifecycle(parent_hooks, :SubagentStop, %{
               subagent_id: sub_id,
@@ -580,6 +616,7 @@ defmodule ExAthena.Tools.SpawnAgent do
               sub_id
             )
             |> append_provenance(sub_result, worker_cwd(sub_opts, ctx))
+            |> prepend_handback_notice(sub_result)
 
           emit_event(ctx, {:subagent_result, %{id: sub_id, text: text}})
 

@@ -39,12 +39,38 @@ defmodule ExAthena.Loop.BudgetPressure do
 
   Configure the trigger with
   `config :ex_athena, :loop, wrap_up_at_percent: 75`.
+
+  ## Advice, then a rail
+
+  Everything above is advice, and session 4ee9e00f1ebf showed what advice is
+  worth under pressure. Two of twelve workers were killed at the 30 minute
+  wall, costing about an hour of a three-hour run, and both had read the note.
+  `subagent_n2amLrIE` wrote "I'm at budget and the deliverable is not yet
+  produced" at minute 19, gathered for six more minutes, wrote all four of its
+  files in one iteration at minute 25, and was killed at minute 29 with the
+  files on disk and not a word of report. For a small local model advice is
+  not a rail.
+
+  So `handback?/2` is a second stage, and it is binding: past
+  `loop.handback_at_percent` (default 83) the loop sends the next turn with no
+  tools and `handback_note/1` in their place, and that turn's text becomes the
+  worker's report. See `ExAthena.Modes.ReAct` for the turn itself and
+  `ExAthena.Loop.Terminations` for `:budget_handback`.
+
+  It reads the WALL CLOCK alone, for two reasons. The iteration and token caps
+  already stop the loop at a turn boundary, where the model can still speak;
+  only the clock kills mid-thought, because `SpawnAgent.await_worker/3`
+  brutal-kills and the `Result` dies with the process. And a top-level run
+  carries no `:agent_deadline_at`, so reading the clock alone is also what
+  keeps the orchestrator's own budget out of this — it is the worker deadline
+  only.
   """
 
   alias ExAthena.Agents.Deadline
   alias ExAthena.Tuning
 
   @default_wrap_up_at_percent 75
+  @default_handback_at_percent 83
 
   @type fractions :: %{
           iterations: float() | nil,
@@ -81,8 +107,53 @@ defmodule ExAthena.Loop.BudgetPressure do
     end
   end
 
+  @doc """
+  Is this turn the worker's last one — the handback?
+
+  True once the share of the worker's CREDITED working time that is spent
+  crosses `loop.handback_at_percent`. False for a run with no deadline, and
+  false while the subtree is parked in the provider queue: the budget is
+  paused there, so a worker that has done nothing but wait is not forced to
+  report.
+  """
+  @spec handback?(map(), integer()) :: boolean()
+  def handback?(state, now) do
+    case wall_clock_fraction(state, now) do
+      f when is_float(f) -> f >= handback_threshold()
+      _ -> false
+    end
+  end
+
+  @doc """
+  What the worker is told on the turn that carries no tools.
+
+  Same three questions the wrap-up note ranks — what was produced, what is
+  unverified, what remains — but stated as the shape of a report rather than
+  as a choice between two states, because there is no next turn to choose in.
+  """
+  @spec handback_note(map()) :: String.t()
+  def handback_note(state) do
+    "[runtime] Your time budget is nearly spent, so this is your FINAL turn. " <>
+      "Your tools have been taken away: this turn can only produce text, and that text IS " <>
+      "your report to whoever delegated this work. There is no next turn — do not describe " <>
+      "what you are about to do. " <>
+      todo_progress(state) <>
+      "Report, in this order:\n" <>
+      "1. PRODUCED — what you made and exactly where it is: file paths, commands run, " <>
+      "identifiers. Be specific enough that the next worker can find it without searching.\n" <>
+      "2. UNVERIFIED — what you did not check, and which checks you did not run, so " <>
+      "verification can be re-delegated as its own cheap step.\n" <>
+      "3. REMAINS — which todos you did not complete and what each one still needs, so they " <>
+      "can be re-delegated as separate, smaller steps.\n" <>
+      "An honest partial report is worth far more than being cut off mid-exploration."
+  end
+
   defp threshold do
     Tuning.get(:loop, :wrap_up_at_percent, @default_wrap_up_at_percent) / 100
+  end
+
+  defp handback_threshold do
+    Tuning.get(:loop, :handback_at_percent, @default_handback_at_percent) / 100
   end
 
   defp build_note(state) do
