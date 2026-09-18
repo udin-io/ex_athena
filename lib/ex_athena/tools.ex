@@ -40,6 +40,7 @@ defmodule ExAthena.Tools do
     ExAthena.Tools.SpawnAgent,
     ExAthena.Tools.ReadWorkerReport,
     ExAthena.Tools.Lsp,
+    ExAthena.Tools.Skill,
     ExAthena.Tools.Finish
   ]
 

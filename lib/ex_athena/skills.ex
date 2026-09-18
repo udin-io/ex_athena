@@ -140,6 +140,21 @@ defmodule ExAthena.Skills do
   end
 
   @doc """
+  The subset of `skills` the model may load itself.
+
+  `disable-model-invocation: true` keeps a skill out of the catalog, and the
+  same rule applies to both channels the model loads through — the `skill`
+  tool and the `[skill: <name>]` sentinel. `preload/2` takes the unfiltered
+  map: the host is not the model.
+  """
+  @spec model_invocable(map()) :: map()
+  def model_invocable(skills) when is_map(skills) do
+    for {name, %Skill{disable_model_invocation: false} = skill} <- skills,
+        into: %{},
+        do: {name, skill}
+  end
+
+  @doc """
   Build a system-role message that activates `skill_name` from `skills`.
 
   Returns `{:ok, message}` when the skill exists, `{:error, :not_found}`
