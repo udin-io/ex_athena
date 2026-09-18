@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Reserve the last turn for the report — issue 237</title>
+<style>
+:root{
+  --bg:#f7f7f5; --panel:#fff; --ink:#1c1c1a; --muted:#6b6b66; --line:#d8d8d2;
+  --bad:#a32b2b; --bad-bg:#fbeeee;
+  --good:#1f6b3a; --good-bg:#edf6f0;
+  --accent:#2a4c86; --accent-bg:#eef2f9;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+.wrap{max-width:1400px;margin:0 auto;padding:40px 24px 80px}
+h1{font-size:26px;line-height:1.25;margin:0 0 12px;letter-spacing:-.01em}
+.sub{color:var(--muted);max-width:62ch;margin:0 0 28px}
+h2{font-size:17px;margin:44px 0 12px;letter-spacing:-.01em}
+h2:first-of-type{margin-top:0}
+h3{font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--muted);margin:22px 0 8px;font-weight:600}
+p{margin:0 0 12px;max-width:62ch}
+ul{margin:0 0 12px;padding-left:20px;max-width:62ch}
+li{margin:0 0 6px}
+code{font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+  background:#efefea;padding:1px 5px;border-radius:3px}
+
+.cols{display:grid;grid-template-columns:minmax(0,1fr) 560px;gap:32px;align-items:start}
+.diagram-col{position:sticky;top:24px}
+@media (max-width:1100px){
+  .cols{grid-template-columns:minmax(0,1fr)}
+  .diagram-col{position:static}
+}
+
+.panel{background:var(--panel);border:1px solid var(--line);
+  border-radius:8px;padding:20px;margin:0 0 16px}
+.plain{background:var(--accent-bg);border:1px solid #c9d5ea;border-radius:8px;
+  padding:18px 20px;margin:0 0 28px;max-width:74ch}
+.plain h3{margin-top:0;color:var(--accent)}
+.plain p{max-width:none;margin-bottom:0}
+
+.note{border-left:3px solid var(--accent);background:var(--accent-bg);
+  padding:12px 16px;margin:0 0 14px;border-radius:0 6px 6px 0;max-width:62ch}
+.note.warn{border-color:var(--bad);background:var(--bad-bg)}
+.note.ok{border-color:var(--good);background:var(--good-bg)}
+.note p:last-child{margin-bottom:0}
+
+.tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+  border-radius:10px;vertical-align:1px}
+.t-bad{background:var(--bad-bg);color:var(--bad)}
+.t-good{background:var(--good-bg);color:var(--good)}
+.t-acc{background:var(--accent-bg);color:var(--accent)}
+
+table{border-collapse:collapse;width:100%;font-size:14px;margin:0 0 12px}
+th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--muted);font-weight:600;padding:0 12px 7px 0;
+  border-bottom:1px solid var(--line)}
+td{padding:9px 12px 9px 0;border-bottom:1px solid var(--line);vertical-align:top}
+
+.dia{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  overflow:hidden}
+.dia-bar{display:flex;align-items:center;gap:6px;padding:8px 10px;
+  border-bottom:1px solid var(--line);background:#fcfcfa}
+.dia-bar .title{font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--muted);font-weight:600;margin-right:auto}
+.dia-bar button{font:inherit;font-size:12px;line-height:1;padding:5px 9px;
+  border:1px solid var(--line);background:#fff;border-radius:5px;cursor:pointer;
+  color:var(--ink)}
+.dia-bar button:hover{background:#f0f0ec}
+.viewport{height:60vh;min-height:380px;overflow:hidden;cursor:grab;
+  background:#fdfdfb;position:relative}
+.viewport.grabbing{cursor:grabbing}
+.stage{transform-origin:0 0;will-change:transform}
+.hint{position:absolute;right:10px;bottom:8px;font-size:11px;color:var(--muted);
+  background:#fdfdfbcc;padding:2px 7px;border-radius:4px;pointer-events:none}
+
+.index{padding:10px 12px;border-top:1px solid var(--line);background:#fcfcfa}
+.index h3{margin:0 0 7px}
+.index button{display:block;width:100%;text-align:left;font:inherit;font-size:13px;
+  padding:5px 8px;border:0;background:none;border-radius:5px;cursor:pointer;
+  color:var(--ink)}
+.index button:hover{background:#efefea}
+.index button.on{background:var(--accent-bg);color:var(--accent);font-weight:600}
+g.node.lit rect,g.node.lit polygon{stroke:#2a4c86!important;stroke-width:3px!important}
+
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:12.5px;color:var(--muted);
+  padding:10px 12px;border-top:1px solid var(--line)}
+.legend span{display:flex;align-items:center;gap:6px}
+.sw{width:11px;height:11px;border-radius:3px;display:inline-block}
+
+pre:not(.mermaid){background:#1c1c1a;color:#e8e8e2;padding:14px 16px;border-radius:8px;
+  overflow:auto;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
+pre.mermaid{background:var(--panel);color:var(--ink);margin:0;padding:12px}
+details{margin:0 0 12px}
+summary{cursor:pointer;font-size:13px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>The last turn belongs to the report</h1>
+
+<p class="sub">A worker gets 30 minutes of working time and is brutal-killed at
+the wall, so its <code>Result</code> dies with the process. In session
+4ee9e00f1ebf two of twelve workers died that way, one with all four files
+written and not a word said about them. This page is the architecture gate for
+issue 237. Approving it settles where the handback stage lives, which
+termination it ends on, and how the parent reads it.</p>
+
+<div class="plain">
+<h3>In plain words</h3>
+<p>A worker gets a fixed slice of time, and today it is cut off the instant that
+time runs out, wherever it happens to be. This change keeps the end of the slice
+aside: shortly before the wall the worker is told to stop working and report,
+its tools are taken away for that one exchange so it can only write, and what it
+writes goes to whoever asked for the work — in its own words, not a summary
+assembled by someone watching from outside.</p>
+</div>
+
+<div class="cols">
+<div class="prose">
+
+<h2>1. What happens today</h2>
+
+<table>
+<tr><th>Step</th><th>Where</th><th>Result</th></tr>
+<tr><td>Nudge at 75%</td><td><code>budget_pressure.ex:79</code></td>
+  <td><span class="tag t-bad">advice; both workers ignored it</span></td></tr>
+<tr><td>Turn built with full toolset</td><td><code>react.ex:783</code></td>
+  <td><span class="tag t-bad">gathering to the last second</span></td></tr>
+<tr><td>Kill at the wall</td><td><code>spawn_agent.ex:652</code></td>
+  <td><span class="tag t-bad">Result dies with the process</span></td></tr>
+<tr><td>Parent is told</td><td><code>timed_out/5</code></td>
+  <td><span class="tag t-bad">digest rebuilt by the Coordinator</span></td></tr>
+<tr><td>Token ceiling hit</td><td><code>unfinished_error/2</code></td>
+  <td><span class="tag t-good">worker STOPS, uncounted</span></td></tr>
+</table>
+
+<div class="note warn">
+<p><strong>Time is the only budget that kills mid-thought.</strong> Every other
+ceiling lets the loop reach a turn boundary. That asymmetry is the bug.</p>
+</div>
+
+<h2>2. What this ticket does</h2>
+
+<ul>
+<li><code>BudgetPressure.handback?/2</code> <span class="tag t-good">NEW</span> —
+  true once credited working time passes <code>loop.handback_at_percent</code>
+  (default 83). Credited time, so a queued worker is never pushed.</li>
+<li><code>ReAct</code> builds that turn with <strong>no tool schemas and no tool
+  protocol in the system prompt</strong>, plus one instruction: what was
+  produced, what is unverified, what remains.</li>
+<li>It halts on <code>:budget_handback</code>
+  <span class="tag t-good">NEW</span>, which
+  <code>Terminations.budget_exhaustion?/1</code> reports true, so the parent
+  does not score it.</li>
+<li><code>SpawnAgent</code> routes it through the SUCCESS branch.</li>
+<li>Two settings fields: the threshold, and the worker's 30-minute budget itself
+  (<code>agents.timeout_ms</code>), today a source-only constant.</li>
+</ul>
+
+<div class="note ok">
+<p><strong>The kill stays.</strong> <code>await_worker</code> is untouched: a
+handback turn that overruns still meets <code>Task.shutdown</code>.</p>
+</div>
+
+<h2>3. Where I depart from the ticket</h2>
+
+<ul>
+<li><strong>Success, not a digest.</strong>
+  <code>budget_exhaustion?/1</code> only feeds the error branch, so it cannot
+  by itself deliver the worker's own words. <code>spawn_agent.ex:525</code>
+  routes on <code>Terminations.success?/1</code> instead, and
+  <code>:budget_handback</code> is a success subtype. Category stays
+  <code>:capacity</code>: it reported, it did not finish.</li>
+<li><strong>No <code>tool_choice: :none</code>.</strong> Sending no schemas is
+  the provider-agnostic form; a <code>none</code> choice with no tools array
+  risks a 400 on OpenAI-compatible local backends.</li>
+<li><strong>Wall clock alone</strong>, not the maximum of the three fractions.</li>
+</ul>
+
+<h2>4. Not in scope</h2>
+<ul>
+<li>The orchestrator's own budget — it carries no
+  <code>:agent_deadline_at</code>, so the gate cannot fire for it.</li>
+<li>The 75% advisory nudge, unchanged.</li>
+<li>Retrying a handed-back worker.</li>
+</ul>
+
+<h3>Timing — the last four minutes</h3>
+<div class="panel"><pre class="mermaid" id="m2"></pre></div>
+
+<details><summary>Mermaid source — modules</summary>
+<pre id="src">flowchart TD
+  DL["Agents.Deadline&lt;br/&gt;credited working time&lt;br/&gt;queue waits paused"]
+  BP["BudgetPressure.note/2&lt;br/&gt;advisory nudge at 75%&lt;br/&gt;workers ignore it"]
+  HB["BudgetPressure.handback?/2&lt;br/&gt;((NEW)) binding at 83%"]
+  RA["ReAct.build_request/1&lt;br/&gt;full toolset to the last second"]
+  RQ["ReAct handback turn&lt;br/&gt;((NEW)) no tool schemas&lt;br/&gt;report-now instruction"]
+  KILL["SpawnAgent.await_worker&lt;br/&gt;Task.shutdown brutal_kill&lt;br/&gt;Result dies with the process"]
+  TO["SpawnAgent.timed_out/5&lt;br/&gt;digest rebuilt by the Coordinator"]
+  TERM["Terminations :budget_handback&lt;br/&gt;((NEW)) success, uncounted"]
+  SR["SpawnAgent success branch&lt;br/&gt;worker's own words"]
+  SET["Web.Settings schema&lt;br/&gt;((NEW)) handback %, worker timeout"]
+  PAR["Parent orchestrator&lt;br/&gt;re-delegates the remainder"]
+  DL --&gt;|fraction spent| BP
+  DL ==&gt;|fraction spent| HB
+  BP --&gt;|note in request tail| RA
+  RA --&gt;|runs past the wall| KILL
+  KILL --&gt;|nothing survives| TO
+  TO --&gt;|reconstruction| PAR
+  HB ==&gt;|last turn| RQ
+  RQ ==&gt;|text only| TERM
+  TERM ==&gt; SR ==&gt; PAR
+  SET ==&gt;|handback_at_percent| HB
+  SET ==&gt;|timeout_ms| DL
+  KILL -.-&gt;|backstop if handback overruns| TO
+  classDef bad fill:#fbeeee,stroke:#a32b2b,stroke-width:2px,color:#1c1c1a
+  classDef good fill:#edf6f0,stroke:#1f6b3a,stroke-width:2px,color:#1c1c1a
+  classDef ok fill:#fff,stroke:#c9c9c2,stroke-width:1px,color:#1c1c1a
+  class BP,RA,KILL,TO bad
+  class HB,RQ,TERM,SR,SET good
+  class DL,PAR ok</pre>
+</details>
+
+<details><summary>Mermaid source — timing</summary>
+<pre id="src2">sequenceDiagram
+  participant P as Parent (SpawnAgent)
+  participant W as Worker loop (ReAct)
+  participant D as Deadline
+  participant M as Provider
+  P-&gt;&gt;W: spawn, budget 30 min working time
+  loop every turn
+    W-&gt;&gt;D: fraction spent?
+    D--&gt;&gt;W: 0.62 (queue waits credited back)
+    W-&gt;&gt;M: turn with full toolset
+    M--&gt;&gt;W: tool calls
+  end
+  Note over W,D: minute 25 of 30 — fraction 0.83
+  W-&gt;&gt;D: fraction spent?
+  D--&gt;&gt;W: 0.83, threshold crossed
+  W-&gt;&gt;M: FINAL turn, no tool schemas, report now
+  M--&gt;&gt;W: text report
+  W-&gt;&gt;W: halt, finish_reason :budget_handback
+  W--&gt;&gt;P: Result with the worker's own words
+  P-&gt;&gt;P: success branch, uncounted
+  Note over P,W: if the handback turn overruns the wall
+  P-&gt;&gt;W: Task.shutdown brutal_kill
+  P-&gt;&gt;P: timed_out/5, Coordinator digest (today's behaviour)</pre>
+</details>
+
+</div><!-- /prose -->
+
+<div class="diagram-col">
+  <div class="dia">
+    <div class="dia-bar">
+      <span class="title">Where a worker's report is lost, and where it is kept</span>
+      <button id="zo">&minus;</button>
+      <button id="zi">+</button>
+      <button id="fit">Fit</button>
+    </div>
+    <div class="viewport" id="vp">
+      <div class="stage" id="stage"><pre class="mermaid" id="m"></pre></div>
+      <div class="hint">drag to pan &middot; scroll to zoom</div>
+    </div>
+    <div class="index">
+      <h3>Jump to</h3>
+      <button data-k="DL">1 &middot; Working time, waits credited</button>
+      <button data-k="BP">2 &middot; The 75% nudge is only advice</button>
+      <button data-k="KILL">3 &middot; The wall kills mid-thought</button>
+      <button data-k="HB">4 &middot; 83% becomes binding</button>
+      <button data-k="RQ">5 &middot; One turn, no tools</button>
+      <button data-k="SR">6 &middot; The parent reads its words</button>
+    </div>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--bad)"></i> loses the report today</span>
+      <span><i class="sw" style="background:var(--good)"></i> added</span>
+      <span><i class="sw" style="background:#fff;border:1px solid var(--line)"></i> unchanged</span>
+    </div>
+  </div>
+</div>
+
+</div><!-- /cols -->
+</div><!-- /wrap -->
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<script>
+document.getElementById('m').textContent = document.getElementById('src').textContent;
+document.getElementById('m2').textContent = document.getElementById('src2').textContent;
+mermaid.initialize({startOnLoad:true, theme:'neutral', securityLevel:'loose'});
+
+const vp=document.getElementById('vp'), stage=document.getElementById('stage');
+let s=1,x=0,y=0,drag=false,px=0,py=0;
+const apply=()=>stage.style.transform=`translate(${x}px,${y}px) scale(${s})`;
+
+vp.addEventListener('wheel',e=>{
+  e.preventDefault();
+  const r=vp.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top;
+  const ns=Math.min(4,Math.max(.2,s*(e.deltaY<0?1.12:1/1.12)));
+  x=mx-(mx-x)*(ns/s); y=my-(my-y)*(ns/s); s=ns; apply();
+},{passive:false});
+
+vp.addEventListener('mousedown',e=>{drag=true;px=e.clientX;py=e.clientY;vp.classList.add('grabbing')});
+addEventListener('mousemove',e=>{if(!drag)return;x+=e.clientX-px;y+=e.clientY-py;px=e.clientX;py=e.clientY;apply()});
+addEventListener('mouseup',()=>{drag=false;vp.classList.remove('grabbing')});
+
+function fit(){
+  const svg=stage.querySelector('svg'); if(!svg)return;
+  svg.removeAttribute('width'); svg.removeAttribute('height');
+  svg.style.maxWidth='none';
+  const b=svg.getBBox(), r=vp.getBoundingClientRect();
+  s=Math.min((r.width-32)/b.width,(r.height-32)/b.height);
+  x=(r.width-b.width*s)/2-b.x*s; y=(r.height-b.height*s)/2-b.y*s; apply();
+}
+document.getElementById('fit').onclick=fit;
+document.getElementById('zi').onclick=()=>{s=Math.min(4,s*1.25);apply()};
+document.getElementById('zo').onclick=()=>{s=Math.max(.2,s/1.25);apply()};
+
+document.querySelectorAll('.index button').forEach(b=>{
+  b.onclick=()=>{
+    document.querySelectorAll('.index button').forEach(o=>o.classList.remove('on'));
+    document.querySelectorAll('g.node').forEach(n=>n.classList.remove('lit'));
+    b.classList.add('on');
+    const n=[...document.querySelectorAll('g.node')]
+      .find(n=>(n.id||'').includes('-'+b.dataset.k+'-'));
+    if(!n)return;
+    n.classList.add('lit');
+    const bb=n.getBBox(), r=vp.getBoundingClientRect();
+    x=r.width/2-(bb.x+bb.width/2)*s; y=r.height/2-(bb.y+bb.height/2)*s; apply();
+  };
+});
+setTimeout(fit,700);
+</script>
+</body>
+</html>
