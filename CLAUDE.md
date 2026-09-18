@@ -61,7 +61,8 @@ be committed and will be lost. Put anything that has to survive the session in
 
 `ExAthena.Agents.Sidechain` writes every subagent's full, untruncated report to
 
-    <parent cwd>/.exathena/sessions/<parent_session_id>/sidechains/<subagent_id>.jsonl
+    <parent cwd>/.exathena/sessions/<parent_session_id>
+        /sidechains/<subagent_id>.jsonl
 
 before either result branch runs, on success and failure alike. Before reaching
 for "persist the worker's output", check whether it is already there — it
