@@ -94,7 +94,7 @@ Three layers do the work:
 - **Session** — GenServer wrapping the Loop for multi-turn chat. See [11](11-sessions.md).
 - **Compaction** — 5-stage pipeline that reduces conversation history when it approaches the context limit. See [12](12-compaction.md).
 - **Agent / subagent** — named composable LLM workflow; can be spawned from a parent agent with isolated tools / worktree. See [13](13-agents-and-subagents.md).
-- **Skill** — file-based capability (`SKILL.md`) lazily activated by the `[skill: name]` sentinel. See [14](14-memory-and-skills.md).
+- **Skill** — file-based capability (`SKILL.md`) lazily activated by the `skill` tool or the `[skill: name]` sentinel. See [14](14-memory-and-skills.md).
 
 ---
 

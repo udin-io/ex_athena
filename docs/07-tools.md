@@ -92,6 +92,7 @@ All live in [`lib/ex_athena/tools/`](../lib/ex_athena/tools).
 | [`Tools.PlanMode`](../lib/ex_athena/tools/plan_mode.ex) | `plan_mode` | Capture / present a plan. | ✅ |
 | [`Tools.SpawnAgent`](../lib/ex_athena/tools/spawn_agent.ex) | `spawn_agent` | Run a subagent. | ✅ |
 | [`Tools.Lsp`](../lib/ex_athena/tools/lsp.ex) | `lsp` | LSP queries (definition, references, diagnostics). | ✅ |
+| [`Tools.Skill`](../lib/ex_athena/tools/skill.ex) | `skill` | Load a catalogued skill's full instructions. | ✅ |
 | [`Tools.Write`](../lib/ex_athena/tools/write.ex) | `write` | Write a file. | ❌ |
 | [`Tools.Edit`](../lib/ex_athena/tools/edit.ex) | `edit` | Targeted in-place edit. | ❌ |
 | [`Tools.ApplyPatch`](../lib/ex_athena/tools/apply_patch.ex) | `apply_patch` | Apply a unified diff. | ❌ |
