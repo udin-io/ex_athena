@@ -340,6 +340,29 @@ defmodule ExAthena.Web.Settings do
           help:
             "Cap on the digested tool arguments in one journal line. The journal records " <>
               "what a worker did, never a second copy of its transcript."
+        },
+        %{
+          key: :transcript_bytes,
+          label: "Worker transcript size cap (bytes)",
+          default: 4_000_000,
+          type: :integer,
+          min: 0,
+          help:
+            "Every worker's own words are recorded to disk as it speaks, because " <>
+              "compaction destroys them in memory before the run ends. 0 disables it, " <>
+              "and the report falls back to the worker's last message. Prose is bulkier " <>
+              "than the journal's digests, so this is twice the journal's cap."
+        },
+        %{
+          key: :transcript_line_chars,
+          label: "Worker transcript turn cap (characters)",
+          default: 20_000,
+          type: :integer,
+          min: 1,
+          help:
+            "Cap on one turn's text. Long enough for a whole codebase map written in a " <>
+              "single message; short enough that a model dumping binary into the text " <>
+              "channel cannot fill the file in one line."
         }
       ]
     },

@@ -53,7 +53,7 @@ defmodule ExAthena.Tools.SpawnAgent do
   """
 
   alias ExAthena.Agents
-  alias ExAthena.Agents.{Deadline, Journal, Quota, Sidechain, WriteBrief, Worktree}
+  alias ExAthena.Agents.{Deadline, Journal, Quota, Sidechain, Transcript, WriteBrief, Worktree}
   alias ExAthena.Loop.Terminations
   alias ExAthena.Orchestrator.AgentInfo
   alias ExAthena.Tuning
@@ -483,8 +483,13 @@ defmodule ExAthena.Tools.SpawnAgent do
 
     # After isolation, so the journal stats the directory the worker really
     # runs in; the FILE stays under our cwd, because a worktree worker's own
-    # directory is deleted moments after it finishes.
-    sub_opts = install_journal(sub_opts, ctx, sub_id)
+    # directory is deleted moments after it finishes. The transcript follows
+    # the journal in both respects — same session directory, same parent cwd,
+    # same stateless writer — and keeps the prose the journal refuses.
+    sub_opts =
+      sub_opts
+      |> install_journal(ctx, sub_id)
+      |> install_transcript(ctx, sub_id)
 
     parent_hooks = Map.get(ctx.assigns || %{}, :hooks, %{})
 
@@ -856,6 +861,31 @@ defmodule ExAthena.Tools.SpawnAgent do
 
   defp journal_path(ctx, sub_id) do
     Journal.path(ctx.cwd || File.cwd!(), ctx.session_id || "unknown", sub_id)
+  end
+
+  # The worker's prose, one line per turn, written while the worker is alive.
+  # Wrapped the same way the journal is and for the same reason: `:on_event`
+  # carries the host's callback, `assigns[:on_event]` carries the one tools
+  # emit through, and a worker whose text never reached disk is a worker whose
+  # report cannot be rebuilt (issue 251).
+  defp install_transcript(sub_opts, ctx, sub_id) do
+    path = transcript_path(ctx, sub_id)
+    assigns = Keyword.get(sub_opts, :assigns, %{})
+
+    sub_opts
+    |> Keyword.update(
+      :on_event,
+      Transcript.compose(nil, path),
+      &Transcript.compose(&1, path)
+    )
+    |> Keyword.put(
+      :assigns,
+      Map.put(assigns, :on_event, Transcript.compose(assigns[:on_event], path))
+    )
+  end
+
+  defp transcript_path(ctx, sub_id) do
+    Transcript.path(ctx.cwd || File.cwd!(), ctx.session_id || "unknown", sub_id)
   end
 
   # Naming the queue time keeps the orchestrator from reading a slow worker as
