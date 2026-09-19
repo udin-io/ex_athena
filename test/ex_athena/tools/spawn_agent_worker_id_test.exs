@@ -11,8 +11,25 @@ defmodule ExAthena.Tools.SpawnAgentWorkerIdTest do
 
   The fix extends that same line with the id, on every result path — success,
   timeout, handback, and error — so there is no line left to guess from.
+
+  `async: false`, not `true`: "a worker handed back on its time budget still
+  names its id" below mutates `config :ex_athena, :loop` — global, mutable
+  state — for the length of one test. Marked `async: true`, that mutation
+  raced every OTHER async test's worker that reads `handback_at_percent` at
+  the same wall-clock moment, and forced an unrelated worker mid-run into
+  `:budget_handback` on its first turn. That is what actually failed
+  `ExAthena.Tools.SpawnAgentProvenanceTest` "the provenance line survives
+  truncation of a long worker report" under the full suite (seed 200):
+  `handback_at_percent: 0` leaked into its worker, cutting it off before
+  the tool call the provenance line is built from. `async: false` here
+  matches every other test in this codebase that mutates `:ex_athena`
+  application config (`spawn_agent_handback_test.exs`,
+  `spawn_agent_timeout_config_test.exs`, `spawn_agent_write_rail_off_test.exs`,
+  `web/settings_test.exs`) — none of those can race an async test, because
+  ExUnit's runner (`lib/ex_unit/runner.ex`) waits for every async module to
+  finish before starting any sync one.
   """
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias ExAthena.{Response, ToolContext}
   alias ExAthena.Agents.Quota

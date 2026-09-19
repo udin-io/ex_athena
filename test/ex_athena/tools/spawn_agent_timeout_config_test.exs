@@ -17,12 +17,13 @@ defmodule ExAthena.Tools.SpawnAgentTimeoutConfigTest do
   alias ExAthena.Messages.ToolCall
 
   setup do
+    original = Application.get_env(:ex_athena, :agents)
     dir = Path.join(System.tmp_dir!(), "spawn_timeout_#{System.unique_integer([:positive])}")
     File.mkdir_p!(dir)
 
     on_exit(fn ->
       File.rm_rf!(dir)
-      Application.delete_env(:ex_athena, :agents)
+      Application.put_env(:ex_athena, :agents, original)
     end)
 
     {:ok, dir: dir}
