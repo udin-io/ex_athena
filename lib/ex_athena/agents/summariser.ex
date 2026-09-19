@@ -94,24 +94,21 @@ defmodule ExAthena.Agents.Summariser do
   `worker_opts` is the worker's own `ExAthena.Loop.run/2` option list; only
   `#{inspect(@carried_opts)}` are carried over.
 
-  Options:
+  Options are `:chunk_chars`, `:block_chars`, `:max_chunks` and `:timeout_ms`;
+  see the moduledoc. Each defaults to its `:agents` config key.
 
-    * `:enabled?` — `false` returns `{:error, :disabled}` without calling a
-      model. Defaults to `config :ex_athena, :agents, summarise_reports`.
-    * `:chunk_chars`, `:block_chars`, `:max_chunks`, `:timeout_ms` — see the
-      moduledoc; each defaults to its `:agents` config key.
+  Whether to summarise at all is the CALLER's decision, not this module's —
+  `agents.summarise_reports` is read by `ExAthena.Tools.SpawnAgent`, which is
+  where the fallback to the worker's own text lives. Keeping the switch out of
+  here leaves this module pure mechanism: given a transcript, it summarises.
 
   Returns `{:ok, report}`, or `{:error, reason}` for the caller to fall back on.
   """
   @spec summarise(String.t(), keyword(), keyword()) :: {:ok, String.t()} | {:error, term()}
   def summarise(path, worker_opts, opts \\ []) do
-    if enabled?(opts) do
-      case Transcript.read(path) do
-        [] -> {:error, :no_transcript}
-        records -> run(records, worker_opts, opts)
-      end
-    else
-      {:error, :disabled}
+    case Transcript.read(path) do
+      [] -> {:error, :no_transcript}
+      records -> run(records, worker_opts, opts)
     end
   end
 
@@ -250,13 +247,6 @@ defmodule ExAthena.Agents.Summariser do
 
       {:error, reason} ->
         {:error, reason}
-    end
-  end
-
-  defp enabled?(opts) do
-    case Keyword.fetch(opts, :enabled?) do
-      {:ok, value} -> value not in [false, 0]
-      :error -> Tuning.get(:agents, :summarise_reports, 1) not in [false, 0]
     end
   end
 

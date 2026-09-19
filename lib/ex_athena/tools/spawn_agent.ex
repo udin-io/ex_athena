@@ -920,16 +920,24 @@ defmodule ExAthena.Tools.SpawnAgent do
   # The first is a deliberate setting; the second means the worker produced no
   # prose at all, in which case its own text is everything there is.
   defp summarised_report(own_text, ctx, sub_id, sub_opts) do
-    opts =
-      case Keyword.fetch(sub_opts, :summarise_reports) do
-        {:ok, value} -> [enabled?: value]
-        :error -> []
+    if summarise?(sub_opts) do
+      case Summariser.summarise(transcript_path(ctx, sub_id), sub_opts) do
+        {:ok, report} -> {report, nil}
+        # Nothing to summarise: the worker wrote no prose, or transcripts are
+        # off. Its own text is everything there is, and no notice is owed.
+        {:error, :no_transcript} -> {own_text, nil}
+        {:error, reason} -> {own_text, reason}
       end
+    else
+      {own_text, nil}
+    end
+  end
 
-    case Summariser.summarise(transcript_path(ctx, sub_id), sub_opts, opts) do
-      {:ok, report} -> {report, nil}
-      {:error, reason} when reason in [:disabled, :no_transcript] -> {own_text, nil}
-      {:error, reason} -> {own_text, reason}
+  # Per-spawn override first (hosts and tests), then the global setting.
+  defp summarise?(sub_opts) do
+    case Keyword.fetch(sub_opts, :summarise_reports) do
+      {:ok, value} -> value not in [false, 0]
+      :error -> Tuning.get(:agents, :summarise_reports, 1) not in [false, 0]
     end
   end
 

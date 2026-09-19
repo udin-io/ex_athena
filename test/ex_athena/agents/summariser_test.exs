@@ -217,16 +217,5 @@ defmodule ExAthena.Agents.SummariserTest do
       assert {:error, :timeout} =
                Summariser.summarise(path, mock_opts(hangs), timeout_ms: 150)
     end
-
-    test "switched off, it does not call a model at all", %{path: path} do
-      write_turns(path, [@map])
-
-      assert {:error, :disabled} =
-               Summariser.summarise(path, mock_opts(spy_responder(fn _ -> "x" end)),
-                 enabled?: false
-               )
-
-      assert requests() == []
-    end
   end
 end
