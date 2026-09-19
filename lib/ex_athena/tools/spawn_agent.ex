@@ -53,7 +53,18 @@ defmodule ExAthena.Tools.SpawnAgent do
   """
 
   alias ExAthena.Agents
-  alias ExAthena.Agents.{Deadline, Journal, Quota, Sidechain, Transcript, WriteBrief, Worktree}
+
+  alias ExAthena.Agents.{
+    Deadline,
+    Journal,
+    Quota,
+    Sidechain,
+    Summariser,
+    Transcript,
+    WriteBrief,
+    Worktree
+  }
+
   alias ExAthena.Loop.Terminations
   alias ExAthena.Orchestrator.AgentInfo
   alias ExAthena.Tuning
@@ -614,16 +625,24 @@ defmodule ExAthena.Tools.SpawnAgent do
           # the findings live in its conclusions ledger (the captured
           # <think> blobs). Fall back text → deliverable → conclusions so
           # the orchestrator never receives an empty summary for real work.
-          text =
+          own_text =
             cond do
               not blank?(text) -> text
               d = deliverable_text(sub_result) -> d
               true -> conclusions_digest(sub_result)
             end
 
-          # Appended AFTER truncation: the report is the worker's own account
-          # of its work, and a verbose worker must never be able to push the
-          # facts about what it actually did out of the orchestrator's view.
+          # The report is BUILT from what the worker said across the whole run,
+          # not caught from whatever it said last (issue 251). `own_text` is
+          # the fallback, and `fallback_reason` is nil when the summariser
+          # produced the report.
+          {text, fallback_reason} = summarised_report(own_text, ctx, sub_id, sub_opts)
+
+          # Appended AFTER truncation: the report is the worker's account of
+          # its work, and a verbose worker must never be able to push the facts
+          # about what it actually did out of the orchestrator's view. The
+          # fallback notice rides with them for the same reason — it is the
+          # line that tells the parent where the rest of the run actually is.
           text =
             text
             |> truncate_result(
@@ -633,6 +652,7 @@ defmodule ExAthena.Tools.SpawnAgent do
             )
             |> append_provenance(sub_result, worker_cwd(sub_opts, ctx))
             |> prepend_handback_notice(sub_result)
+            |> prepend_summariser_notice(fallback_reason, sub_id)
 
           emit_event(ctx, {:subagent_result, %{id: sub_id, text: text}})
 
@@ -886,6 +906,40 @@ defmodule ExAthena.Tools.SpawnAgent do
 
   defp transcript_path(ctx, sub_id) do
     Transcript.path(ctx.cwd || File.cwd!(), ctx.session_id || "unknown", sub_id)
+  end
+
+  # Build the report from the worker's transcript; fall back to its own words.
+  #
+  # Returns `{text, fallback_reason}` — `fallback_reason` is nil when the
+  # summariser wrote the report, and the reason it did not otherwise. A worker
+  # is never left with nothing to hand up: a summariser that errors, times out
+  # or returns blank is a runtime problem, and making the parent pay for it by
+  # receiving no report at all is how re-delegation loops start.
+  #
+  # `:disabled` and `:no_transcript` are not failures and carry no notice.
+  # The first is a deliberate setting; the second means the worker produced no
+  # prose at all, in which case its own text is everything there is.
+  defp summarised_report(own_text, ctx, sub_id, sub_opts) do
+    opts =
+      case Keyword.fetch(sub_opts, :summarise_reports) do
+        {:ok, value} -> [enabled?: value]
+        :error -> []
+      end
+
+    case Summariser.summarise(transcript_path(ctx, sub_id), sub_opts, opts) do
+      {:ok, report} -> {report, nil}
+      {:error, reason} when reason in [:disabled, :no_transcript] -> {own_text, nil}
+      {:error, reason} -> {own_text, reason}
+    end
+  end
+
+  defp prepend_summariser_notice(text, nil, _sub_id), do: text
+
+  defp prepend_summariser_notice(text, reason, sub_id) do
+    "[the summariser did not run (#{describe_reason(reason)}), so this is the " <>
+      "worker's own last message rather than a report built from its whole run. " <>
+      "Its transcript is on disk: read_worker_report with " <>
+      ~s(subagent_id: "#{sub_id}" and source: "transcript".]\n\n) <> text
   end
 
   # Naming the queue time keeps the orchestrator from reading a slow worker as
