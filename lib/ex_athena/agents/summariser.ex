@@ -61,7 +61,15 @@ defmodule ExAthena.Agents.Summariser do
   @default_max_chunks 8
 
   # The WHOLE summarise, chunks and combine together, not per call.
-  @default_timeout_ms 120_000
+  #
+  # MEASURED, not guessed. On this host (`:claude_code` provider) one pass over
+  # a 52,492-character transcript took 63.3s, so the 120s this started at could
+  # not cover even two passes: the first real measurement timed out at 120.0s
+  # and fell back to the worker's own text, which would have made the whole
+  # feature a no-op on any transcript that chunks. The worst case the cost rail
+  # allows is `summariser_max_chunks` + 1 passes, so the guard has to clear
+  # 9 x 63s. This is a HANG guard; what bounds the cost is max_chunks.
+  @default_timeout_ms 600_000
 
   # Everything the summariser needs to reach the same backend as the worker —
   # and nothing else. Tools, assigns, hooks, deadlines, todos and the parent

@@ -408,12 +408,15 @@ defmodule ExAthena.Web.Settings do
         %{
           key: :summariser_timeout_ms,
           label: "Summariser time budget (ms)",
-          default: 120_000,
+          default: 600_000,
           type: :integer,
           min: 1_000,
           help:
             "The whole summarise, chunks and combine together. On timeout the report " <>
-              "falls back to the worker's own final message and says that it did."
+              "falls back to the worker's own final message and says that it did. " <>
+              "One pass over a 52,492-character transcript measured 63s here, and the " <>
+              "worst case is one pass per chunk plus a combine — this is a hang guard, " <>
+              "not a budget. Passes per worker is what bounds the cost."
         }
       ]
     },
