@@ -155,17 +155,52 @@ defmodule ExAthena.Agents.SummariserTest do
 
       assert {:ok, report} =
                Summariser.summarise(path, mock_opts(spy_responder(fn _ -> long end)),
-                 chunk_chars: 400,
+                 chunk_chars: 300,
                  block_chars: 100,
                  max_chunks: 8
                )
 
-      # The combine pass sees capped blocks, never 5,000 characters each.
-      combine_prompt =
-        requests() |> List.last() |> then(&Enum.map_join(&1.messages, " ", fn m -> m.content end))
+      # No block reaches the parent uncapped...
+      refute report =~ String.duplicate("z", 101)
+      # ...and the cut says so, naming exactly how to read what was cut.
+      assert report =~ "read_worker_report"
+      assert report =~ ~s(source: "transcript")
+    end
 
-      refute combine_prompt =~ String.duplicate("z", 101)
-      assert is_binary(report)
+    # A single-chunk report has no combine pass to bound it for: `block_chars`
+    # exists so N blocks fit in ONE combine prompt, and there is only one block
+    # here. `result_chars` (in `ExAthena.Tools.SpawnAgent`) is what bounds what
+    # reaches the parent on this path.
+    test "a single-chunk report is not cut at block_chars", %{path: path} do
+      write_turns(path, [@map])
+      long = String.duplicate("x", 5_000)
+
+      assert {:ok, report} =
+               Summariser.summarise(path, mock_opts(spy_responder(fn _ -> long end)),
+                 chunk_chars: 100_000,
+                 block_chars: 100
+               )
+
+      assert report == long
+      refute report =~ "read_worker_report"
+    end
+
+    test "a capped block cuts on a word boundary, not mid-word", %{path: path} do
+      write_turns(path, for(i <- 1..6, do: "turn #{i}: " <> String.duplicate("detail ", 40)))
+
+      reply = String.duplicate("alpha beta gamma delta epsilon ", 10)
+
+      assert {:ok, report} =
+               Summariser.summarise(path, mock_opts(spy_responder(fn _ -> reply end)),
+                 chunk_chars: 300,
+                 block_chars: 25,
+                 max_chunks: 8
+               )
+
+      # Cut lands right after "delta" (a word boundary), never inside "epsilon".
+      refute report =~ "ep\n\n"
+      refute report =~ "epsil"
+      assert report =~ "delta\n\n[chunk summary capped"
     end
 
     # Bounding the model runs per worker is the cost rail. Dropping is

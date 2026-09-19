@@ -25,11 +25,15 @@ defmodule ExAthena.Agents.Summariser do
 
   ## Size
 
-  One pass if the transcript fits in `:chunk_chars`. Otherwise it is split on
-  turn boundaries, each chunk is summarised into a block of at most
-  `:block_chars`, and the blocks are combined in ONE final pass — never
-  recursively, because on a single-GPU host an unbounded fan-out of model runs
-  is the failure this is supposed to prevent.
+  One pass if the transcript fits in `:chunk_chars` — that single block reaches
+  the caller as-is; `:block_chars` never applies to it, because there is
+  nothing to combine it into (`result_chars`, in `ExAthena.Tools.SpawnAgent`,
+  is what bounds it from there). Otherwise the transcript is split on turn
+  boundaries, each chunk is summarised into a block capped at `:block_chars`
+  (marked, naming `read_worker_report`, when a cap actually cuts one), and the
+  blocks are combined in ONE final pass — never recursively, because on a
+  single-GPU host an unbounded fan-out of model runs is the failure this is
+  supposed to prevent.
 
   `:max_chunks` is the cost rail: it bounds the model runs one worker can cause.
   Past it the MIDDLE chunks are dropped, because the ends of a run carry the
@@ -160,8 +164,8 @@ defmodule ExAthena.Agents.Summariser do
       |> chunk(chunk_chars)
       |> cap(max_chunks)
 
-    with {:ok, blocks} <- summarise_chunks(chunks, worker_opts, block_chars) do
-      combine(blocks, dropped, worker_opts, chunk_chars)
+    with {:ok, blocks} <- summarise_chunks(chunks, worker_opts) do
+      combine(blocks, dropped, worker_opts, chunk_chars, block_chars)
     end
   end
 
@@ -207,10 +211,10 @@ defmodule ExAthena.Agents.Summariser do
     {kept, length(chunks) - keep}
   end
 
-  defp summarise_chunks(chunks, worker_opts, block_chars) do
+  defp summarise_chunks(chunks, worker_opts) do
     Enum.reduce_while(chunks, {:ok, []}, fn chunk, {:ok, acc} ->
       case ask(worker_opts, @chunk_prompt, chunk) do
-        {:ok, text} -> {:cont, {:ok, [String.slice(text, 0, max(block_chars, 1)) | acc]}}
+        {:ok, text} -> {:cont, {:ok, [text | acc]}}
         {:error, _} = err -> {:halt, err}
       end
     end)
@@ -220,15 +224,25 @@ defmodule ExAthena.Agents.Summariser do
     end
   end
 
-  defp combine([single], 0, _worker_opts, _chunk_chars), do: {:ok, single}
+  # One chunk means there is nothing to combine it into: `block_chars` exists
+  # to keep N blocks readable in a single combine prompt, and N is 1 here. Do
+  # NOT cap it — `result_chars` and its own truncation notice (in
+  # `ExAthena.Tools.SpawnAgent`) already bound what reaches the parent, and
+  # `read_worker_report` already serves whatever that cuts.
+  defp combine([single], 0, _worker_opts, _chunk_chars, _block_chars), do: {:ok, single}
 
-  defp combine(blocks, dropped, worker_opts, chunk_chars) do
-    body = Enum.join(blocks, "\n\n") <> dropped_note(dropped)
+  defp combine(blocks, dropped, worker_opts, chunk_chars, block_chars) do
+    body =
+      blocks
+      |> Enum.map(&cap_block(&1, block_chars))
+      |> Enum.join("\n\n")
+      |> Kernel.<>(dropped_note(dropped))
 
     # Never recurse. If the blocks alone exceed what one pass can read, hand
     # back the labelled concatenation: more model runs on a host whose worker
     # already serialised for 17 minutes is the cost this whole rail exists to
-    # bound.
+    # bound. Any block actually cut above already carries its own marker, so
+    # this path still names the way to read the rest instead of going quiet.
     if String.length(body) > chunk_chars do
       {:ok, body}
     else
@@ -236,6 +250,35 @@ defmodule ExAthena.Agents.Summariser do
         {:ok, text} -> {:ok, text}
         {:error, _} = err -> err
       end
+    end
+  end
+
+  # A block that genuinely gets capped says so, naming `read_worker_report`
+  # with `source: "transcript"` the same way `dropped_note/1` does, so the
+  # parent can read what this cut instead of receiving a report that just
+  # stops (issue 256).
+  defp cap_block(text, block_chars) do
+    max = max(block_chars, 1)
+    len = String.length(text)
+
+    if len > max do
+      cut_on_boundary(String.slice(text, 0, max)) <>
+        "\n\n[chunk summary capped at #{max} of #{len} characters. The transcript " <>
+        "holds the rest of this run in full. Read it with read_worker_report and " <>
+        ~s(source: "transcript".])
+    else
+      text
+    end
+  end
+
+  # Cuts on the last whitespace inside the slice so a capped block doesn't end
+  # mid-word — cheap to do since the slice is already in hand. A slice with no
+  # whitespace at all (one long token) has no cheap boundary, so it is cut
+  # hard.
+  defp cut_on_boundary(slice) do
+    case Regex.run(~r/\A(.*)[ \t\n]/s, slice) do
+      [_, head] when head != "" -> head
+      _ -> slice
     end
   end
 
