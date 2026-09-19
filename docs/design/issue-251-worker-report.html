@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>A worker's report is its last message — issue 251</title>
+<style>
+:root{
+  --bg:#f7f7f5; --panel:#fff; --ink:#1c1c1a; --muted:#6b6b66; --line:#d8d8d2;
+  --bad:#a32b2b; --bad-bg:#fbeeee;
+  --good:#1f6b3a; --good-bg:#edf6f0;
+  --accent:#2a4c86; --accent-bg:#eef2f9;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+.wrap{max-width:1400px;margin:0 auto;padding:40px 24px 80px}
+h1{font-size:26px;line-height:1.25;margin:0 0 12px;letter-spacing:-.01em}
+.sub{color:var(--muted);max-width:62ch;margin:0 0 28px}
+h2{font-size:17px;margin:44px 0 12px;letter-spacing:-.01em}
+h2:first-of-type{margin-top:0}
+h3{font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--muted);margin:22px 0 8px;font-weight:600}
+p{margin:0 0 12px;max-width:62ch}
+ul{margin:0 0 12px;padding-left:20px;max-width:62ch}
+li{margin:0 0 6px}
+code{font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+  background:#efefea;padding:1px 5px;border-radius:3px}
+
+.cols{display:grid;grid-template-columns:minmax(0,1fr) 560px;gap:32px;align-items:start}
+.diagram-col{position:sticky;top:24px}
+@media (max-width:1100px){
+  .cols{grid-template-columns:minmax(0,1fr)}
+  .diagram-col{position:static}
+}
+
+.panel{background:var(--panel);border:1px solid var(--line);
+  border-radius:8px;padding:20px;margin:0 0 16px}
+.plain{background:var(--accent-bg);border:1px solid #c9d5ea;border-radius:8px;
+  padding:18px 20px;margin:0 0 28px;max-width:74ch}
+.plain h3{margin-top:0;color:var(--accent)}
+.plain p{max-width:none;margin-bottom:0}
+
+.note{border-left:3px solid var(--accent);background:var(--accent-bg);
+  padding:12px 16px;margin:0 0 14px;border-radius:0 6px 6px 0;max-width:62ch}
+.note.warn{border-color:var(--bad);background:var(--bad-bg)}
+.note.ok{border-color:var(--good);background:var(--good-bg)}
+.note p:last-child{margin-bottom:0}
+
+.tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+  border-radius:10px;vertical-align:1px}
+.t-bad{background:var(--bad-bg);color:var(--bad)}
+.t-good{background:var(--good-bg);color:var(--good)}
+.t-acc{background:var(--accent-bg);color:var(--accent)}
+
+table{border-collapse:collapse;width:100%;font-size:14px;margin:0 0 12px}
+th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--muted);font-weight:600;padding:0 12px 7px 0;
+  border-bottom:1px solid var(--line)}
+td{padding:9px 12px 9px 0;border-bottom:1px solid var(--line);vertical-align:top}
+
+.dia{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  overflow:hidden;margin:0 0 16px}
+.dia-bar{display:flex;align-items:center;gap:6px;padding:8px 10px;
+  border-bottom:1px solid var(--line);background:#fcfcfa}
+.dia-bar .title{font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--muted);font-weight:600;margin-right:auto}
+.dia-bar button{font:inherit;font-size:12px;line-height:1;padding:5px 9px;
+  border:1px solid var(--line);background:#fff;border-radius:5px;cursor:pointer;
+  color:var(--ink)}
+.dia-bar button:hover{background:#f0f0ec}
+.viewport{height:56vh;min-height:360px;overflow:hidden;cursor:grab;
+  background:#fdfdfb;position:relative}
+.viewport.grabbing{cursor:grabbing}
+.stage{transform-origin:0 0;will-change:transform}
+.hint{position:absolute;right:10px;bottom:8px;font-size:11px;color:var(--muted);
+  background:#fdfdfbcc;padding:2px 7px;border-radius:4px;pointer-events:none}
+
+.index{padding:10px 12px;border-top:1px solid var(--line);background:#fcfcfa}
+.index h3{margin:0 0 7px}
+.index button{display:block;width:100%;text-align:left;font:inherit;font-size:13px;
+  padding:5px 8px;border:0;background:none;border-radius:5px;cursor:pointer;
+  color:var(--ink)}
+.index button:hover{background:#efefea}
+.index button.on{background:var(--accent-bg);color:var(--accent);font-weight:600}
+g.node.lit rect,g.node.lit polygon{stroke:#2a4c86!important;stroke-width:3px!important}
+
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:12.5px;color:var(--muted);
+  padding:10px 12px;border-top:1px solid var(--line)}
+.legend span{display:flex;align-items:center;gap:6px}
+.sw{width:11px;height:11px;border-radius:3px;display:inline-block}
+
+pre:not(.mermaid){background:#1c1c1a;color:#e8e8e2;padding:14px 16px;border-radius:8px;
+  overflow:auto;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
+pre.mermaid{background:var(--panel);color:var(--ink);margin:0;padding:12px}
+details{margin:0 0 12px}
+summary{cursor:pointer;font-size:13px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>A worker&rsquo;s report is its last message</h1>
+
+<p class="sub">Worker <code>subagent_fqB0WqCf</code> ran 794,377 input tokens
+and 17 minutes, wrote its codebase map, then ended with 545 characters saying
+the map was &ldquo;delivered in the previous turn&rdquo;. That is all the parent
+got, all <code>read_worker_report</code> had, and the parent re-spawned: another
+838,180 tokens. This page is the architecture gate for issue 251. Approving it
+settles what goes on disk, where the recovery happens, and two tuning knobs.</p>
+
+<div class="plain">
+<h3>In plain words</h3>
+<p>A helper works for an hour, writes up what it found, then signs off with
+&ldquo;see my write-up above&rdquo; &mdash; and only that sign-off is passed on.
+Nobody kept a copy, so the hour is repeated. We start keeping the
+helper&rsquo;s own prose, and when its last words point at something longer, we
+pass the longer thing too.</p>
+</div>
+
+<div class="cols">
+<div class="prose">
+
+<h2>1. What breaks</h2>
+
+<table>
+<tr><th>Store</th><th>Holds</th><th>On this run</th></tr>
+<tr><td><code>Result.text</code></td><td>Last non-blank assistant message
+  (<code>loop.ex:696</code>)</td>
+  <td><span class="tag t-bad">545 chars</span></td></tr>
+<tr><td><code>Result.messages</code></td><td>The thread, real report among it</td>
+  <td><span class="tag t-acc">read by nobody</span></td></tr>
+<tr><td><code>Sidechain</code> jsonl</td><td><code>serializable_result/1</code>:
+  text, counters, conclusions</td>
+  <td><span class="tag t-bad">545 chars</span></td></tr>
+<tr><td><code>Journal</code> ndjson</td><td>What it did, lines capped by
+  <code>agents.journal_line_chars</code></td>
+  <td><span class="tag t-acc">400-char lines</span></td></tr>
+<tr><td><code>ReadWorkerReport</code></td><td>Serves that stored text</td>
+  <td><span class="tag t-bad">545 chars</span></td></tr>
+</table>
+
+<div class="note warn">
+<p><strong>The orchestrator did everything right.</strong> It noticed and
+called <code>read_worker_report</code> with the correct id. The tool answered
+with the same boilerplate: the report existed in exactly one place,
+<code>Result.messages</code>, which nothing reads and nothing writes down.</p>
+</div>
+
+<h2>2. What this ticket does</h2>
+
+<p>Both directions the ticket offers, sharing one detector.</p>
+
+<ul>
+<li><strong>New <code>ExAthena.Agents.Report</code></strong>:
+  <code>assistant_texts/1</code> pulls a <code>Result</code>&rsquo;s assistant
+  prose; <code>recover/2</code> appends the longest earlier message, labelled,
+  when the final one is far shorter.</li>
+<li><strong><code>Sidechain</code> persists that prose</strong> beside
+  <code>text</code> &mdash; assistant text only, never tool results.</li>
+<li><strong><code>SpawnAgent</code> recovers in band</strong>, before
+  <code>truncate_result/3</code>, so <code>result_chars</code> bounds it and the
+  existing notice addresses the rest.</li>
+<li><strong><code>ReadWorkerReport</code> composes the same string</strong>, so
+  <code>from:</code> means the same on both paths.</li>
+<li><strong>Two knobs</strong> via <code>Tuning</code> and
+  <code>Settings.schema/0</code>; one line added to the worker suffix.</li>
+</ul>
+
+<div class="note">
+<p><strong>Disk.</strong> One capped copy of a worker&rsquo;s prose in the jsonl
+the run already writes. Tool results are the bulk of a transcript; none are
+stored.</p>
+</div>
+
+<h2>3. Not in scope</h2>
+<ul>
+<li>Making models behave.</li>
+<li>Streaming prose to disk as it is produced. This reads
+  <code>Result.messages</code> at hand-back, so a report that context compaction
+  dropped mid-run stays unrecoverable.</li>
+<li>A third <code>source:</code> value on <code>read_worker_report</code>.</li>
+</ul>
+
+<h2>4. Definitions</h2>
+<table>
+<tr><th>Term</th><th>Here it means</th></tr>
+<tr><td>self-summary</td><td>A final message far shorter than an earlier one,
+  pointing at it instead of repeating it.</td></tr>
+<tr><td><code>summary_recovery_ratio</code></td><td>Times longer the earlier
+  message must be before it is handed back. Default 4; 0 disables.</td></tr>
+<tr><td><code>report_transcript_chars</code></td><td>Assistant prose kept per
+  worker on disk. Default 100,000; 0 disables.</td></tr>
+<tr><td>in band</td><td>Appended to the spawn result, no extra tool call.</td></tr>
+</table>
+
+<details><summary>Mermaid source &mdash; modules</summary>
+<pre id="src1">flowchart TD
+  WORKER["Worker loop&lt;br/&gt;report at iteration 14&lt;br/&gt;boilerplate at iteration 20"]
+  MSGS["Result.messages&lt;br/&gt;holds the real report&lt;br/&gt;read by nobody"]
+  RTEXT["Result.text&lt;br/&gt;last assistant message&lt;br/&gt;545 chars"]
+  SC["Sidechain.write/1&lt;br/&gt;stores text + counters&lt;br/&gt;no messages"]
+  JRN["Agents.Journal&lt;br/&gt;what it did, 400-char lines"]
+  HAND["SpawnAgent hand-back&lt;br/&gt;hands the 545 chars up"]
+  RWR["ReadWorkerReport&lt;br/&gt;returns the same 545 chars"]
+  PARENT["Orchestrator&lt;br/&gt;re-spawns: 838k tokens, 16.8 min"]
+  REPORT["Agents.Report ((NEW))&lt;br/&gt;assistant_texts/1 + recover/2"]
+  KNOB["agents.report_transcript_chars&lt;br/&gt;agents.summary_recovery_ratio ((NEW))"]
+  SUFFIX["Orchestrate worker suffix ((NEW))&lt;br/&gt;report goes IN the final message"]
+  WORKER --&gt; MSGS
+  WORKER --&gt; JRN
+  MSGS --&gt; RTEXT
+  RTEXT --&gt; SC
+  RTEXT --&gt; HAND
+  SC --&gt; RWR
+  HAND --&gt; PARENT
+  RWR --&gt; PARENT
+  MSGS ==&gt;|assistant prose| REPORT
+  REPORT ==&gt;|capped prose| SC
+  REPORT ==&gt;|final + longest earlier| HAND
+  REPORT ==&gt;|same composition| RWR
+  KNOB -.-&gt; REPORT
+  SUFFIX -.-&gt; WORKER
+  classDef bad fill:#fbeeee,stroke:#a32b2b,stroke-width:2px,color:#1c1c1a
+  classDef good fill:#edf6f0,stroke:#1f6b3a,stroke-width:2px,color:#1c1c1a
+  classDef ok fill:#fff,stroke:#c9c9c2,stroke-width:1px,color:#1c1c1a
+  class RTEXT,SC,RWR,PARENT bad
+  class REPORT,KNOB,SUFFIX good
+  class WORKER,MSGS,JRN,HAND ok</pre>
+</details>
+
+<details><summary>Mermaid source &mdash; timing</summary>
+<pre id="src2">sequenceDiagram
+  participant O as Orchestrator
+  participant S as SpawnAgent
+  participant W as Worker loop
+  participant R as Agents.Report (NEW)
+  participant D as Disk (sidechain jsonl)
+  O-&gt;&gt;S: spawn_agent
+  S-&gt;&gt;W: run brief
+  W--&gt;&gt;W: iteration 14 writes the 18k-char map
+  W--&gt;&gt;W: iteration 20 writes 545 chars of boilerplate
+  W-&gt;&gt;S: Result (text 545, messages hold both)
+  S-&gt;&gt;R: assistant_texts(result)
+  R--&gt;&gt;S: prose, capped at report_transcript_chars
+  S-&gt;&gt;D: write text + prose
+  S-&gt;&gt;R: recover(final, prose)
+  R--&gt;&gt;S: final + labelled 18k-char map
+  S-&gt;&gt;S: truncate_result at result_chars
+  S-&gt;&gt;O: report + notice naming read_worker_report
+  O-&gt;&gt;S: read_worker_report(id, from: offset)
+  S-&gt;&gt;D: read last line
+  D--&gt;&gt;S: text + prose
+  S-&gt;&gt;R: recover(final, prose)
+  R--&gt;&gt;S: same composition, same offsets
+  S--&gt;&gt;O: the remainder
+  Note over O: no re-spawn</pre>
+</details>
+
+</div><!-- /prose -->
+
+<div class="diagram-col">
+  <div class="dia" data-dia="1">
+    <div class="dia-bar">
+      <span class="title">Where the report goes</span>
+      <button data-act="out">&minus;</button>
+      <button data-act="in">+</button>
+      <button data-act="fit">Fit</button>
+    </div>
+    <div class="viewport"><div class="stage"><pre class="mermaid"></pre></div>
+      <div class="hint">drag to pan &middot; scroll to zoom</div></div>
+    <div class="index">
+      <h3>Jump to</h3>
+      <button data-k="WORKER">1 &middot; Worker summarises itself</button>
+      <button data-k="MSGS">2 &middot; Report sits in Result.messages</button>
+      <button data-k="RTEXT">3 &middot; Only the last message survives</button>
+      <button data-k="SC">4 &middot; Disk keeps the boilerplate</button>
+      <button data-k="PARENT">5 &middot; The parent re-spawns</button>
+      <button data-k="REPORT">6 &middot; One detector, three call sites</button>
+    </div>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--bad)"></i> loses the report today</span>
+      <span><i class="sw" style="background:var(--good)"></i> added</span>
+      <span><i class="sw" style="background:#fff;border:1px solid var(--line)"></i> unchanged</span>
+    </div>
+  </div>
+
+  <div class="dia" data-dia="2">
+    <div class="dia-bar">
+      <span class="title">One spawn, end to end</span>
+      <button data-act="out">&minus;</button>
+      <button data-act="in">+</button>
+      <button data-act="fit">Fit</button>
+    </div>
+    <div class="viewport"><div class="stage"><pre class="mermaid"></pre></div>
+      <div class="hint">drag to pan &middot; scroll to zoom</div></div>
+  </div>
+</div>
+
+</div><!-- /cols -->
+</div><!-- /wrap -->
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<script>
+document.querySelector('[data-dia="1"] pre.mermaid').textContent =
+  document.getElementById('src1').textContent;
+document.querySelector('[data-dia="2"] pre.mermaid').textContent =
+  document.getElementById('src2').textContent;
+mermaid.initialize({startOnLoad:true, theme:'neutral', securityLevel:'loose'});
+
+document.querySelectorAll('.dia').forEach(dia=>{
+  const vp=dia.querySelector('.viewport'), stage=dia.querySelector('.stage');
+  let s=1,x=0,y=0,drag=false,px=0,py=0;
+  const apply=()=>stage.style.transform=`translate(${x}px,${y}px) scale(${s})`;
+
+  vp.addEventListener('wheel',e=>{
+    e.preventDefault();
+    const r=vp.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top;
+    const ns=Math.min(4,Math.max(.2,s*(e.deltaY<0?1.12:1/1.12)));
+    x=mx-(mx-x)*(ns/s); y=my-(my-y)*(ns/s); s=ns; apply();
+  },{passive:false});
+
+  vp.addEventListener('mousedown',e=>{drag=true;px=e.clientX;py=e.clientY;vp.classList.add('grabbing')});
+  addEventListener('mousemove',e=>{if(!drag)return;x+=e.clientX-px;y+=e.clientY-py;px=e.clientX;py=e.clientY;apply()});
+  addEventListener('mouseup',()=>{drag=false;vp.classList.remove('grabbing')});
+
+  function fit(){
+    const svg=stage.querySelector('svg'); if(!svg)return;
+    svg.removeAttribute('width'); svg.removeAttribute('height');
+    svg.style.maxWidth='none';
+    const b=svg.getBBox(), r=vp.getBoundingClientRect();
+    s=Math.min((r.width-32)/b.width,(r.height-32)/b.height);
+    x=(r.width-b.width*s)/2-b.x*s; y=(r.height-b.height*s)/2-b.y*s; apply();
+  }
+  dia.querySelectorAll('.dia-bar button').forEach(b=>{
+    b.onclick=()=>{
+      if(b.dataset.act==='fit') fit();
+      if(b.dataset.act==='in'){s=Math.min(4,s*1.25);apply()}
+      if(b.dataset.act==='out'){s=Math.max(.2,s/1.25);apply()}
+    };
+  });
+
+  dia.querySelectorAll('.index button').forEach(b=>{
+    b.onclick=()=>{
+      dia.querySelectorAll('.index button').forEach(o=>o.classList.remove('on'));
+      dia.querySelectorAll('g.node').forEach(n=>n.classList.remove('lit'));
+      b.classList.add('on');
+      const n=[...dia.querySelectorAll('g.node')]
+        .find(n=>(n.id||'').includes('-'+b.dataset.k+'-'));
+      if(!n)return;
+      n.classList.add('lit');
+      const bb=n.getBBox(), r=vp.getBoundingClientRect();
+      x=r.width/2-(bb.x+bb.width/2)*s; y=r.height/2-(bb.y+bb.height/2)*s; apply();
+    };
+  });
+  setTimeout(fit,700);
+});
+</script>
+</body>
+</html>
