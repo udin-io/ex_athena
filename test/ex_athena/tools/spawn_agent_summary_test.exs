@@ -87,7 +87,7 @@ defmodule ExAthena.Tools.SpawnAgentSummaryTest do
 
   defp summariser?(_request), do: false
 
-  defp run(parent, worker, responder, extra_opts \\ []) do
+  defp run(parent, worker, responder, extra_opts \\ [summarise_reports: 1]) do
     Loop.run("map the codebase",
       provider: :mock,
       mock: [responder: parent_responder()],
@@ -168,5 +168,15 @@ defmodule ExAthena.Tools.SpawnAgentSummaryTest do
     assert report =~ @signoff
     refute report =~ @summary
     refute report =~ "summariser"
+  end
+
+  # config/test.exs switches the summariser off so unrelated tests keep their
+  # meaning. That must not quietly become what ships: the knob defaults ON.
+  test "what ships is on by default" do
+    assert %{default: 1} =
+             ExAthena.Web.Settings.schema()
+             |> Enum.find(&(&1.ns == :agents))
+             |> Map.fetch!(:fields)
+             |> Enum.find(&(&1.key == :summarise_reports))
   end
 end

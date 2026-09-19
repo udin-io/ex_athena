@@ -19,6 +19,14 @@ config :ex_athena, lsp_implicit_diagnostics_enabled: false
 # Disable request queue supervisor; individual tests opt in via start_supervised!.
 config :ex_athena, :request_queue, enabled: false
 
+# The report summariser (issue 251) runs one extra model call per finished
+# worker. In production that is the point; in tests it means every spawn's mock
+# responder is asked a question it was not written to answer, and any test that
+# inspects a worker's prompt or its final message sees the summariser's instead.
+# Off here, like the sweepers above; the tests that exercise it pass
+# `summarise_reports: 1` in their own spawn_agent_opts.
+config :ex_athena, :agents, summarise_reports: 0
+
 # Route web_search through the Mox mock (defined in test_helper.exs) so tests
 # never hit the network. The contract lives in ExAthena.Search.
 config :ex_athena, :search, adapter: ExAthena.Search.Mock

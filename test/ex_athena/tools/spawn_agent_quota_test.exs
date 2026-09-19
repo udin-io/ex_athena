@@ -166,13 +166,7 @@ defmodule ExAthena.Tools.SpawnAgentQuotaTest do
                  spawn_agent_opts: [
                    provider: :mock,
                    mock: [responder: worker_that_delegates],
-                   memory: false,
-                   # The subject here is the refusal's WORDING, which this test
-                   # reads by having the worker echo it back as its final
-                   # message. The report summariser (issue 251) would rewrite
-                   # that message, and `worker_that_delegates` would serve its
-                   # request too, so it is switched off for this one spawn.
-                   summarise_reports: 0
+                   memory: false
                  ]
                }
              )
