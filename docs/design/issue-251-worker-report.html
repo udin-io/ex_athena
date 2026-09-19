@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>A worker's report is its last message — issue 251</title>
+<title>The report is built, not caught — issue 251</title>
 <style>
 :root{
   --bg:#f7f7f5; --panel:#fff; --ink:#1c1c1a; --muted:#6b6b66; --line:#d8d8d2;
@@ -34,8 +34,6 @@ code{font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
   .diagram-col{position:static}
 }
 
-.panel{background:var(--panel);border:1px solid var(--line);
-  border-radius:8px;padding:20px;margin:0 0 16px}
 .plain{background:var(--accent-bg);border:1px solid #c9d5ea;border-radius:8px;
   padding:18px 20px;margin:0 0 28px;max-width:74ch}
 .plain h3{margin-top:0;color:var(--accent)}
@@ -100,22 +98,22 @@ summary{cursor:pointer;font-size:13px;color:var(--muted)}
 <body>
 <div class="wrap">
 
-<h1>A worker&rsquo;s report is its last message</h1>
+<h1>The report is built, not caught</h1>
 
-<p class="sub">Worker <code>subagent_fqB0WqCf</code> ran 794,377 input tokens
-and 17 minutes, wrote its codebase map, then ended with 545 characters saying
-the map was &ldquo;delivered in the previous turn&rdquo;. That is all the parent
-got, all <code>read_worker_report</code> had, and the parent re-spawned: another
-838,180 tokens. This page is the architecture gate for issue 251. Approving it
-settles what goes on disk, where the recovery happens, and two tuning knobs.</p>
+<p class="sub">Worker <code>subagent_fqB0WqCf</code> spent 794,377 input tokens
+and 17 minutes, wrote its codebase map, and handed back 545 characters saying the
+map was &ldquo;delivered in the previous turn&rdquo;. Compaction had already
+destroyed it, so no hand-back-time fix can reach it. Approving this gate for
+issue 251 settles what the transcript stores, what the summariser costs, and
+what happens when it fails.</p>
 
 <div class="plain">
 <h3>In plain words</h3>
-<p>A helper works for an hour, writes up what it found, then signs off with
-&ldquo;see my write-up above&rdquo; &mdash; and only that sign-off is passed on.
-Nobody kept a copy, so the hour is repeated. We start keeping the
-helper&rsquo;s own prose, and when its last words point at something longer, we
-pass the longer thing too.</p>
+<p>A helper&rsquo;s write-up is whatever it happened to say last, and its earlier
+words are thrown away as it works. We start saving everything it says to a file
+as it says it, and when it finishes a second short-lived helper reads that file
+and writes the write-up. The report stops depending on the helper remembering to
+end well.</p>
 </div>
 
 <div class="cols">
@@ -124,109 +122,130 @@ pass the longer thing too.</p>
 <h2>1. What breaks</h2>
 
 <table>
-<tr><th>Store</th><th>Holds</th><th>On this run</th></tr>
-<tr><td><code>Result.text</code></td><td>Last non-blank assistant message
+<tr><th>Store</th><th>Holds</th><th>At hand-back</th></tr>
+<tr><td><code>Result.text</code></td><td>Last assistant message
   (<code>loop.ex:696</code>)</td>
   <td><span class="tag t-bad">545 chars</span></td></tr>
-<tr><td><code>Result.messages</code></td><td>The thread, real report among it</td>
-  <td><span class="tag t-acc">read by nobody</span></td></tr>
-<tr><td><code>Sidechain</code> jsonl</td><td><code>serializable_result/1</code>:
-  text, counters, conclusions</td>
+<tr><td><code>Result.messages</code></td><td>What compaction left</td>
+  <td><span class="tag t-bad">map gone</span></td></tr>
+<tr><td><code>Sidechain</code> jsonl</td><td>That text, counters, conclusions</td>
   <td><span class="tag t-bad">545 chars</span></td></tr>
-<tr><td><code>Journal</code> ndjson</td><td>What it did, lines capped by
-  <code>agents.journal_line_chars</code></td>
+<tr><td><code>Journal</code> ndjson</td><td>What it DID; refuses prose</td>
   <td><span class="tag t-acc">400-char lines</span></td></tr>
-<tr><td><code>ReadWorkerReport</code></td><td>Serves that stored text</td>
-  <td><span class="tag t-bad">545 chars</span></td></tr>
 </table>
 
 <div class="note warn">
-<p><strong>The orchestrator did everything right.</strong> It noticed and
-called <code>read_worker_report</code> with the correct id. The tool answered
-with the same boilerplate: the report existed in exactly one place,
-<code>Result.messages</code>, which nothing reads and nothing writes down.</p>
+<p><strong>Compaction is why hand-back is too late.</strong>
+<code>Compactors.Summary</code> replaces everything between the pinned prefix
+and the last 6 messages with one digest, and
+<code>EpisodicArchive</code> keeps the sliced text in <code>state.meta</code>
+&mdash; in memory, dying with the process.</p>
 </div>
 
-<h2>2. What this ticket does</h2>
-
-<p>Both directions the ticket offers, sharing one detector.</p>
+<h2>2. What this builds</h2>
 
 <ul>
-<li><strong>New <code>ExAthena.Agents.Report</code></strong>:
-  <code>assistant_texts/1</code> pulls a <code>Result</code>&rsquo;s assistant
-  prose; <code>recover/2</code> appends the longest earlier message, labelled,
-  when the final one is far shorter.</li>
-<li><strong><code>Sidechain</code> persists that prose</strong> beside
-  <code>text</code> &mdash; assistant text only, never tool results.</li>
-<li><strong><code>SpawnAgent</code> recovers in band</strong>, before
-  <code>truncate_result/3</code>, so <code>result_chars</code> bounds it and the
-  existing notice addresses the rest.</li>
-<li><strong><code>ReadWorkerReport</code> composes the same string</strong>, so
-  <code>from:</code> means the same on both paths.</li>
-<li><strong>Two knobs</strong> via <code>Tuning</code> and
-  <code>Settings.schema/0</code>; one line added to the worker suffix.</li>
+<li><strong><code>Agents.Transcript</code></strong> &mdash; one NDJSON line per
+  turn, beside the journal, under the parent&rsquo;s cwd. Stateless
+  open/write/close, so a killed worker keeps every line up to its last.</li>
+<li><strong>One new loop event.</strong> <code>Loop.Inference.call/3</code> is
+  the single path every conversational turn takes, and holds the turn&rsquo;s
+  full text whether or not the provider streamed. It emits
+  <code>{:assistant_turn, …}</code> once per turn;
+  <code>Transcript.compose/3</code> writes it, as
+  <code>Journal.compose/3</code> already wraps the same
+  <code>on_event</code>.</li>
+<li><strong><code>Agents.Summariser</code></strong> &mdash; reads the finished
+  transcript, chunks it, summarises each chunk into a bounded block, combines
+  them in one pass. That is the report.</li>
+<li><strong><code>read_worker_report</code> gains
+  <code>source: "transcript"</code></strong> &mdash; verbatim turns, no second
+  model run.</li>
 </ul>
 
 <div class="note">
-<p><strong>Disk.</strong> One capped copy of a worker&rsquo;s prose in the jsonl
-the run already writes. Tool results are the bulk of a transcript; none are
-stored.</p>
+<p><strong>A line holds prose only</strong> &mdash; assistant text, turn number,
+timestamp. The journal already digests tool calls and results; a second copy is
+most of the bytes for none of the value.</p>
 </div>
 
-<h2>3. Not in scope</h2>
+<h2>3. Decisions to approve</h2>
+
+<table>
+<tr><th>Question</th><th>Settled as</th></tr>
+<tr><td>Tools</td><td>None, so it cannot spawn or read files. Fresh
+  <code>Loop.run/2</code>, chunk in the prompt, no inherited todos.</td></tr>
+<tr><td>Budget</td><td>Its own iterations and clock, worker&rsquo;s provider,
+  same request queue.</td></tr>
+<tr><td>Failure</td><td>Error, timeout or blank falls back to the worker&rsquo;s
+  final message, and the report says so.</td></tr>
+<tr><td>Wall clock</td><td>One pass per chunk plus a combine. <strong>To be
+  measured on a real run and put in the PR</strong>, not asserted.</td></tr>
+<tr><td>Chunk cap</td><td>Middle chunks dropped with a marker naming
+  <code>source: "transcript"</code>. Never a silent loss.</td></tr>
+</table>
+
+<table>
+<tr><th>Knob (<code>:agents</code>)</th><th>Default</th><th>Knob</th><th>Default</th></tr>
+<tr><td><code>summarise_reports</code></td><td>1</td>
+  <td><code>summariser_chunk_chars</code></td><td>24,000</td></tr>
+<tr><td><code>transcript_bytes</code></td><td>4,000,000</td>
+  <td><code>summariser_block_chars</code></td><td>4,000</td></tr>
+<tr><td><code>transcript_line_chars</code></td><td>20,000</td>
+  <td><code>summariser_max_chunks</code></td><td>8</td></tr>
+<tr><td colspan="2"></td>
+  <td><code>summariser_timeout_ms</code></td><td>120,000</td></tr>
+</table>
+
+<h2>4. Not in scope</h2>
 <ul>
-<li>Making models behave.</li>
-<li>Streaming prose to disk as it is produced. This reads
-  <code>Result.messages</code> at hand-back, so a report that context compaction
-  dropped mid-run stays unrecoverable.</li>
-<li>A third <code>source:</code> value on <code>read_worker_report</code>.</li>
+<li>Changing compaction. The transcript makes it survivable, not different.</li>
+<li>The handback turn (issue 237). Its text lands in the transcript like any
+  other.</li>
+<li>Summarising the orchestrator&rsquo;s own run.</li>
 </ul>
 
-<h2>4. Definitions</h2>
-<table>
-<tr><th>Term</th><th>Here it means</th></tr>
-<tr><td>self-summary</td><td>A final message far shorter than an earlier one,
-  pointing at it instead of repeating it.</td></tr>
-<tr><td><code>summary_recovery_ratio</code></td><td>Times longer the earlier
-  message must be before it is handed back. Default 4; 0 disables.</td></tr>
-<tr><td><code>report_transcript_chars</code></td><td>Assistant prose kept per
-  worker on disk. Default 100,000; 0 disables.</td></tr>
-<tr><td>in band</td><td>Appended to the spawn result, no extra tool call.</td></tr>
-</table>
+<div class="note ok">
+<p><strong>One consequence.</strong> The worker suffix says &ldquo;Your FINAL
+message is the ONLY thing the orchestrator sees&rdquo;. That stops being true,
+so it changes with the code.</p>
+</div>
 
 <details><summary>Mermaid source &mdash; modules</summary>
 <pre id="src1">flowchart TD
-  WORKER["Worker loop&lt;br/&gt;report at iteration 14&lt;br/&gt;boilerplate at iteration 20"]
-  MSGS["Result.messages&lt;br/&gt;holds the real report&lt;br/&gt;read by nobody"]
-  RTEXT["Result.text&lt;br/&gt;last assistant message&lt;br/&gt;545 chars"]
-  SC["Sidechain.write/1&lt;br/&gt;stores text + counters&lt;br/&gt;no messages"]
-  JRN["Agents.Journal&lt;br/&gt;what it did, 400-char lines"]
-  HAND["SpawnAgent hand-back&lt;br/&gt;hands the 545 chars up"]
-  RWR["ReadWorkerReport&lt;br/&gt;returns the same 545 chars"]
-  PARENT["Orchestrator&lt;br/&gt;re-spawns: 838k tokens, 16.8 min"]
-  REPORT["Agents.Report ((NEW))&lt;br/&gt;assistant_texts/1 + recover/2"]
-  KNOB["agents.report_transcript_chars&lt;br/&gt;agents.summary_recovery_ratio ((NEW))"]
-  SUFFIX["Orchestrate worker suffix ((NEW))&lt;br/&gt;report goes IN the final message"]
-  WORKER --&gt; MSGS
+  WORKER["Worker loop&lt;br/&gt;writes its map at turn 19"]
+  INF["Loop.Inference.call ((NEW event))&lt;br/&gt;emits assistant_turn once per turn&lt;br/&gt;full text, streamed or not"]
+  COMPACT["Compactors.Summary + EpisodicArchive&lt;br/&gt;replace the middle at turn 20&lt;br/&gt;sliced text kept in memory only"]
+  MSGS["Result.messages&lt;br/&gt;the map is no longer in it"]
+  RTEXT["Result.text&lt;br/&gt;545 chars of boilerplate"]
+  JRN["Agents.Journal&lt;br/&gt;what it DID, 400-char lines"]
+  TR["Agents.Transcript ((NEW))&lt;br/&gt;what it SAID, one line per turn&lt;br/&gt;append-only, survives a brutal kill"]
+  SUM["Agents.Summariser ((NEW))&lt;br/&gt;chunk, block, combine&lt;br/&gt;no tools, no todos, own budget"]
+  HAND["SpawnAgent hand-back&lt;br/&gt;the summary, or worker text on failure"]
+  RWR["ReadWorkerReport&lt;br/&gt;((NEW)) source: transcript"]
+  SC["Sidechain jsonl&lt;br/&gt;unchanged, still the Result"]
+  PARENT["Orchestrator&lt;br/&gt;a report built from the whole run"]
+  KNOB["agents.summarise_reports ((NEW))&lt;br/&gt;chunk, block and cap sizes"]
+  WORKER --&gt; INF
   WORKER --&gt; JRN
+  WORKER --&gt; COMPACT
+  COMPACT --&gt; MSGS
   MSGS --&gt; RTEXT
+  INF ==&gt;|assistant_turn| TR
+  TR ==&gt;|chunks| SUM
+  SUM ==&gt;|report| HAND
+  RTEXT -.-&gt;|fallback only| HAND
   RTEXT --&gt; SC
-  RTEXT --&gt; HAND
-  SC --&gt; RWR
-  HAND --&gt; PARENT
-  RWR --&gt; PARENT
-  MSGS ==&gt;|assistant prose| REPORT
-  REPORT ==&gt;|capped prose| SC
-  REPORT ==&gt;|final + longest earlier| HAND
-  REPORT ==&gt;|same composition| RWR
-  KNOB -.-&gt; REPORT
-  SUFFIX -.-&gt; WORKER
+  TR ==&gt;|verbatim turns| RWR
+  HAND ==&gt; PARENT
+  RWR ==&gt; PARENT
+  KNOB -.-&gt; SUM
   classDef bad fill:#fbeeee,stroke:#a32b2b,stroke-width:2px,color:#1c1c1a
   classDef good fill:#edf6f0,stroke:#1f6b3a,stroke-width:2px,color:#1c1c1a
   classDef ok fill:#fff,stroke:#c9c9c2,stroke-width:1px,color:#1c1c1a
-  class RTEXT,SC,RWR,PARENT bad
-  class REPORT,KNOB,SUFFIX good
-  class WORKER,MSGS,JRN,HAND ok</pre>
+  class COMPACT,MSGS,RTEXT bad
+  class INF,TR,SUM,RWR,HAND,PARENT,KNOB good
+  class WORKER,JRN,SC ok</pre>
 </details>
 
 <details><summary>Mermaid source &mdash; timing</summary>
@@ -234,27 +253,32 @@ stored.</p>
   participant O as Orchestrator
   participant S as SpawnAgent
   participant W as Worker loop
-  participant R as Agents.Report (NEW)
-  participant D as Disk (sidechain jsonl)
+  participant T as Transcript file
+  participant M as Summariser (NEW)
   O-&gt;&gt;S: spawn_agent
   S-&gt;&gt;W: run brief
-  W--&gt;&gt;W: iteration 14 writes the 18k-char map
-  W--&gt;&gt;W: iteration 20 writes 545 chars of boilerplate
-  W-&gt;&gt;S: Result (text 545, messages hold both)
-  S-&gt;&gt;R: assistant_texts(result)
-  R--&gt;&gt;S: prose, capped at report_transcript_chars
-  S-&gt;&gt;D: write text + prose
-  S-&gt;&gt;R: recover(final, prose)
-  R--&gt;&gt;S: final + labelled 18k-char map
-  S-&gt;&gt;S: truncate_result at result_chars
-  S-&gt;&gt;O: report + notice naming read_worker_report
-  O-&gt;&gt;S: read_worker_report(id, from: offset)
-  S-&gt;&gt;D: read last line
-  D--&gt;&gt;S: text + prose
-  S-&gt;&gt;R: recover(final, prose)
-  R--&gt;&gt;S: same composition, same offsets
-  S--&gt;&gt;O: the remainder
-  Note over O: no re-spawn</pre>
+  loop every turn
+    W-&gt;&gt;T: append one line, open write close
+  end
+  Note over W: turn 20 compacts away turn 19
+  W-&gt;&gt;S: Result, text is 545 chars
+  alt summarise_reports is on
+    S-&gt;&gt;M: summarise(transcript path)
+    M-&gt;&gt;T: read 210k chars
+    Note over M: 9 chunks at 24k, capped at 8
+    loop each chunk, at most 8
+      M-&gt;&gt;M: one pass, block of at most 4k
+    end
+    M-&gt;&gt;M: combine the blocks, one final pass
+    M--&gt;&gt;S: the report
+  else fails, times out or returns nothing
+    S-&gt;&gt;S: fall back to Result.text
+    Note over S: the report says the summariser did not run
+  end
+  S-&gt;&gt;O: report
+  O-&gt;&gt;S: read_worker_report source transcript
+  S-&gt;&gt;T: read
+  T--&gt;&gt;O: verbatim turns, no model run</pre>
 </details>
 
 </div><!-- /prose -->
@@ -262,7 +286,7 @@ stored.</p>
 <div class="diagram-col">
   <div class="dia" data-dia="1">
     <div class="dia-bar">
-      <span class="title">Where the report goes</span>
+      <span class="title">Where the prose goes</span>
       <button data-act="out">&minus;</button>
       <button data-act="in">+</button>
       <button data-act="fit">Fit</button>
@@ -271,16 +295,16 @@ stored.</p>
       <div class="hint">drag to pan &middot; scroll to zoom</div></div>
     <div class="index">
       <h3>Jump to</h3>
-      <button data-k="WORKER">1 &middot; Worker summarises itself</button>
-      <button data-k="MSGS">2 &middot; Report sits in Result.messages</button>
-      <button data-k="RTEXT">3 &middot; Only the last message survives</button>
-      <button data-k="SC">4 &middot; Disk keeps the boilerplate</button>
-      <button data-k="PARENT">5 &middot; The parent re-spawns</button>
-      <button data-k="REPORT">6 &middot; One detector, three call sites</button>
+      <button data-k="COMPACT">1 &middot; Compaction destroys the map</button>
+      <button data-k="RTEXT">2 &middot; Only boilerplate is left</button>
+      <button data-k="INF">3 &middot; One event per turn</button>
+      <button data-k="TR">4 &middot; The transcript on disk</button>
+      <button data-k="SUM">5 &middot; The summariser builds the report</button>
+      <button data-k="RWR">6 &middot; Deeper without a model run</button>
     </div>
     <div class="legend">
-      <span><i class="sw" style="background:var(--bad)"></i> loses the report today</span>
-      <span><i class="sw" style="background:var(--good)"></i> added</span>
+      <span><i class="sw" style="background:var(--bad)"></i> loses the prose today</span>
+      <span><i class="sw" style="background:var(--good)"></i> added or changed</span>
       <span><i class="sw" style="background:#fff;border:1px solid var(--line)"></i> unchanged</span>
     </div>
   </div>
