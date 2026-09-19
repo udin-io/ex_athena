@@ -9,6 +9,89 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **A worker's budget now ends with a handback turn instead of a kill.**
+  ([#237](https://github.com/udin-io/ex_athena/issues/237)) A worker that ran
+  out of wall-clock time was brutal-killed by `SpawnAgent.await_worker/3`, so
+  its `Result` died with the process and the parent got a digest the
+  Coordinator rebuilt from the outside. The work usually survived; the account
+  of it did not. In session `4ee9e00f1ebf` two of twelve workers were killed at
+  the wall, costing about an hour of a three-hour run — one had written all
+  four of its files at minute 25 and was killed at minute 28 without a word of
+  report; the next worker redid the same task in 11 minutes. Both had received
+  the 60% wrap-up nudge and both ignored it. `Loop.BudgetPressure.handback?/2`
+  is the binding version: at 83% of credited working time (settings: **Run
+  budget → Handback at (%)**) `Modes.ReAct` builds one turn with no tool
+  schemas and an instruction to report now, and that text becomes the worker's
+  report under a new `:budget_handback` termination, routed through the success
+  branch so the parent reads the worker's own words. The runtime prefixes it
+  with a line saying the work is not finished, because success is also what the
+  orchestrate evidence gates count. The existing kill stays as the backstop for
+  a handback turn that overruns. The 30-minute worker budget is tunable too —
+  `agents.timeout_ms`, **Workers → Time budget (ms)** — with precedence
+  unchanged: `spawn_agent_opts[:timeout_ms]` wins, and a `timeout_ms` the model
+  asks for is still ignored. Brief:
+  `docs/design/issue-237-handback-window.html`.
+
+- **A write brief handed to a worker that cannot write is refused before it
+  costs a worker slot.**
+  ([#217](https://github.com/udin-io/ex_athena/issues/217)) An orchestrator
+  could hand `agent: "explore"` a brief beginning *"WRITE THE RESULT TO A
+  FILE"* and the spawn was accepted — `priv/agents/explore.md` declares neither
+  `write` nor `bash`. Live that cost 24.6 minutes and 540K input tokens on a
+  report nobody could save, then two further workers spawned purely to probe
+  whether writing was possible at all. `ExAthena.Agents.WriteBrief` now refuses
+  the spawn from `SpawnAgent.execute/2`, beside the depth and completed-todo
+  rails and before `Quota.claim/1` — `Agents.Quota` has no release, so a
+  refusal at the natural site would have burned a slot per repeat. The refusal
+  names the agent's actual tools and points at a write-capable agent. The
+  detector is deliberately narrow: a write verb in an instruction position
+  governing a file object, so `write up`, "the write tool" and *"read the
+  config file and write up what you find"* never match.
+  `ExAthena.Agents.WriteBriefTest` carries 12 positives and 18 negatives, every
+  negative a brief shape that occurs in this repo. Edit briefs (`update
+  README.md`), directory targets and demands split across two sentences are
+  missed on purpose — widening the verb set starts matching prose, a missed
+  brief costs only what it costs today, and a false refusal blocks a spawn the
+  model has no way to argue for. Off switch: `config :ex_athena, :agents,
+  write_brief_rail: 0`, also **Workers → Write-brief rail** in the settings
+  modal.
+
+- **New builtin tool: `gh`.**
+  ([#227](https://github.com/udin-io/ex_athena/pull/227)) Read-only agents —
+  `explore`, `research`, `plan` — could not look at GitHub at all, because
+  `bash` is outside their tool ceiling and the loop denies it in `:plan` phase.
+  `ExAthena.Tools.Gh` runs the `gh` CLI from a single `command` argument (the
+  subcommand, without the `gh` prefix): `issue view 123`, `pr list`, `release
+  view`, Actions runs, search, status. Read-only by construction — every
+  command is validated against `Bash.read_only_violation/1`'s existing gh
+  whitelist, so `gh pr create`, `gh api` and `gh issue edit` are refused in
+  *every* phase, not only the restricted ones. `read_only?/0` returns true, so
+  it is auto-permitted in `:plan` phase by the same mechanism as `lsp` and
+  `usage_rules`. Output is capped head-and-tail and the call is wrapped in a
+  `Task.async` timeout. Added to the explore/research/plan/implementer
+  ceilings, to `Permissions.@readonly_tools` and to `guides/tools.md`. It needs
+  the `gh` binary on PATH and a logged-in `gh` visible from the run's cwd; a
+  missing binary or a logged-out CLI reaches the model as a readable error. One
+  documented trade: a single command string means arguments containing spaces
+  cannot be quoted.
+
+- **`skill` is a tool now, with the `[skill: <name>]` sentinel kept as the
+  fallback.** ([#247](https://github.com/udin-io/ex_athena/issues/247)) Skills
+  were loadable one way only: the model had to write `[skill: <name>]` in its
+  reply text. Models call a skill as a tool instead. In web session
+  `66f4204cd532` the orchestrator called `skill: architecture-brief-and-mocks`
+  and `skill: worktree-ticket-workflow`, collected two unknown-tool errors
+  against a mistake cap of three, concluded the skill tool was unavailable, and
+  did the work from the one-line catalogue descriptions — the failure the
+  feature exists to prevent. `ExAthena.Tools.Skill` joins `@builtins` and the
+  orchestrator's own toolset. It does not return the body: it validates the
+  name, and the loop attaches the instructions through
+  `Skills.activation_message/2`, the same call the sentinel path already made.
+  So the body is byte-identical whichever entry point asked, `loaded_skills/1`
+  dedupes across both, and `disable-model-invocation` now applies to both. The
+  tool's schema is 476 bytes (~119 tokens) of the orchestrator's 4,893-byte
+  tool block.
+
 - **`.exathena/` history is swept at boot instead of growing forever.**
   ([#220](https://github.com/udin-io/ex_athena/issues/220)) `.exathena/sessions`
   had three writers and no reaper: session transcripts from
@@ -42,7 +125,236 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   ignore list, and there is no dialyzer ignore file or credo disable comment
   anywhere in the tree.
 
+### Changed
+
+- **A worker's report is built from its transcript on disk, not caught from
+  its last message.**
+  ([#251](https://github.com/udin-io/ex_athena/issues/251)) A worker's report
+  used to be whatever it said last. A worker that signs off with a
+  meta-summary — *"the report above is the complete deliverable… delivered in
+  the previous turn"* — left nothing behind to recover the real thing: the
+  session that motivated this burned 794,377 input tokens and 17 minutes on a
+  codebase map, handed back 545 characters, and was re-spawned to redo the same
+  work. `ExAthena.Agents.Transcript` now writes every turn of a worker's
+  transcript as it happens, in the writer style the journal already uses — one
+  open/write/close per line, so a killed worker keeps everything up to its last
+  line. `ExAthena.Agents.Summariser`, a tool-free subagent, reads that
+  transcript when the worker finishes and builds the report from it, chunking a
+  transcript too large for one pass and combining the blocks in one final pass,
+  never recursively. `read_worker_report` takes `source: "transcript"` so the
+  parent can read the verbatim text itself. Brief:
+  `docs/design/issue-251-worker-report.html`.
+
+  **The host-visible cost is one extra model call per spawn.** Measured on the
+  same 52,492-character source transcript: a single pass took 116.0s with
+  `:ollama` running `qwen3.8:27b-112` on the LAN and 63.3s with `:claude_code`;
+  a transcript needing 3 chunks cost 4 calls and 251.8s. `summariser_max_chunks`
+  (default 8) is the real cost rail, not the timeout.
+  `agents.summarise_reports` turns the stage off — it is on by default, and off
+  in `config/test.exs` — and then the report is the worker's own final message
+  as before. A summariser failure, timeout or blank result falls back the same
+  way and says so in the report. All four caps (`summariser_chunk_chars`,
+  `summariser_block_chars`, `summariser_max_chunks`, `summariser_timeout_ms`)
+  live in `ExAthena.Tuning` and the settings modal.
+
+  Also corrected: the `CLAUDE.md` line claiming `Agents.Sidechain` persists
+  "every subagent's full, untruncated report". It persists
+  `serializable_result/1`, which is lossy; the transcript is the copy that
+  survives in full.
+
 ### Fixed
+
+- **Five orchestrate defects from one 3h27m run that claimed a green suite
+  over four failing tests.**
+  ([#228](https://github.com/udin-io/ex_athena/issues/228)) Session
+  `227f7f480afa` ran 3 hours 27 minutes, ended `failed`, and delivered a claim
+  of a passing test suite over 4 failures. One commit per defect, each with its
+  test written first.
+
+  - `ask_user` counted as a spawn-less turn, so the runtime auto-delegated the
+    very todo the user was answering. An answered `ask_user` now resets
+    `turns_without_spawn` as a successful spawn does; an errored one does not.
+  - `mix test x 2>&1 | tail -60` exits 0 over a red suite, so the run recorded
+    a passing test. `Provenance.command_outcome/3` now judges a test run by its
+    output as well as its exit code: a failure summary fails it, and a piped
+    run with no summary line is `:unconfirmed` rather than a pass.
+    `Agents.Journal` records the same verdict, so a dead worker's footer
+    matches a live one's, and the coverage gate names the run it saw instead of
+    asserting "The suite is green".
+  - With the allowance spent, all four finish gates still said "Spawn ONE
+    worker". Once `Agents.Quota` has no slot left every gate lets `finish`
+    through, and the runtime appends the checks that did not run to the
+    deliverable, marked UNVERIFIED.
+  - A quota refusal bumped the mistake counter and told a tool-less
+    orchestrator to do the work itself. The first refusal of a run is now
+    `{:error, :uncounted, text}`; later ones stay counted, because in
+    orchestrate mode (`max_iterations: :infinity`) the mistake counter is the
+    only turn-based guard left.
+  - Nothing showed the orchestrator how many workers were left. Every spawn
+    result and refusal now ends with `[runtime] worker 9 of 10 this run; 1
+    left — this is your LAST worker.`
+
+  New public functions: `Provenance.command_outcome/3`,
+  `Provenance.unconfirmed_commands/1`, `Quota.remaining/1`,
+  `Quota.exhausted?/1`, `Quota.record_refusal/1`. Brief:
+  `docs/design/issue-228-architecture.html`.
+
+- **The audit gate quoted `AGENTS.md` back as "the original request", and
+  every gate re-fired on a resume.**
+  ([#232](https://github.com/udin-io/ex_athena/issues/232)) `ExAthena.Memory`
+  injects each memory file as a user-role message in front of the prompt, so in
+  any session with project memory the first user-role message is the memory.
+  `original_request/1` returned it, and Gate 4 pasted 1,500 characters of
+  conventions under `ORIGINAL REQUEST:` and told the orchestrator to audit its
+  delivery against them. In the same run as the defects above the orchestrator
+  identified this itself — *"the 'original request' it pastes is the AGENTS.md
+  memory, not the body of the issue"* — and spent two turns arguing past the
+  gate. `original_request/1` now skips memory turns with
+  `Memory.memory_message?/1` and takes the first turn the human actually took.
+  With no human turn yet it returns `""` and the note quotes nothing at all,
+  rather than leaving an empty heading the model fills from the nearest text it
+  can see. Memory itself is untouched.
+
+  The four gate flags (`:verify_nudged`, `:test_nudged`, `:coverage_nudged`,
+  `:audit_nudged`) live in `mode_state`, which `init/1` rebuilds on every
+  `Loop.run` — and a resume is a new run over the stored messages, so each gate
+  fired again on evidence it had already gated and the orchestrator was made to
+  re-argue an audit it had run. Each note now names its own gate
+  (`[orchestration runtime: audit gate]` in place of the generic prefix) and
+  `evidence/1` reads those names back, so the transcript a resume does carry
+  answers the question. `mode_state` stays as the in-run answer, because a
+  compaction can drop the note but not the flag. The prefix doubles as the
+  note's header, so nothing invisible rides along in the prompt purely to be
+  read back next run.
+
+- **The truncation notice told the orchestrator to call a tool it did not
+  have.** ([#235](https://github.com/udin-io/ex_athena/issues/235)) When a
+  worker's report was cut, the notice said to fetch the rest with
+  `read_worker_report` and not to re-run the worker. `@orchestrator_tools` was
+  `todo_write spawn_agent finish ask_user`, coordination-only by design, so the
+  orchestrator did the one thing the notice forbids. In web session
+  `e833005a94ef` a worker returned a 12,649-character codebase map, 8,000
+  characters reached the orchestrator cut inside section 3, and it spawned a
+  second `explore` worker to fill in the truncated parts — a second local-model
+  run over the same files to recover text already on disk.
+  `read_worker_report` is now in the orchestrator's toolset. It only reads a
+  worker's own report back off `.exathena/sessions/` and cannot inspect the
+  codebase, so it does not reopen the self-investigation hole the small toolset
+  guards against; `Agents.WriteBrief` already counted it as coordination. Same
+  defect class as the quota refusal above: the runtime handing the orchestrator
+  an instruction its toolset cannot act on.
+
+- **A spawn result never named the worker, so `read_worker_report` had no id
+  to take.** ([#245](https://github.com/udin-io/ex_athena/issues/245)) Giving
+  the orchestrator that tool left it with nothing to pass: a worker's id
+  appeared only inside a truncation notice, and only when a report was
+  truncated. Web session `66f4204cd532` invented one from the agent type
+  (`"research-1"`); web session `272a4251558c` guessed from the allowance line,
+  turning `worker 1 of 24 this run; 23 left.` into `subagent_id: "1"` and then
+  `"worker_1"` — two errors against a mistake cap of three, then a re-spawn to
+  redo work it already had. That second session had no truncation at all: the
+  worker returned 559 characters and summarised. Every `spawn_agent` result now
+  names the worker on the success, timeout, handback, crashed and never-started
+  paths alike, riding on the existing allowance line rather than adding a
+  second runtime line:
+
+      [runtime] worker 3 of 24 this run; 21 left. Worker id: subagent_crMIb9uB
+      — read its full report or journal with read_worker_report.
+
+  The id is there on an unbounded run with no quota counter too — the worker it
+  names is real either way. `ReadWorkerReport`'s refusal for a malformed id,
+  its schema description and its tool description now point at that runtime
+  line instead of at "the truncation notice", which is exactly what was missing
+  in the second occurrence. The truncation notice itself is unchanged: it names
+  the offset as well as the id.
+
+- **A malformed tool-call name was reported as an unknown tool, and charged as
+  a mistake.** ([#246](https://github.com/udin-io/ex_athena/issues/246)) In web
+  session `66f4204cd532`, events 37–40, a text-protocol parser scoped a fence
+  badly and handed dispatch a two-line fragment of the model's own broken
+  markup as the tool *name*. Nothing between the parser and
+  `unknown_tool_error/2` checked that a name was plausible, so the loop replied
+  `unknown tool: skill: architecture-brief-and-mocks\n</parameter. Available
+  tools: …` and charged it against `consecutive_mistakes` — twice in a row
+  against a cap of three. Validation now sits at the single dispatch choke
+  point in `Modes.ReAct`, before `Tools.find/2`, rather than duplicated inside
+  each of the three parsers: only dispatch holds the loop state that decides
+  which example to show. A name failing `^[a-zA-Z0-9_.\-]{1,64}$` is answered
+  as *malformed*, with one correct example in the protocol that run actually
+  speaks — the `~~~tool_call` fence for a text protocol, "call it by its exact
+  name only" for native tool calls. It is uncounted, mirroring
+  `ExAthena.Tool`'s own `{:error, :uncounted, text}` contract; a model that
+  keeps emitting the same broken shape is still bounded by the no-progress
+  guard. A well-formed but unknown name still gets today's message and its
+  near-match suggestion, and a real builtin outside the phase's toolset still
+  gets the delegate-via-`spawn_agent` redirect.
+
+- **Single-chunk worker reports were cut at 4,000 characters, mid-word.**
+  ([#256](https://github.com/udin-io/ex_athena/issues/256))
+  `Agents.Summariser.summarise_chunks/3` sliced every chunk summary to
+  `block_chars` (default 4,000) before `combine/4` ran. That limit exists so N
+  chunk summaries fit into one combine pass — but the single-chunk path has no
+  combine, so a report that fitted in one pass still paid a cost meant for the
+  rare multi-chunk case, against the 64,000-character `result_chars` that
+  should have applied instead. Web session `0335fe066a23` has two worker
+  reports of exactly 4,000 characters, one ending mid-word at ``"Screenshot
+  tests: `test/fud"``. `block_chars` now applies only inside `combine/5`, where
+  there is something to combine into, and the single-chunk path returns the
+  block untouched. A block that genuinely is capped now says so, naming
+  `read_worker_report` with `source: "transcript"` in the same wording
+  `dropped_note/1` uses for a dropped middle chunk — the summariser's cap
+  happens earlier than `SpawnAgent`'s own truncation notice and previously said
+  nothing. Where a cut is still needed it lands on the last whitespace in the
+  slice.
+
+- **A worker that narrated its next action instead of taking it was reported
+  as a success.** ([#258](https://github.com/udin-io/ex_athena/issues/258))
+  `ReAct` halts on any turn with no tool calls. Worker `subagent_J8xXdYDq`
+  (session `cfcf79154cb1`) ran 15 iterations, 38 tool calls, 608,954 input
+  tokens and 19 minutes, then ended a turn with *"… Writing the brief now."*
+  and nothing else: `finish_reason: :stop`, `ok: true`, no brief. The parent
+  was told it succeeded and re-delegated the same todo to a second worker —
+  the same waste as the truncated and unsummarised reports above, arriving by
+  a different route. A worker now gets ONE turn back when it closes on a
+  promise; the second stop is honoured whatever it says.
+  `Loop.NarratedStop.narrated?/1` reads the closing sentence alone and asks
+  whether it commits to an action not yet taken: `I'll …`, `I'm going to …`,
+  `Let me <verb> …` (but not `Let me know …`), or an explicit doing verb in
+  `-ing` form with "now". A sentence ending in `?` never fires — a worker
+  asking its parent something stopped on purpose. The closing sentence is the
+  whole test because that is where the two cases differ: a worker that
+  finished closes on its result, one that stopped mid-task closes on a
+  promise, and reports routinely name future work in their body. The nudge is
+  scoped to workers (`State.parent_session_id` set): a top-level run's text
+  goes to a human who can answer next turn, and `Orchestrate.maybe_nudge_stop/1`
+  already covers the orchestrator, which keeps the two from stacking on one
+  halt. One-shot across a resume, by the same two-part flag the verification
+  gates use — `mode_state[:narrated_stop_nudged]` plus a `[runtime:
+  narrated-stop]` marker read back out of the message history. The note names
+  the two acceptable outcomes, do the thing or hand back honestly saying what
+  is not done and where what exists is, rather than saying "continue", which
+  is what the model already believes it is doing.
+
+- **The `gh` tool's three settings were silently dropped.**
+  ([#230](https://github.com/udin-io/ex_athena/issues/230)) `Tools.Gh` reads
+  `gh_default_timeout_ms`, `gh_max_timeout_ms` and `gh_output_chars` through
+  `Tuning.get(:tools, …)`, but `Settings.schema/0` had no field for any of
+  them, so a value a user set in the settings modal never reached `Tuning`. All
+  three are now in the `:tools` group, mirroring the `:bash` group's timeout
+  and output-cap fields, each default matching its module attribute in `gh.ex`
+  (20,000 ms, 60,000 ms, 16,000 characters). The repo's own "every key wired to
+  Tuning has a field in the modal" test had been red on `main` since the tool
+  landed.
+
+- **`ChatLiveFilesUITest` mounted against a dying endpoint.**
+  ([#234](https://github.com/udin-io/ex_athena/issues/234)) Its `setup` started
+  the endpoint with a hand-rolled `Endpoint.start_link/0` and swallowed
+  `{:error, {:already_started, _}}`, so a test could mount against the previous
+  test's endpoint while that one's ETS config table was being torn down
+  mid-request — `the table identifier does not refer to an existing ETS table`,
+  on a different test of the module each run. `start_supervised!(Endpoint)`
+  makes ExUnit own the process and wait for it to terminate before the next
+  test starts. No other test file starts the endpoint that way.
 
 - **Reading back through a thread no longer fights a live run.**
   ([#206](https://github.com/udin-io/ex_athena/issues/206)) The web chat
