@@ -116,15 +116,29 @@ defmodule ExAthena.Agents.Summariser do
   # Private
   # ---------------------------------------------------------------------------
 
+  # `async_nolink` under a supervisor started HERE, not `Task.async`. The whole
+  # contract is that a bad summariser degrades to the worker's own text; a
+  # LINKED task would instead take the spawning tool down with it, losing the
+  # worker's report and the parent's turn together. The supervisor is linked to
+  # us so it shares our fate, the same shape `SpawnAgent` uses for its worker
+  # subtree.
   defp run(records, worker_opts, opts) do
     timeout = setting(opts, :timeout_ms, :summariser_timeout_ms, @default_timeout_ms)
-    task = Task.async(fn -> build(records, worker_opts, opts) end)
+    {:ok, sup} = Task.Supervisor.start_link([])
 
-    case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
-      {:ok, result} -> result
-      # A summariser still talking when its budget ran out is a summariser the
-      # parent is waiting on. Kill it and let the caller use the worker's text.
-      _ -> {:error, :timeout}
+    try do
+      task = Task.Supervisor.async_nolink(sup, fn -> build(records, worker_opts, opts) end)
+
+      case Task.yield(task, timeout) || Task.shutdown(task, :brutal_kill) do
+        {:ok, result} -> result
+        # A summariser still talking when its budget ran out is one the parent
+        # is waiting on. Kill it and let the caller use the worker's text.
+        {:exit, reason} -> {:error, {:summariser_crashed, reason}}
+        _ -> {:error, :timeout}
+      end
+    after
+      Process.unlink(sup)
+      Supervisor.stop(sup, :normal)
     end
   end
 

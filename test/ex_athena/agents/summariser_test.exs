@@ -209,6 +209,18 @@ defmodule ExAthena.Agents.SummariserTest do
                Summariser.summarise(path, mock_opts(spy_responder(fn _ -> "   " end)), [])
     end
 
+    # The whole point is that a bad summariser degrades to the worker's text.
+    # A linked task would take the spawning tool down with it instead, which
+    # loses the worker's report AND the parent's turn.
+    test "a summariser that crashes does not take its caller with it", %{path: path} do
+      write_turns(path, [@map])
+
+      exploding = fn _request -> exit(:boom) end
+
+      assert {:error, _} = Summariser.summarise(path, mock_opts(exploding))
+      assert Process.alive?(self())
+    end
+
     test "the whole summarise is bounded by one timeout", %{path: path} do
       write_turns(path, [@map])
 
