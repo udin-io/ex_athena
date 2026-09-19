@@ -105,8 +105,18 @@ defmodule ExAthena.Loop.Inference do
         end)
 
       case result do
-        {:ok, response} -> handle_response(state, response, starvation)
-        {:error, _} = err -> err
+        {:ok, response} ->
+          case handle_response(state, response, starvation) do
+            {:ok, response, folded} = ok ->
+              maybe_emit_assistant_turn(folded, response, purpose)
+              ok
+
+            other ->
+              other
+          end
+
+        {:error, _} = err ->
+          err
       end
     end
   end
@@ -152,6 +162,39 @@ defmodule ExAthena.Loop.Inference do
   end
 
   # ── Internal ──────────────────────────────────────────────────────
+
+  # Purposes whose response text is the MODEL's own conversational turn.
+  # The other purposes on this path — :conclusion_distillation,
+  # :compaction_summary, :reflection — are the runtime talking to itself with
+  # a fixed micro-prompt, and a transcript that mixed them in would report the
+  # runtime's words as the worker's.
+  @turn_purposes [:turn, :planning]
+
+  # The one place a whole assistant turn exists, which is why issue 251's
+  # transcript is written from here.
+  #
+  # `{:content, _}` cannot carry it: under streaming it arrives as one event
+  # per token, and `ReAct.handle_turn/5` then SUPPRESSES the end-of-turn
+  # emission, so a listener sees either N fragments or one whole text
+  # depending on the provider. `response.text` is the same string that becomes
+  # `Messages.assistant(response.text)` either way.
+  #
+  # Blank text emits nothing. Tool-call-only turns are common on native
+  # tool-call models that narrate in the thinking channel, and a line per
+  # blank turn is a line of nothing in every transcript.
+  defp maybe_emit_assistant_turn(%State{} = state, %{text: text}, purpose)
+       when purpose in @turn_purposes and is_binary(text) do
+    if String.trim(text) == "" do
+      :ok
+    else
+      Events.emit(
+        state.on_event,
+        {:assistant_turn, %{i: state.iterations, text: text, purpose: purpose}}
+      )
+    end
+  end
+
+  defp maybe_emit_assistant_turn(_state, _response, _purpose), do: :ok
 
   # Fold usage first — the starved attempt's token burn stays on the
   # budget whichever way the starvation policy sends the result.

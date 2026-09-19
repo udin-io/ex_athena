@@ -9,12 +9,13 @@ defmodule ExAthena.Tools.ReadWorkerReport do
   orchestrator saw 2,000 of it and recorded "the data has been lost from my
   context", then re-delegated — which costs more than the whole mechanism.
 
-  The text was never actually lost. `ExAthena.Agents.Sidechain` persists every
-  worker's untruncated report before either result branch runs. What was missing
-  was an address the model could act on and a tool to act on it with. This is
-  that tool; `SpawnAgent`'s truncation notice names it with the offset the cut
-  happened at, so the model asks for the remainder instead of re-running the
-  worker.
+  The text was never actually lost. `ExAthena.Agents.Sidechain` persists the
+  worker's Result — its final text plus the run's counters — before either
+  result branch runs, and `ExAthena.Agents.Transcript` holds every turn it
+  wrote. What was missing was an address the model could act on and a tool to
+  act on it with. This is that tool; `SpawnAgent`'s truncation notice names it
+  with the offset the cut happened at, so the model asks for the remainder
+  instead of re-running the worker.
 
   Truncation is not the only reason to want it. Web session 272a4251558c
   called this tool after a worker SUMMARISED instead of quoting — nothing was
@@ -30,17 +31,25 @@ defmodule ExAthena.Tools.ReadWorkerReport do
   parent reads only when the summary surprises it, and pays a context cost
   proportional to its confusion.
 
-  ## Two sources
+  ## Three sources
 
-  `source: "report"` (the default) reads the worker's own prose — what it said.
-  `source: "journal"` reads `ExAthena.Agents.Journal`, written by the worker as
-  it worked — what it did. The journal is the only source that survives a worker
-  killed outright, which returns no report at all.
+  `source: "report"` (the default) is the report the parent already received —
+  since issue 251 that is a SUMMARY of the run, written by
+  `ExAthena.Agents.Summariser` from the transcript, and therefore lossy by
+  design. `source: "journal"` reads `ExAthena.Agents.Journal` — what the worker
+  DID, files with sizes and commands with exit codes. `source: "transcript"`
+  reads `ExAthena.Agents.Transcript` — what it SAID, verbatim, turn by turn.
+
+  The transcript is the one to reach for when the summary is not enough: an
+  exact snippet, a path, the wording of an error. Re-spawning the worker to get
+  it back costs what this whole mechanism exists to avoid — 838,180 tokens and
+  16.8 minutes, live, in web session `0f73f270b133`. Reading the transcript
+  costs a file read and no model run at all.
 
   One tool, because the argument, the id validation and the path resolution are
-  the same for both. Issue 215 sketched a separate `read_worker_log`; a second
-  tool would have duplicated all three and cost every orchestrator another tool
-  schema in its prompt.
+  the same for all three. Issue 215 sketched a separate `read_worker_log`; a
+  second tool would have duplicated all three and cost every orchestrator
+  another tool schema in its prompt.
 
   ## Offsets are characters
 
@@ -52,7 +61,7 @@ defmodule ExAthena.Tools.ReadWorkerReport do
 
   @behaviour ExAthena.Tool
 
-  alias ExAthena.Agents.{Journal, Sidechain}
+  alias ExAthena.Agents.{Journal, Sidechain, Transcript}
   alias ExAthena.Provenance
   alias ExAthena.ToolContext
 
@@ -108,12 +117,14 @@ defmodule ExAthena.Tools.ReadWorkerReport do
         },
         source: %{
           type: "string",
-          enum: ["report", "journal"],
+          enum: ["report", "journal", "transcript"],
           description:
-            "\"report\" (default) is what the worker SAID — its own summary. " <>
+            "\"report\" (default) is the summary you already received. " <>
+              "\"transcript\" is what the worker SAID, verbatim, turn by turn — use it " <>
+              "when you need an exact snippet, path or wording the summary lost. " <>
               "\"journal\" is what it DID — files written with their sizes, commands " <>
-              "run with their exit codes. Use the journal when a worker was killed " <>
-              "before it could report, or when its report does not match what you expected."
+              "run with their exit codes — and survives a worker killed before it " <>
+              "reported. Never re-run a worker for something one of these holds."
         },
         filter: %{
           type: "string",
@@ -154,7 +165,27 @@ defmodule ExAthena.Tools.ReadWorkerReport do
   defp fetch(id, args, ctx) do
     case Map.get(args, "source") do
       "journal" -> fetch_journal(id, args, ctx)
+      "transcript" -> fetch_transcript(id, args, ctx)
       _ -> fetch_report(id, args, ctx)
+    end
+  end
+
+  # The worker's own words, off disk, with no model run. `to_text/1` labels the
+  # turns, so a parent that wants one can page to it with `from:` and say which
+  # it read.
+  defp fetch_transcript(id, args, ctx) do
+    case Transcript.read(transcript_path(ctx, id)) do
+      [] ->
+        {:error,
+         "no transcript on disk for #{id}. Either the worker was never spawned " <>
+           "in this session, or transcripts are switched off (Workers → worker " <>
+           "transcript size cap)." <> journal_hint(ctx, id)}
+
+      records ->
+        {:ok,
+         records
+         |> Transcript.to_text()
+         |> slice(offset(args, "from", 0), offset(args, "max_chars", @default_max_chars))}
     end
   end
 
@@ -305,6 +336,10 @@ defmodule ExAthena.Tools.ReadWorkerReport do
 
   defp journal_path(%ToolContext{} = ctx, id) do
     Journal.path(cwd(ctx), ctx.session_id || "unknown", id)
+  end
+
+  defp transcript_path(%ToolContext{} = ctx, id) do
+    Transcript.path(cwd(ctx), ctx.session_id || "unknown", id)
   end
 
   defp cwd(%ToolContext{cwd: cwd}), do: cwd || File.cwd!()

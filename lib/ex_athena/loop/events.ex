@@ -9,7 +9,18 @@ defmodule ExAthena.Loop.Events do
 
   Events:
 
-    * `{:content, text}` — partial or full assistant text.
+    * `{:content, text}` — partial or full assistant text. Under
+      streaming this is one event per delta; without it, one event per
+      turn. Never both, so it cannot be used to count or reassemble
+      turns — see `{:assistant_turn, …}`.
+    * `{:assistant_turn, %{i:, text:, purpose:}}` — one WHOLE assistant
+      turn, emitted once from `ExAthena.Loop.Inference.call/3` whether or
+      not the provider streamed. `text` is the same string that becomes
+      the turn's assistant message; `i` is the iteration it belongs to;
+      `purpose` is `:turn` or `:planning` (the runtime's own micro-calls
+      never emit this). Blank turns emit nothing.
+      `ExAthena.Agents.Transcript` writes these to disk so a worker's
+      prose survives compaction and the process (issue 251).
     * `{:thinking, text}` — partial or full model reasoning/thinking
       content (Anthropic `thinking` blocks, OpenAI `reasoning`
       content). Distinct from `:content` so hosts can display it
@@ -61,6 +72,12 @@ defmodule ExAthena.Loop.Events do
 
   @type t ::
           {:content, String.t()}
+          | {:assistant_turn,
+             %{
+               required(:i) => non_neg_integer(),
+               required(:text) => String.t(),
+               required(:purpose) => atom()
+             }}
           | {:thinking, String.t()}
           | {:tool_call, ToolCall.t()}
           | {:tool_result, ToolResult.t()}

@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>The report is built, not caught — issue 251</title>
+<style>
+:root{
+  --bg:#f7f7f5; --panel:#fff; --ink:#1c1c1a; --muted:#6b6b66; --line:#d8d8d2;
+  --bad:#a32b2b; --bad-bg:#fbeeee;
+  --good:#1f6b3a; --good-bg:#edf6f0;
+  --accent:#2a4c86; --accent-bg:#eef2f9;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+.wrap{max-width:1400px;margin:0 auto;padding:40px 24px 80px}
+h1{font-size:26px;line-height:1.25;margin:0 0 12px;letter-spacing:-.01em}
+.sub{color:var(--muted);max-width:62ch;margin:0 0 28px}
+h2{font-size:17px;margin:44px 0 12px;letter-spacing:-.01em}
+h2:first-of-type{margin-top:0}
+h3{font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--muted);margin:22px 0 8px;font-weight:600}
+p{margin:0 0 12px;max-width:62ch}
+ul{margin:0 0 12px;padding-left:20px;max-width:62ch}
+li{margin:0 0 6px}
+code{font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+  background:#efefea;padding:1px 5px;border-radius:3px}
+
+.cols{display:grid;grid-template-columns:minmax(0,1fr) 560px;gap:32px;align-items:start}
+.diagram-col{position:sticky;top:24px}
+@media (max-width:1100px){
+  .cols{grid-template-columns:minmax(0,1fr)}
+  .diagram-col{position:static}
+}
+
+.plain{background:var(--accent-bg);border:1px solid #c9d5ea;border-radius:8px;
+  padding:18px 20px;margin:0 0 28px;max-width:74ch}
+.plain h3{margin-top:0;color:var(--accent)}
+.plain p{max-width:none;margin-bottom:0}
+
+.note{border-left:3px solid var(--accent);background:var(--accent-bg);
+  padding:12px 16px;margin:0 0 14px;border-radius:0 6px 6px 0;max-width:62ch}
+.note.warn{border-color:var(--bad);background:var(--bad-bg)}
+.note.ok{border-color:var(--good);background:var(--good-bg)}
+.note p:last-child{margin-bottom:0}
+
+.tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+  border-radius:10px;vertical-align:1px}
+.t-bad{background:var(--bad-bg);color:var(--bad)}
+.t-good{background:var(--good-bg);color:var(--good)}
+.t-acc{background:var(--accent-bg);color:var(--accent)}
+
+table{border-collapse:collapse;width:100%;font-size:14px;margin:0 0 12px}
+th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--muted);font-weight:600;padding:0 12px 7px 0;
+  border-bottom:1px solid var(--line)}
+td{padding:9px 12px 9px 0;border-bottom:1px solid var(--line);vertical-align:top}
+
+.dia{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  overflow:hidden;margin:0 0 16px}
+.dia-bar{display:flex;align-items:center;gap:6px;padding:8px 10px;
+  border-bottom:1px solid var(--line);background:#fcfcfa}
+.dia-bar .title{font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--muted);font-weight:600;margin-right:auto}
+.dia-bar button{font:inherit;font-size:12px;line-height:1;padding:5px 9px;
+  border:1px solid var(--line);background:#fff;border-radius:5px;cursor:pointer;
+  color:var(--ink)}
+.dia-bar button:hover{background:#f0f0ec}
+.viewport{height:56vh;min-height:360px;overflow:hidden;cursor:grab;
+  background:#fdfdfb;position:relative}
+.viewport.grabbing{cursor:grabbing}
+.stage{transform-origin:0 0;will-change:transform}
+.hint{position:absolute;right:10px;bottom:8px;font-size:11px;color:var(--muted);
+  background:#fdfdfbcc;padding:2px 7px;border-radius:4px;pointer-events:none}
+
+.index{padding:10px 12px;border-top:1px solid var(--line);background:#fcfcfa}
+.index h3{margin:0 0 7px}
+.index button{display:block;width:100%;text-align:left;font:inherit;font-size:13px;
+  padding:5px 8px;border:0;background:none;border-radius:5px;cursor:pointer;
+  color:var(--ink)}
+.index button:hover{background:#efefea}
+.index button.on{background:var(--accent-bg);color:var(--accent);font-weight:600}
+g.node.lit rect,g.node.lit polygon{stroke:#2a4c86!important;stroke-width:3px!important}
+
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:12.5px;color:var(--muted);
+  padding:10px 12px;border-top:1px solid var(--line)}
+.legend span{display:flex;align-items:center;gap:6px}
+.sw{width:11px;height:11px;border-radius:3px;display:inline-block}
+
+pre:not(.mermaid){background:#1c1c1a;color:#e8e8e2;padding:14px 16px;border-radius:8px;
+  overflow:auto;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
+pre.mermaid{background:var(--panel);color:var(--ink);margin:0;padding:12px}
+details{margin:0 0 12px}
+summary{cursor:pointer;font-size:13px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>The report is built, not caught</h1>
+
+<p class="sub">Worker <code>subagent_fqB0WqCf</code> spent 794,377 input tokens
+and 17 minutes, wrote its codebase map, and handed back 545 characters saying the
+map was &ldquo;delivered in the previous turn&rdquo;. Compaction had already
+destroyed it, so no hand-back-time fix can reach it. Approving this gate for
+issue 251 settles what the transcript stores, what the summariser costs, and
+what happens when it fails.</p>
+
+<div class="plain">
+<h3>In plain words</h3>
+<p>A helper&rsquo;s write-up is whatever it happened to say last, and its earlier
+words are thrown away as it works. We start saving everything it says to a file
+as it says it, and when it finishes a second short-lived helper reads that file
+and writes the write-up. The report stops depending on the helper remembering to
+end well.</p>
+</div>
+
+<div class="cols">
+<div class="prose">
+
+<h2>1. What breaks</h2>
+
+<table>
+<tr><th>Store</th><th>Holds</th><th>At hand-back</th></tr>
+<tr><td><code>Result.text</code></td><td>Last assistant message
+  (<code>loop.ex:696</code>)</td>
+  <td><span class="tag t-bad">545 chars</span></td></tr>
+<tr><td><code>Result.messages</code></td><td>What compaction left</td>
+  <td><span class="tag t-bad">map gone</span></td></tr>
+<tr><td><code>Sidechain</code> jsonl</td><td>That text, counters, conclusions</td>
+  <td><span class="tag t-bad">545 chars</span></td></tr>
+<tr><td><code>Journal</code> ndjson</td><td>What it DID; refuses prose</td>
+  <td><span class="tag t-acc">400-char lines</span></td></tr>
+</table>
+
+<div class="note warn">
+<p><strong>Compaction is why hand-back is too late.</strong>
+<code>Compactors.Summary</code> replaces everything between the pinned prefix
+and the last 6 messages with one digest, and
+<code>EpisodicArchive</code> keeps the sliced text in <code>state.meta</code>
+&mdash; in memory, dying with the process.</p>
+</div>
+
+<h2>2. What this builds</h2>
+
+<ul>
+<li><strong><code>Agents.Transcript</code></strong> &mdash; one NDJSON line per
+  turn, beside the journal, under the parent&rsquo;s cwd. Stateless
+  open/write/close, so a killed worker keeps every line up to its last.</li>
+<li><strong>One new loop event.</strong> <code>Loop.Inference.call/3</code> is
+  the single path every conversational turn takes, and holds the turn&rsquo;s
+  full text whether or not the provider streamed. It emits
+  <code>{:assistant_turn, …}</code> once per turn;
+  <code>Transcript.compose/3</code> writes it, as
+  <code>Journal.compose/3</code> already wraps the same
+  <code>on_event</code>.</li>
+<li><strong><code>Agents.Summariser</code></strong> &mdash; reads the finished
+  transcript, chunks it, summarises each chunk into a bounded block, combines
+  them in one pass. That is the report.</li>
+<li><strong><code>read_worker_report</code> gains
+  <code>source: "transcript"</code></strong> &mdash; verbatim turns, no second
+  model run.</li>
+</ul>
+
+<div class="note">
+<p><strong>A line holds prose only</strong> &mdash; assistant text, turn number,
+timestamp. The journal already digests tool calls and results; a second copy is
+most of the bytes for none of the value.</p>
+</div>
+
+<h2>3. Decisions to approve</h2>
+
+<table>
+<tr><th>Question</th><th>Settled as</th></tr>
+<tr><td>Tools</td><td>None, so it cannot spawn or read files. Fresh
+  <code>Loop.run/2</code>, chunk in the prompt, no inherited todos.</td></tr>
+<tr><td>Budget</td><td>Its own iterations and clock, worker&rsquo;s provider,
+  same request queue.</td></tr>
+<tr><td>Failure</td><td>Error, timeout or blank falls back to the worker&rsquo;s
+  final message, and the report says so.</td></tr>
+<tr><td>Wall clock</td><td>One pass per chunk plus a combine. <strong>To be
+  measured on a real run and put in the PR</strong>, not asserted.</td></tr>
+<tr><td>Chunk cap</td><td>Middle chunks dropped with a marker naming
+  <code>source: "transcript"</code>. Never a silent loss.</td></tr>
+</table>
+
+<table>
+<tr><th>Knob (<code>:agents</code>)</th><th>Default</th><th>Knob</th><th>Default</th></tr>
+<tr><td><code>summarise_reports</code></td><td>1</td>
+  <td><code>summariser_chunk_chars</code></td><td>24,000</td></tr>
+<tr><td><code>transcript_bytes</code></td><td>4,000,000</td>
+  <td><code>summariser_block_chars</code></td><td>4,000</td></tr>
+<tr><td><code>transcript_line_chars</code></td><td>20,000</td>
+  <td><code>summariser_max_chunks</code></td><td>8</td></tr>
+<tr><td colspan="2"></td>
+  <td><code>summariser_timeout_ms</code></td><td>120,000</td></tr>
+</table>
+
+<h2>4. Not in scope</h2>
+<ul>
+<li>Changing compaction. The transcript makes it survivable, not different.</li>
+<li>The handback turn (issue 237). Its text lands in the transcript like any
+  other.</li>
+<li>Summarising the orchestrator&rsquo;s own run.</li>
+</ul>
+
+<div class="note ok">
+<p><strong>One consequence.</strong> The worker suffix says &ldquo;Your FINAL
+message is the ONLY thing the orchestrator sees&rdquo;. That stops being true,
+so it changes with the code.</p>
+</div>
+
+<details><summary>Mermaid source &mdash; modules</summary>
+<pre id="src1">flowchart TD
+  WORKER["Worker loop&lt;br/&gt;writes its map at turn 19"]
+  INF["Loop.Inference.call ((NEW event))&lt;br/&gt;emits assistant_turn once per turn&lt;br/&gt;full text, streamed or not"]
+  COMPACT["Compactors.Summary + EpisodicArchive&lt;br/&gt;replace the middle at turn 20&lt;br/&gt;sliced text kept in memory only"]
+  MSGS["Result.messages&lt;br/&gt;the map is no longer in it"]
+  RTEXT["Result.text&lt;br/&gt;545 chars of boilerplate"]
+  JRN["Agents.Journal&lt;br/&gt;what it DID, 400-char lines"]
+  TR["Agents.Transcript ((NEW))&lt;br/&gt;what it SAID, one line per turn&lt;br/&gt;append-only, survives a brutal kill"]
+  SUM["Agents.Summariser ((NEW))&lt;br/&gt;chunk, block, combine&lt;br/&gt;no tools, no todos, own budget"]
+  HAND["SpawnAgent hand-back&lt;br/&gt;the summary, or worker text on failure"]
+  RWR["ReadWorkerReport&lt;br/&gt;((NEW)) source: transcript"]
+  SC["Sidechain jsonl&lt;br/&gt;unchanged, still the Result"]
+  PARENT["Orchestrator&lt;br/&gt;a report built from the whole run"]
+  KNOB["agents.summarise_reports ((NEW))&lt;br/&gt;chunk, block and cap sizes"]
+  WORKER --&gt; INF
+  WORKER --&gt; JRN
+  WORKER --&gt; COMPACT
+  COMPACT --&gt; MSGS
+  MSGS --&gt; RTEXT
+  INF ==&gt;|assistant_turn| TR
+  TR ==&gt;|chunks| SUM
+  SUM ==&gt;|report| HAND
+  RTEXT -.-&gt;|fallback only| HAND
+  RTEXT --&gt; SC
+  TR ==&gt;|verbatim turns| RWR
+  HAND ==&gt; PARENT
+  RWR ==&gt; PARENT
+  KNOB -.-&gt; SUM
+  classDef bad fill:#fbeeee,stroke:#a32b2b,stroke-width:2px,color:#1c1c1a
+  classDef good fill:#edf6f0,stroke:#1f6b3a,stroke-width:2px,color:#1c1c1a
+  classDef ok fill:#fff,stroke:#c9c9c2,stroke-width:1px,color:#1c1c1a
+  class COMPACT,MSGS,RTEXT bad
+  class INF,TR,SUM,RWR,HAND,PARENT,KNOB good
+  class WORKER,JRN,SC ok</pre>
+</details>
+
+<details><summary>Mermaid source &mdash; timing</summary>
+<pre id="src2">sequenceDiagram
+  participant O as Orchestrator
+  participant S as SpawnAgent
+  participant W as Worker loop
+  participant T as Transcript file
+  participant M as Summariser (NEW)
+  O-&gt;&gt;S: spawn_agent
+  S-&gt;&gt;W: run brief
+  loop every turn
+    W-&gt;&gt;T: append one line, open write close
+  end
+  Note over W: turn 20 compacts away turn 19
+  W-&gt;&gt;S: Result, text is 545 chars
+  alt summarise_reports is on
+    S-&gt;&gt;M: summarise(transcript path)
+    M-&gt;&gt;T: read 210k chars
+    Note over M: 9 chunks at 24k, capped at 8
+    loop each chunk, at most 8
+      M-&gt;&gt;M: one pass, block of at most 4k
+    end
+    M-&gt;&gt;M: combine the blocks, one final pass
+    M--&gt;&gt;S: the report
+  else fails, times out or returns nothing
+    S-&gt;&gt;S: fall back to Result.text
+    Note over S: the report says the summariser did not run
+  end
+  S-&gt;&gt;O: report
+  O-&gt;&gt;S: read_worker_report source transcript
+  S-&gt;&gt;T: read
+  T--&gt;&gt;O: verbatim turns, no model run</pre>
+</details>
+
+</div><!-- /prose -->
+
+<div class="diagram-col">
+  <div class="dia" data-dia="1">
+    <div class="dia-bar">
+      <span class="title">Where the prose goes</span>
+      <button data-act="out">&minus;</button>
+      <button data-act="in">+</button>
+      <button data-act="fit">Fit</button>
+    </div>
+    <div class="viewport"><div class="stage"><pre class="mermaid"></pre></div>
+      <div class="hint">drag to pan &middot; scroll to zoom</div></div>
+    <div class="index">
+      <h3>Jump to</h3>
+      <button data-k="COMPACT">1 &middot; Compaction destroys the map</button>
+      <button data-k="RTEXT">2 &middot; Only boilerplate is left</button>
+      <button data-k="INF">3 &middot; One event per turn</button>
+      <button data-k="TR">4 &middot; The transcript on disk</button>
+      <button data-k="SUM">5 &middot; The summariser builds the report</button>
+      <button data-k="RWR">6 &middot; Deeper without a model run</button>
+    </div>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--bad)"></i> loses the prose today</span>
+      <span><i class="sw" style="background:var(--good)"></i> added or changed</span>
+      <span><i class="sw" style="background:#fff;border:1px solid var(--line)"></i> unchanged</span>
+    </div>
+  </div>
+
+  <div class="dia" data-dia="2">
+    <div class="dia-bar">
+      <span class="title">One spawn, end to end</span>
+      <button data-act="out">&minus;</button>
+      <button data-act="in">+</button>
+      <button data-act="fit">Fit</button>
+    </div>
+    <div class="viewport"><div class="stage"><pre class="mermaid"></pre></div>
+      <div class="hint">drag to pan &middot; scroll to zoom</div></div>
+  </div>
+</div>
+
+</div><!-- /cols -->
+</div><!-- /wrap -->
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<script>
+document.querySelector('[data-dia="1"] pre.mermaid').textContent =
+  document.getElementById('src1').textContent;
+document.querySelector('[data-dia="2"] pre.mermaid').textContent =
+  document.getElementById('src2').textContent;
+mermaid.initialize({startOnLoad:true, theme:'neutral', securityLevel:'loose'});
+
+document.querySelectorAll('.dia').forEach(dia=>{
+  const vp=dia.querySelector('.viewport'), stage=dia.querySelector('.stage');
+  let s=1,x=0,y=0,drag=false,px=0,py=0;
+  const apply=()=>stage.style.transform=`translate(${x}px,${y}px) scale(${s})`;
+
+  vp.addEventListener('wheel',e=>{
+    e.preventDefault();
+    const r=vp.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top;
+    const ns=Math.min(4,Math.max(.2,s*(e.deltaY<0?1.12:1/1.12)));
+    x=mx-(mx-x)*(ns/s); y=my-(my-y)*(ns/s); s=ns; apply();
+  },{passive:false});
+
+  vp.addEventListener('mousedown',e=>{drag=true;px=e.clientX;py=e.clientY;vp.classList.add('grabbing')});
+  addEventListener('mousemove',e=>{if(!drag)return;x+=e.clientX-px;y+=e.clientY-py;px=e.clientX;py=e.clientY;apply()});
+  addEventListener('mouseup',()=>{drag=false;vp.classList.remove('grabbing')});
+
+  function fit(){
+    const svg=stage.querySelector('svg'); if(!svg)return;
+    svg.removeAttribute('width'); svg.removeAttribute('height');
+    svg.style.maxWidth='none';
+    const b=svg.getBBox(), r=vp.getBoundingClientRect();
+    s=Math.min((r.width-32)/b.width,(r.height-32)/b.height);
+    x=(r.width-b.width*s)/2-b.x*s; y=(r.height-b.height*s)/2-b.y*s; apply();
+  }
+  dia.querySelectorAll('.dia-bar button').forEach(b=>{
+    b.onclick=()=>{
+      if(b.dataset.act==='fit') fit();
+      if(b.dataset.act==='in'){s=Math.min(4,s*1.25);apply()}
+      if(b.dataset.act==='out'){s=Math.max(.2,s/1.25);apply()}
+    };
+  });
+
+  dia.querySelectorAll('.index button').forEach(b=>{
+    b.onclick=()=>{
+      dia.querySelectorAll('.index button').forEach(o=>o.classList.remove('on'));
+      dia.querySelectorAll('g.node').forEach(n=>n.classList.remove('lit'));
+      b.classList.add('on');
+      const n=[...dia.querySelectorAll('g.node')]
+        .find(n=>(n.id||'').includes('-'+b.dataset.k+'-'));
+      if(!n)return;
+      n.classList.add('lit');
+      const bb=n.getBBox(), r=vp.getBoundingClientRect();
+      x=r.width/2-(bb.x+bb.width/2)*s; y=r.height/2-(bb.y+bb.height/2)*s; apply();
+    };
+  });
+  setTimeout(fit,700);
+});
+</script>
+</body>
+</html>

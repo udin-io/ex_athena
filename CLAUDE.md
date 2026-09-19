@@ -57,21 +57,47 @@ Measured 2026-09-13 on `main` (`5db70d8`). Do not chase these:
 be committed and will be lost. Put anything that has to survive the session in
 `docs/design/<issue>-<topic>.html`.
 
-## Worker transcripts on disk
+## What a worker leaves on disk
 
-`ExAthena.Agents.Sidechain` writes every subagent's full, untruncated report to
+Three files per worker, all under
 
-    <parent cwd>/.exathena/sessions/<parent_session_id>
-        /sidechains/<subagent_id>.jsonl
+    <parent cwd>/.exathena/sessions/<parent_session_id>/
 
-before either result branch runs, on success and failure alike. Before reaching
-for "persist the worker's output", check whether it is already there — it
-usually is. `ExAthena.Tools.ReadWorkerReport` reads it.
+* `sidechains/<id>.jsonl` — `ExAthena.Agents.Sidechain`. The worker's
+  **Result**: its final text, the run's counters, its conclusions and todos.
+  Written before either result branch runs, on success and failure alike. It
+  is NOT the worker's full prose — `Result.text` is only the last non-blank
+  assistant message.
+* `transcript/<id>.ndjson` — `ExAthena.Agents.Transcript`. What the worker
+  **said**: one line per conversational turn, written as the turn happens.
+  This is the full prose, and the only copy of it — see below.
+* `journal/<id>.ndjson` — `ExAthena.Agents.Journal`. What the worker **did**:
+  files with sizes, commands with exit codes. It refuses prose by design.
 
-It must be written under the **parent's** cwd. A `:worktree`-isolated worker's
-own cwd is deleted by `finalize_isolation/1` moments later, so a transcript
+`ExAthena.Tools.ReadWorkerReport` reads all three (`source:` selects).
+
+Before reaching for "persist the worker's output", check whether it is already
+there — it usually is.
+
+All three must be written under the **parent's** cwd. A `:worktree`-isolated
+worker's own cwd is deleted by `finalize_isolation/1` moments later, so a file
 written there is written into a grave (fixed in issue 216; the bug lived for
 several releases because nothing read the file).
+
+### The report is built, not caught
+
+Since issue 251 the report the parent receives is written by
+`ExAthena.Agents.Summariser` from the transcript, not taken from the worker's
+final message. `agents.summarise_reports` turns it off (it is ON in
+production and OFF in `config/test.exs`, because it adds one model call per
+spawn and every mock responder would have to answer it).
+
+Do **not** try to recover a worker's prose from `Result.messages`. Compaction
+replaces the middle of history while the worker is still running
+(`Compactors.Summary`), and `Compactors.EpisodicArchive` keeps the sliced text
+in `state.meta` — in memory, dying with the process. A report written at turn
+19 is gone at turn 20. That is why the transcript is written turn by turn
+instead.
 
 ## The mistake counter has three outcomes, not two
 
