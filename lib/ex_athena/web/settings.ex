@@ -363,6 +363,57 @@ defmodule ExAthena.Web.Settings do
             "Cap on one turn's text. Long enough for a whole codebase map written in a " <>
               "single message; short enough that a model dumping binary into the text " <>
               "channel cannot fill the file in one line."
+        },
+        %{
+          key: :summarise_reports,
+          label: "Build reports from the transcript",
+          default: 1,
+          type: :integer,
+          min: 0,
+          help:
+            "Run a summariser over each finished worker's transcript and hand the parent " <>
+              "that report, instead of whatever the worker said last. Costs one extra " <>
+              "model run per worker. 0 disables it and the worker's final message is the " <>
+              "report again."
+        },
+        %{
+          key: :summariser_chunk_chars,
+          label: "Summariser chunk (characters)",
+          default: 24_000,
+          type: :integer,
+          min: 1_000,
+          help:
+            "Transcript the summariser reads in one pass. A transcript longer than this " <>
+              "is split on turn boundaries; a large-context model never splits."
+        },
+        %{
+          key: :summariser_block_chars,
+          label: "Summariser block cap (characters)",
+          default: 4_000,
+          type: :integer,
+          min: 200,
+          help: "Cap on one chunk's summary, which bounds what the combine pass must read."
+        },
+        %{
+          key: :summariser_max_chunks,
+          label: "Summariser passes per worker",
+          default: 8,
+          type: :integer,
+          min: 1,
+          help:
+            "Model runs one worker's report may cost. Past it the MIDDLE chunks are " <>
+              "dropped and the report says so — the transcript still holds them, readable " <>
+              "with read_worker_report."
+        },
+        %{
+          key: :summariser_timeout_ms,
+          label: "Summariser time budget (ms)",
+          default: 120_000,
+          type: :integer,
+          min: 1_000,
+          help:
+            "The whole summarise, chunks and combine together. On timeout the report " <>
+              "falls back to the worker's own final message and says that it did."
         }
       ]
     },
