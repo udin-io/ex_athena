@@ -23,6 +23,17 @@ Once the pages exist: every PR that changes behaviour, structure, a risk or a
 decision updates them in the SAME PR, and a merge is not finished until they
 describe `main` as it now is.
 
+## Every behaviour change updates `CHANGELOG.md`
+
+A PR that changes behaviour adds its entry to `CHANGELOG.md` under
+`## Unreleased`, in the same PR. Match the style already in the file: a bold
+one-line claim, the issue link, then prose saying what was broken, what
+changed, and what a user or host now sees differently — written for someone
+who was not there. Every figure comes from the issue, the PR or the code;
+never invent one. Group under `### Added` / `### Changed` / `### Fixed` /
+`### Security`, and place the entry where the section reads well rather than
+strictly by merge date.
+
 ## Running the tests
 
 There is **no database**. Skip every DB and partition-setup step in the global
