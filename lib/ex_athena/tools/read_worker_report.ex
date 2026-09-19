@@ -9,12 +9,13 @@ defmodule ExAthena.Tools.ReadWorkerReport do
   orchestrator saw 2,000 of it and recorded "the data has been lost from my
   context", then re-delegated — which costs more than the whole mechanism.
 
-  The text was never actually lost. `ExAthena.Agents.Sidechain` persists every
-  worker's untruncated report before either result branch runs. What was missing
-  was an address the model could act on and a tool to act on it with. This is
-  that tool; `SpawnAgent`'s truncation notice names it with the offset the cut
-  happened at, so the model asks for the remainder instead of re-running the
-  worker.
+  The text was never actually lost. `ExAthena.Agents.Sidechain` persists the
+  worker's Result — its final text plus the run's counters — before either
+  result branch runs, and `ExAthena.Agents.Transcript` holds every turn it
+  wrote. What was missing was an address the model could act on and a tool to
+  act on it with. This is that tool; `SpawnAgent`'s truncation notice names it
+  with the offset the cut happened at, so the model asks for the remainder
+  instead of re-running the worker.
 
   Truncation is not the only reason to want it. Web session 272a4251558c
   called this tool after a worker SUMMARISED instead of quoting — nothing was

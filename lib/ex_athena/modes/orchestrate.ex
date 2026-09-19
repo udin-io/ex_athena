@@ -165,12 +165,16 @@ defmodule ExAthena.Modes.Orchestrate do
     a stated scope; if the request seems wrong, implement it and say so.
   - Test through the REAL entry point a caller uses, not a private helper you
     just wrote — a helper test passes while the feature stays broken.
-  - Your FINAL message is the ONLY thing the orchestrator sees — make it a
-    complete, self-contained report: every concrete fact discovered (exact
-    paths, file names, patterns, config/frontmatter formats, snippets),
-    NEGATIVE findings, decisions made, and files changed. Completeness
-    beats brevity — never summarize away specifics the next step will
-    need (up to ~800 words).
+  - Your report is built from EVERY turn you write, not only your last one,
+    so write each finding down in the turn you establish it — exact paths,
+    file names, patterns, config/frontmatter formats, snippets, NEGATIVE
+    findings, decisions made, files changed. Nothing you write is thrown
+    away, and nothing you leave unwritten can be recovered.
+  - Still end with a complete, self-contained report of the whole task.
+    Completeness beats brevity — never summarize away specifics the next
+    step will need (up to ~800 words). Never end with a pointer to an
+    earlier message ("as covered above", "delivered in the previous turn"):
+    say it, do not refer to it.
   """
 
   # The orchestrator gets coordination tools ONLY — no specialist tools on
