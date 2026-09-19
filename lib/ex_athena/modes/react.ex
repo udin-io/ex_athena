@@ -25,7 +25,7 @@ defmodule ExAthena.Modes.ReAct do
   @behaviour ExAthena.Loop.Mode
 
   alias ExAthena.{Messages, Permissions, Skills, Telemetry}
-  alias ExAthena.Loop.{BudgetPressure, Events, Inference, Parallel, State}
+  alias ExAthena.Loop.{BudgetPressure, Events, Inference, NarratedStop, Parallel, State}
   alias ExAthena.Messages.ToolCall
   alias ExAthena.Tools
   alias ExAthena.Tools.Skill, as: SkillTool
@@ -200,20 +200,19 @@ defmodule ExAthena.Modes.ReAct do
            state.capabilities
          ) do
       {:ok, []} ->
-        # Terminal: model returned plain text with no tool calls.
+        # Terminal: model returned plain text with no tool calls — unless that
+        # text is a worker narrating a next action it never took (issue 258).
         unless streamed_thinking?, do: maybe_emit_thinking(state.on_event, response)
         unless streamed_text?, do: maybe_emit_content(state.on_event, response)
 
         state = record_conclusion(state, response, [])
 
-        state =
-          %{
-            state
-            | messages: state.messages ++ [Messages.assistant(response.text)]
-          }
-          |> set_finish_reason(:stop)
+        state = %{state | messages: state.messages ++ [Messages.assistant(response.text)]}
 
-        {:halt, state}
+        case maybe_nudge_narration(state, response.text) do
+          {:continue, state} -> {:continue, state}
+          :terminal -> {:halt, set_finish_reason(state, :stop)}
+        end
 
       {:ok, tool_calls} ->
         unless streamed_thinking?, do: maybe_emit_thinking(state.on_event, response)
@@ -512,6 +511,76 @@ defmodule ExAthena.Modes.ReAct do
 
   defp set_finish_reason(state, reason) do
     put_in(state.meta[:finish_reason], reason)
+  end
+
+  # ── The narrated stop (issue 258) ─────────────────────────────────
+
+  # Doubles as the note's own header, so the flag is readable off the
+  # transcript and nothing invisible rides along in the prompt.
+  @narrated_stop_marker "[runtime: narrated-stop]"
+
+  # A worker that ends a turn saying what it will do next ends its RUN, and
+  # `SpawnAgent` hands the parent a success. Worker `subagent_J8xXdYDq` closed
+  # "Writing the brief now." after 19 minutes and 608,954 input tokens, and no
+  # brief was ever written.
+  #
+  # Scoped to workers on purpose. A top-level run's plain text goes to a human
+  # who can answer it in the next turn, so there is nothing to recover; and
+  # `Orchestrate.maybe_nudge_stop/1` already covers the orchestrator, whose
+  # test ("pending todos exist") a worker has no equivalent of. Keeping this
+  # one behind `parent_session_id` is also what stops the two from stacking on
+  # the same halt.
+  #
+  # See `ExAthena.Loop.NarratedStop` for what the text has to look like, and
+  # why the rule is narrow enough that an `explore` worker — whose deliverable
+  # IS its final text — still stops on its first `:stop`.
+  defp maybe_nudge_narration(%State{} = state, text) do
+    if worker?(state) and not narrated_stop_nudged?(state) and NarratedStop.narrated?(text) do
+      {:continue,
+       %{
+         state
+         | messages: state.messages ++ [Messages.user(narrated_stop_note())],
+           mode_state: Map.put(state.mode_state || %{}, :narrated_stop_nudged, true),
+           meta: Map.delete(state.meta, :finish_reason)
+       }}
+    else
+      :terminal
+    end
+  end
+
+  defp worker?(%State{parent_session_id: psid}), do: is_binary(psid) and psid != ""
+
+  # Once means once across a RESUME too. `mode_state` cannot carry that —
+  # `Loop.run` rebuilds it over the stored messages — so the note names itself
+  # and the transcript is read back, the same two-part flag the orchestrator's
+  # gates use. `mode_state` stays as the in-run answer, because a compaction
+  # can drop the note but not the flag.
+  defp narrated_stop_nudged?(%State{} = state) do
+    (state.mode_state || %{})[:narrated_stop_nudged] == true or
+      Enum.any?(state.messages, fn
+        %{role: :user, content: content} when is_binary(content) ->
+          String.contains?(content, @narrated_stop_marker)
+
+        _ ->
+          false
+      end)
+  end
+
+  # "Continue" is what the model already believes it is doing. The note has to
+  # name the two outcomes that are acceptable instead — do it, or say it is not
+  # done — because a worker at the end of its budget genuinely may not be able
+  # to do it, and an honest "not done" is what lets the parent re-delegate.
+  defp narrated_stop_note do
+    @narrated_stop_marker <>
+      " Your last turn ended by saying what you would do NEXT, without doing it. " <>
+      "A turn with no tool call ends your run, so that work never happened and whoever " <>
+      "delegated this is about to be told you finished. Take this turn and do one of two " <>
+      "things:\n" <>
+      "1. DO the thing you just described — call the tools that do it.\n" <>
+      "2. Or hand back honestly: say plainly that it is NOT done, name what you did " <>
+      "produce and exactly where it is, and say what remains, so it can be re-delegated.\n" <>
+      "Do not describe a next action again — you will not be asked twice, and the next " <>
+      "turn you end without a tool call is final."
   end
 
   defp stash_session_id(state, %{session_id: sid}) when is_binary(sid) and sid != "",
