@@ -33,10 +33,11 @@ defmodule ExAthena.Tools.ReadWorkerReport do
 
   ## Three sources
 
-  `source: "report"` (the default) is the report the parent already received —
-  since issue 251 that is a SUMMARY of the run, written by
+  `source: "report"` (the default) is the report the parent already received.
+  Since issue 251 that is a SUMMARY of the run, written by
   `ExAthena.Agents.Summariser` from the transcript, and therefore lossy by
-  design. `source: "journal"` reads `ExAthena.Agents.Journal` — what the worker
+  design — unless the worker called `finish` with a `deliverable`, which is its
+  report verbatim and is what this returns (issue 263). `source: "journal"` reads `ExAthena.Agents.Journal` — what the worker
   DID, files with sizes and commands with exit codes. `source: "transcript"`
   reads `ExAthena.Agents.Transcript` — what it SAID, verbatim, turn by turn.
 
@@ -193,7 +194,8 @@ defmodule ExAthena.Tools.ReadWorkerReport do
     path = report_path(ctx, id)
 
     with {:ok, raw} <- read_last_line(path),
-         {:ok, %{"result" => %{"text" => text}}} when is_binary(text) <- decode(raw) do
+         {:ok, %{"result" => result}} <- decode(raw),
+         text when is_binary(text) <- report_text(result) do
       {:ok, slice(text, offset(args, "from", 0), offset(args, "max_chars", @default_max_chars))}
     else
       _ ->
@@ -203,6 +205,22 @@ defmodule ExAthena.Tools.ReadWorkerReport do
            journal_hint(ctx, id)}
     end
   end
+
+  # What the parent received. Since issue 263 a worker's `finish` deliverable
+  # IS its report, so it comes first; a worker that reported in prose still has
+  # its text, and one that finished with only a `summary` has that rather than
+  # nothing.
+  defp report_text(%{"deliverable" => d, "deliverable_source" => "deliverable"})
+       when is_binary(d),
+       do: d
+
+  defp report_text(%{"text" => text}) when is_binary(text) and text != "" do
+    text
+  end
+
+  defp report_text(%{"deliverable" => d}) when is_binary(d), do: d
+  defp report_text(%{"text" => text}) when is_binary(text), do: text
+  defp report_text(_result), do: nil
 
   defp fetch_journal(id, args, ctx) do
     filter = Map.get(args, "filter") || "tail"
