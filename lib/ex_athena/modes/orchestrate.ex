@@ -281,7 +281,7 @@ defmodule ExAthena.Modes.Orchestrate do
 
           # A premature `finish` with NO plan would end the run as
           # :submitted success having done nothing — redirect once.
-          match?({:submitted, _}, halted.halted_reason) and current_todos(halted) == [] ->
+          submitted?(halted) and current_todos(halted) == [] ->
             {:continue,
              halted
              |> redirect(
@@ -350,7 +350,7 @@ defmodule ExAthena.Modes.Orchestrate do
     todos = current_todos(halted)
 
     premature? =
-      halted.meta[:finish_reason] == :stop or match?({:submitted, _}, halted.halted_reason)
+      halted.meta[:finish_reason] == :stop or submitted?(halted)
 
     # A clean halt requires todos that are ALL done. `pending == []` alone
     # is also true when NO plan was ever recorded (todos == []) — stopping
@@ -359,7 +359,7 @@ defmodule ExAthena.Modes.Orchestrate do
 
     # Only a `finish` can be gated on evidence: a bare-text stop is already
     # handled below, and scanning the transcript is wasted work otherwise.
-    ev = if match?({:submitted, _}, halted.halted_reason), do: evidence(halted), else: nil
+    ev = if submitted?(halted), do: evidence(halted), else: nil
 
     # Every gate below asks for ONE more worker. With the allowance spent
     # there is none, so the demand is one the run cannot meet: session
@@ -435,16 +435,27 @@ defmodule ExAthena.Modes.Orchestrate do
         halted
 
       checks ->
-        {:submitted, deliverable} = halted.halted_reason
+        {deliverable, source} = submitted_payload(halted)
 
         note =
           "\n\n[orchestration runtime] UNVERIFIED — the run's worker allowance " <>
             "(#{Quota.limit(halted.ctx.assigns || %{})}) was spent, so these checks did not run:\n" <>
             Enum.map_join(checks, "\n", &("- " <> &1))
 
-        %{halted | halted_reason: {:submitted, to_string(deliverable) <> note}}
+        %{halted | halted_reason: {:submitted, to_string(deliverable) <> note, source}}
     end
   end
+
+  # `finish` halts with `{:submitted, payload, source}` (issue 263); a
+  # `{:submitted, payload}` halt raised elsewhere is the same signal without a
+  # named argument, and both end the run the same way.
+  defp submitted?(halted) do
+    match?({:submitted, _}, halted.halted_reason) or
+      match?({:submitted, _, _}, halted.halted_reason)
+  end
+
+  defp submitted_payload(%{halted_reason: {:submitted, payload, source}}), do: {payload, source}
+  defp submitted_payload(%{halted_reason: {:submitted, payload}}), do: {payload, nil}
 
   # One line per gate that is still deficient, in the gates' own order.
   defp unverified(ev) do

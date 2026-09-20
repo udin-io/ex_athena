@@ -788,6 +788,7 @@ defmodule ExAthena.LoopTest do
 
       assert result.finish_reason == :submitted
       assert result.deliverable == "Here is the plan."
+      assert result.deliverable_source == :deliverable
       assert result.halted_reason == nil
     end
 
@@ -822,6 +823,9 @@ defmodule ExAthena.LoopTest do
 
       assert result.finish_reason == :submitted
       assert result.deliverable == "Task accomplished."
+      # A summary is not the task's primary output, and the Result says which
+      # argument it came from so callers can tell the two apart (issue 263).
+      assert result.deliverable_source == :summary
     end
 
     test "finish with no args still produces :submitted with nil deliverable", %{dir: dir} do

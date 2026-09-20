@@ -18,6 +18,18 @@ defmodule ExAthena.Tools.Finish do
     * `summary` — a brief human-readable description of what was accomplished.
       Used as the deliverable when `deliverable` is absent.
 
+  ## The halt payload names the argument
+
+  `execute/2` halts with `{:submitted, payload, source}`, where `source` is
+  `:deliverable`, `:summary` or `:none`. `ExAthena.Loop` carries it onto
+  `Result.deliverable_source`, and `ExAthena.Tools.SpawnAgent` reads it to
+  decide whether a worker's payload reaches its parent verbatim (issue 263).
+
+  The two arguments are not interchangeable for that decision. `deliverable` is
+  the task's primary output, packaged deliberately for the caller; `summary` is
+  by its own description a brief account of what was done — the shape issue 251
+  was about, where a worker's self-summary replaced the work it referred to.
+
   ## Usage rules
 
   Add `ExAthena.Tools.Finish` to the tool list (or use the default `:all`
@@ -74,11 +86,20 @@ defmodule ExAthena.Tools.Finish do
 
   @impl true
   def execute(args, _ctx) do
-    deliverable =
-      if is_nil(Map.get(args, "deliverable")),
-        do: Map.get(args, "summary"),
-        else: Map.get(args, "deliverable")
-
-    {:halt, {:submitted, deliverable}}
+    {:halt, submitted(Map.get(args, "deliverable"), Map.get(args, "summary"))}
   end
+
+  # A blank `deliverable` is not an output, so it falls through to `summary`
+  # rather than declaring an empty one.
+  defp submitted(deliverable, summary) do
+    cond do
+      not blank?(deliverable) -> {:submitted, deliverable, :deliverable}
+      not blank?(summary) -> {:submitted, summary, :summary}
+      true -> {:submitted, deliverable || summary, :none}
+    end
+  end
+
+  defp blank?(value) when is_binary(value), do: String.trim(value) == ""
+  defp blank?(nil), do: true
+  defp blank?(_other), do: false
 end
