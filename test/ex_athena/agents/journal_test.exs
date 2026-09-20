@@ -106,6 +106,43 @@ defmodule ExAthena.Agents.JournalTest do
       assert [%{"args" => args}] = Journal.read(path)
       assert String.length(args) <= 80
     end
+
+    # Issue 263. A grep's arguments are a call's parameters and 400 characters
+    # of them is generous. A `finish` call's arguments ARE the worker's report:
+    # `subagent_B-g8CXaN`'s journal line ended mid-sentence at `precisely so "a`.
+    @tag :tmp_dir
+    test "a finish deliverable is kept whole, not digested at the argument cap",
+         %{tmp_dir: dir} do
+      path = journal(dir)
+      deliverable = String.duplicate("report. ", 500) <> "LAST SENTENCE OF THE REPORT."
+
+      Journal.compose(nil, path, cwd: dir, line_chars: 80).(
+        {:tool_call,
+         %ToolCall{id: "f1", name: "finish", arguments: %{"deliverable" => deliverable}}}
+      )
+
+      assert [%{"args" => args}] = Journal.read(path)
+      assert args =~ "LAST SENTENCE OF THE REPORT."
+    end
+
+    # The bound is the transcript's per-turn cap, not "no bound": a model
+    # dumping binary into `finish` still cannot fill the file in one line.
+    @tag :tmp_dir
+    test "a finish deliverable is still bounded", %{tmp_dir: dir} do
+      path = journal(dir)
+
+      Journal.compose(nil, path, cwd: dir, finish_chars: 200).(
+        {:tool_call,
+         %ToolCall{
+           id: "f1",
+           name: "finish",
+           arguments: %{"deliverable" => String.duplicate("x", 100_000)}
+         }}
+      )
+
+      assert [%{"args" => args}] = Journal.read(path)
+      assert String.length(args) <= 200
+    end
   end
 
   # A dead worker's evidence is rebuilt from its journal, so the journal must
