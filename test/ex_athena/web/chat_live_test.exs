@@ -224,6 +224,62 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
       assert replayed.assigns.stream_events == live.assigns.stream_events
     end
 
+    # A reattaching browser rebuilds details_stream through the very same
+    # apply_event/2 a live connection uses (that is what the previous test
+    # guards) — so a worker's report that is stored once for a live viewer
+    # (issue #264) is stored once for a reattaching one too, by construction.
+    test "a worker's report is not duplicated for a reattaching browser either" do
+      events = [
+        {:subagent_spawn, %{id: "sub_a", prompt: "explore"}},
+        {:tool_call, %{id: "c1", name: "spawn_agent", arguments: %{}}},
+        {:tool_result,
+         %{tool_call_id: "c1", content: "the report\n[runtime] footer", is_error: false}},
+        {:subagent_result, %{id: "sub_a", text: "the report"}}
+      ]
+
+      replayed = Enum.reduce(events, socket(), &ChatLive.apply_event(&2, &1))
+
+      live =
+        Enum.reduce(events, socket(), fn ev, s ->
+          {:noreply, s} = ChatLive.handle_info({:athena, ev}, s)
+          s
+        end)
+
+      strip = &Enum.map(&1, fn d -> Map.drop(d, [:id]) end)
+      assert strip.(replayed.assigns.details_stream) == strip.(live.assigns.details_stream)
+
+      full_copies =
+        Enum.count(replayed.assigns.details_stream, fn %{payload: payload} ->
+          payload
+          |> Map.values()
+          |> Enum.any?(&(is_binary(&1) and String.contains?(&1, "the report")))
+        end)
+
+      assert full_copies == 1
+    end
+
+    # A worker's report is already stored once, in full, as the spawn_agent
+    # call's ordinary :tool_result. The :subagent_result boundary event fires
+    # from the same emission site with the same text (issue #264) — storing
+    # it again here doubled every worker's footprint in the session file
+    # (persisted verbatim via session_payload/1). Keep only what the
+    # message-pane one-liner and coordinator-side consumers need to render:
+    # an id and a length, never the report text itself.
+    test "subagent_result sheds its report text before it reaches the stream" do
+      report = String.duplicate("x", 500)
+      result = ChatLive.apply_event(socket(), {:subagent_result, %{id: "sub_a", text: report}})
+
+      assert [detail] = result.assigns.details_stream
+      assert detail.type == :subagent_result
+      assert detail.payload == %{id: "sub_a", len: 500}
+    end
+
+    test "subagent_result with no text at all still yields a zero length" do
+      result = ChatLive.apply_event(socket(), {:subagent_result, %{id: "sub_a"}})
+
+      assert [%{payload: %{id: "sub_a", len: 0}}] = result.assigns.details_stream
+    end
+
     test "an unknown event is ignored rather than crashing the view" do
       result = ChatLive.apply_event(socket(), {:something_new, %{}})
       assert result.assigns.details_stream == []
