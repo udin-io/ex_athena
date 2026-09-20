@@ -2,8 +2,8 @@
 
 All notable changes to this project will be documented in this file.
 
-The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
-and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
+ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
@@ -12,21 +12,21 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **A worker's budget now ends with a handback turn instead of a kill.**
   ([#237](https://github.com/udin-io/ex_athena/issues/237)) A worker that ran
   out of wall-clock time was brutal-killed by `SpawnAgent.await_worker/3`, so
-  its `Result` died with the process and the parent got a digest the
-  Coordinator rebuilt from the outside. The work usually survived; the account
-  of it did not. In session `4ee9e00f1ebf` two of twelve workers were killed at
-  the wall, costing about an hour of a three-hour run — one had written all
-  four of its files at minute 25 and was killed at minute 28 without a word of
-  report; the next worker redid the same task in 11 minutes. Both had received
-  the 60% wrap-up nudge and both ignored it. `Loop.BudgetPressure.handback?/2`
-  is the binding version: at 83% of credited working time (settings: **Run
-  budget → Handback at (%)**) `Modes.ReAct` builds one turn with no tool
-  schemas and an instruction to report now, and that text becomes the worker's
-  report under a new `:budget_handback` termination, routed through the success
-  branch so the parent reads the worker's own words. The runtime prefixes it
-  with a line saying the work is not finished, because success is also what the
-  orchestrate evidence gates count. The existing kill stays as the backstop for
-  a handback turn that overruns. The 30-minute worker budget is tunable too —
+  its `Result` died with the process and the parent got a digest the Coordinator
+  rebuilt from the outside. The work usually survived; the account of it did
+  not. In session `4ee9e00f1ebf` two of twelve workers were killed at the wall,
+  costing about an hour of a three-hour run — one had written all four of its
+  files at minute 25 and was killed at minute 28 without a word of report; the
+  next worker redid the same task in 11 minutes. Both had received the 60%
+  wrap-up nudge and both ignored it. `Loop.BudgetPressure.handback?/2` is the
+  binding version: at 83% of credited working time (settings: **Run budget →
+  Handback at (%)**) `Modes.ReAct` builds one turn with no tool schemas and an
+  instruction to report now, and that text becomes the worker's report under a
+  new `:budget_handback` termination, routed through the success branch so the
+  parent reads the worker's own words. The runtime prefixes it with a line
+  saying the work is not finished, because success is also what the orchestrate
+  evidence gates count. The existing kill stays as the backstop for a handback
+  turn that overruns. The 30-minute worker budget is tunable too —
   `agents.timeout_ms`, **Workers → Time budget (ms)** — with precedence
   unchanged: `spawn_agent_opts[:timeout_ms]` wins, and a `timeout_ms` the model
   asks for is still ignored. Brief:
@@ -35,8 +35,8 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **A write brief handed to a worker that cannot write is refused before it
   costs a worker slot.**
   ([#217](https://github.com/udin-io/ex_athena/issues/217)) An orchestrator
-  could hand `agent: "explore"` a brief beginning *"WRITE THE RESULT TO A
-  FILE"* and the spawn was accepted — `priv/agents/explore.md` declares neither
+  could hand `agent: "explore"` a brief beginning *"WRITE THE RESULT TO A FILE"*
+  and the spawn was accepted — `priv/agents/explore.md` declares neither
   `write` nor `bash`. Live that cost 24.6 minutes and 540K input tokens on a
   report nobody could save, then two further workers spawned purely to probe
   whether writing was possible at all. `ExAthena.Agents.WriteBrief` now refuses
@@ -45,8 +45,8 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   refusal at the natural site would have burned a slot per repeat. The refusal
   names the agent's actual tools and points at a write-capable agent. The
   detector is deliberately narrow: a write verb in an instruction position
-  governing a file object, so `write up`, "the write tool" and *"read the
-  config file and write up what you find"* never match.
+  governing a file object, so `write up`, "the write tool" and *"read the config
+  file and write up what you find"* never match.
   `ExAthena.Agents.WriteBriefTest` carries 12 positives and 18 negatives, every
   negative a brief shape that occurs in this repo. Edit briefs (`update
   README.md`), directory targets and demands split across two sentences are
@@ -68,10 +68,10 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   *every* phase, not only the restricted ones. `read_only?/0` returns true, so
   it is auto-permitted in `:plan` phase by the same mechanism as `lsp` and
   `usage_rules`. Output is capped head-and-tail and the call is wrapped in a
-  `Task.async` timeout. Added to the explore/research/plan/implementer
-  ceilings, to `Permissions.@readonly_tools` and to `guides/tools.md`. It needs
-  the `gh` binary on PATH and a logged-in `gh` visible from the run's cwd; a
-  missing binary or a logged-out CLI reaches the model as a readable error. One
+  `Task.async` timeout. Added to the explore/research/plan/implementer ceilings,
+  to `Permissions.@readonly_tools` and to `guides/tools.md`. It needs the `gh`
+  binary on PATH and a logged-in `gh` visible from the run's cwd; a missing
+  binary or a logged-out CLI reaches the model as a readable error. One
   documented trade: a single command string means arguments containing spaces
   cannot be quoted.
 
@@ -89,8 +89,8 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `Skills.activation_message/2`, the same call the sentinel path already made.
   So the body is byte-identical whichever entry point asked, `loaded_skills/1`
   dedupes across both, and `disable-model-invocation` now applies to both. The
-  tool's schema is 476 bytes (~119 tokens) of the orchestrator's 4,893-byte
-  tool block.
+  tool's schema is 476 bytes (~119 tokens) of the orchestrator's 4,893-byte tool
+  block.
 
 - **`.exathena/` history is swept at boot instead of growing forever.**
   ([#220](https://github.com/udin-io/ex_athena/issues/220)) `.exathena/sessions`
@@ -110,16 +110,16 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   conversations live under `~/.ex_athena/web/sessions`, a different root, and
   are never touched.
 
-- **CI, at last.** ([#171](https://github.com/udin-io/ex_athena/issues/171))
-  The repo had no `.github/` at all: `credo` and `dialyxir` were declared in
+- **CI, at last.** ([#171](https://github.com/udin-io/ex_athena/issues/171)) The
+  repo had no `.github/` at all: `credo` and `dialyxir` were declared in
   `mix.exs` and never run, and there was no dependency-advisory or static
   security scanning. A GitHub Actions workflow now runs on every push to `main`
   and every pull request. Blocking: `mix test` (matrixed over Elixir
   1.18/1.19/1.20 on OTP 27/28), `mix compile --warnings-as-errors` on 1.18, and
   `mix format --check-formatted`. Advisory — reported on every PR but not
   failing the build while the backlogs are burned down: `mix credo --strict`,
-  `mix dialyzer`, `mix sobelow --config`, `mix hex.audit`, `mix deps.audit`,
-  and `--warnings-as-errors` on Elixir 1.19/1.20, which the tree does not yet
+  `mix dialyzer`, `mix sobelow --config`, `mix hex.audit`, `mix deps.audit`, and
+  `--warnings-as-errors` on Elixir 1.19/1.20, which the tree does not yet
   compile clean under. `sobelow` and `mix_audit` are new dev/test dependencies.
   Nothing is suppressed to keep a check green: `.sobelow-conf` carries an empty
   ignore list, and there is no dialyzer ignore file or credo disable comment
@@ -127,16 +127,16 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed
 
-- **A worker's report is built from its transcript on disk, not caught from
-  its last message.**
+- **A worker's report is built from its transcript on disk, not caught from its
+  last message.**
   ([#251](https://github.com/udin-io/ex_athena/issues/251)) A worker's report
-  used to be whatever it said last. A worker that signs off with a
-  meta-summary — *"the report above is the complete deliverable… delivered in
-  the previous turn"* — left nothing behind to recover the real thing: the
-  session that motivated this burned 794,377 input tokens and 17 minutes on a
-  codebase map, handed back 545 characters, and was re-spawned to redo the same
-  work. `ExAthena.Agents.Transcript` now writes every turn of a worker's
-  transcript as it happens, in the writer style the journal already uses — one
+  used to be whatever it said last. A worker that signs off with a meta-summary
+  — *"the report above is the complete deliverable… delivered in the
+  previous turn"* — left nothing behind to recover the real thing: the session
+  that motivated this burned 794,377 input tokens and 17 minutes on a codebase
+  map, handed back 545 characters, and was re-spawned to redo the same work.
+  `ExAthena.Agents.Transcript` now writes every turn of a worker's transcript as
+  it happens, in the writer style the journal already uses — one
   open/write/close per line, so a killed worker keeps everything up to its last
   line. `ExAthena.Agents.Summariser`, a tool-free subagent, reads that
   transcript when the worker finishes and builds the report from it, chunking a
@@ -149,13 +149,13 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   same 52,492-character source transcript: a single pass took 116.0s with
   `:ollama` running `qwen3.8:27b-112` on the LAN and 63.3s with `:claude_code`;
   a transcript needing 3 chunks cost 4 calls and 251.8s. `summariser_max_chunks`
-  (default 8) is the real cost rail, not the timeout.
-  `agents.summarise_reports` turns the stage off — it is on by default, and off
-  in `config/test.exs` — and then the report is the worker's own final message
-  as before. A summariser failure, timeout or blank result falls back the same
-  way and says so in the report. All four caps (`summariser_chunk_chars`,
-  `summariser_block_chars`, `summariser_max_chunks`, `summariser_timeout_ms`)
-  live in `ExAthena.Tuning` and the settings modal.
+  (default 8) is the real cost rail, not the timeout. `agents.summarise_reports`
+  turns the stage off — it is on by default, and off in `config/test.exs` —
+  and then the report is the worker's own final message as before. A summariser
+  failure, timeout or blank result falls back the same way and says so in the
+  report. All four caps (`summariser_chunk_chars`, `summariser_block_chars`,
+  `summariser_max_chunks`, `summariser_timeout_ms`) live in `ExAthena.Tuning`
+  and the settings modal.
 
   Also corrected: the `CLAUDE.md` line claiming `Agents.Sidechain` persists
   "every subagent's full, untruncated report". It persists
@@ -165,64 +165,62 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Fixed
 
 - **A worker's report no longer renders — or gets stored — twice.**
-  ([#264](https://github.com/udin-io/ex_athena/issues/264)) `SpawnAgent`
-  emits a worker's report twice from one call: once as the `subagent_result`
-  boundary event the Coordinator uses to build the agent panel, and once as
-  the ordinary `tool_result` of the `spawn_agent` call itself, 132 characters
-  longer for the `[runtime] worker N of M …` footer appended after the
-  boundary event already fired. `ChatLive` stored both in `details_stream` —
-  persisted verbatim to the session file and replayed on reattach — and
-  rendered both in the Activity log. In web session `6bdad16e3028` this meant
-  a dozen 8 KB reports appeared, and cost disk, twice each. `apply_event/2`
-  now reduces a `subagent_result` entry to an id and a length before it
-  reaches the stream; `detail_entry/1` skips rendering it, leaving the
-  `tool_result` — the one with the runtime footer — as the single copy in
-  the log. The message pane's compact "subagent" line shows the length
-  instead of re-summarizing a report that entry no longer carries. The
-  Coordinator is unaffected: it reads the boundary event straight off
-  `Loop`'s tee, not off `details_stream`, so the agent panel still gets the
-  worker's full result.
+  ([#264](https://github.com/udin-io/ex_athena/issues/264)) `SpawnAgent` emits a
+  worker's report twice from one call: once as the `subagent_result` boundary
+  event the Coordinator uses to build the agent panel, and once as the ordinary
+  `tool_result` of the `spawn_agent` call itself, 132 characters longer for the
+  `[runtime] worker N of M …` footer appended after the boundary event already
+  fired. `ChatLive` stored both in `details_stream` — persisted verbatim to
+  the session file and replayed on reattach — and rendered both in the
+  Activity log. In web session `6bdad16e3028` this meant a dozen 8 KB reports
+  appeared, and cost disk, twice each. `apply_event/2` now reduces a
+  `subagent_result` entry to an id and a length before it reaches the stream;
+  `detail_entry/1` skips rendering it, leaving the `tool_result` — the one
+  with the runtime footer — as the single copy in the log. The message pane's
+  compact "subagent" line shows the length instead of re-summarizing a report
+  that entry no longer carries. The Coordinator is unaffected: it reads the
+  boundary event straight off `Loop`'s tee, not off `details_stream`, so the
+  agent panel still gets the worker's full result.
 
 - **A worker's `finish` deliverable reaches its parent, instead of being
   replaced by a summary of the prose around it.**
   ([#263](https://github.com/udin-io/ex_athena/issues/263)) Since #251 a
-  worker's report is built by `ExAthena.Agents.Summariser` from its
-  transcript, and the transcript holds assistant prose only. A worker that did
-  its talking inside the `finish` call therefore handed the parent nothing. In
-  web session `6bdad16e3028` worker `subagent_B-g8CXaN` fetched GitHub issue
-  #476, said "Fetched successfully." and put the whole issue in its
-  deliverable; the parent received "A fetch operation was performed and
-  completed successfully. The transcript does not specify what was fetched,
-  from where, or by what command." The orchestrator read the report, read the
-  transcript, and re-spawned the todo. `ExAthena.Tools.SpawnAgent` now uses a
-  `finish` deliverable as the report, verbatim, with no summariser run at all —
-  the provenance footer already carries the checkable account of what the
-  worker did, and the transcript stays on disk for `read_worker_report`.
+  worker's report is built by `ExAthena.Agents.Summariser` from its transcript,
+  and the transcript holds assistant prose only. A worker that did its talking
+  inside the `finish` call therefore handed the parent nothing. In web session
+  `6bdad16e3028` worker `subagent_B-g8CXaN` fetched GitHub issue #476, said
+  "Fetched successfully." and put the whole issue in its deliverable; the parent
+  received "A fetch operation was performed and completed successfully. The
+  transcript does not specify what was fetched, from where, or by what command."
+  The orchestrator read the report, read the transcript, and re-spawned the
+  todo. `ExAthena.Tools.SpawnAgent` now uses a `finish` deliverable as the
+  report, verbatim, with no summariser run at all — the provenance footer
+  already carries the checkable account of what the worker did, and the
+  transcript stays on disk for `read_worker_report`.
 
   The bypass is exactly one shape: the `deliverable` argument of `finish`.
   `Result.text` never qualifies, at any length, and neither does `finish`'s
   `summary` argument, whose own schema calls it "a brief human-readable
   description of what was accomplished" — the shape #251 was about, where a
   545-character self-summary replaced the codebase map it referred to. Both
-  still go through the summariser. `finish` now halts with
-  `{:submitted, payload, source}` and `ExAthena.Result` carries the new
-  `deliverable_source` field so the two arguments can be told apart; a
-  `{:submitted, payload}` halt raised anywhere else still works and is left
-  unsourced.
+  still go through the summariser. `finish` now halts with `{:submitted,
+  payload, source}` and `ExAthena.Result` carries the new `deliverable_source`
+  field so the two arguments can be told apart; a `{:submitted, payload}` halt
+  raised anywhere else still works and is left unsourced.
 
   Two places the same deliverable was being lost are fixed with it.
-  `Agents.Sidechain` stored `text` and not `deliverable`, so that worker left
-  21 characters on disk and `read_worker_report source: "report"` had nothing
-  to return; the deliverable and its source are now in the record, whole, and
-  the default `source: "report"` returns them. `Agents.Journal` digested every
-  tool call's arguments to `agents.journal_line_chars` (400), which ended that
+  `Agents.Sidechain` stored `text` and not `deliverable`, so that worker left 21
+  characters on disk and `read_worker_report source: "report"` had nothing to
+  return; the deliverable and its source are now in the record, whole, and the
+  default `source: "report"` returns them. `Agents.Journal` digested every tool
+  call's arguments to `agents.journal_line_chars` (400), which ended that
   worker's journal line mid-sentence at `precisely so "a`; a `finish` call now
   gets the cap the transcript gives one turn (`agents.transcript_line_chars`,
-  20,000) instead, so a model dumping binary into `finish` still cannot fill
-  the file in one line.
+  20,000) instead, so a model dumping binary into `finish` still cannot fill the
+  file in one line.
 
-- **Five orchestrate defects from one 3h27m run that claimed a green suite
-  over four failing tests.**
+- **Five orchestrate defects from one 3h27m run that claimed a green suite over
+  four failing tests.**
   ([#228](https://github.com/udin-io/ex_athena/issues/228)) Session
   `227f7f480afa` ran 3 hours 27 minutes, ended `failed`, and delivered a claim
   of a passing test suite over 4 failures. One commit per defect, each with its
@@ -231,33 +229,33 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   - `ask_user` counted as a spawn-less turn, so the runtime auto-delegated the
     very todo the user was answering. An answered `ask_user` now resets
     `turns_without_spawn` as a successful spawn does; an errored one does not.
-  - `mix test x 2>&1 | tail -60` exits 0 over a red suite, so the run recorded
-    a passing test. `Provenance.command_outcome/3` now judges a test run by its
-    output as well as its exit code: a failure summary fails it, and a piped
-    run with no summary line is `:unconfirmed` rather than a pass.
-    `Agents.Journal` records the same verdict, so a dead worker's footer
-    matches a live one's, and the coverage gate names the run it saw instead of
-    asserting "The suite is green".
+  - `mix test x 2>&1 | tail -60` exits 0 over a red suite, so the run recorded a
+    passing test. `Provenance.command_outcome/3` now judges a test run by its
+    output as well as its exit code: a failure summary fails it, and a piped run
+    with no summary line is `:unconfirmed` rather than a pass. `Agents.Journal`
+    records the same verdict, so a dead worker's footer matches a live one's,
+    and the coverage gate names the run it saw instead of asserting "The suite
+    is green".
   - With the allowance spent, all four finish gates still said "Spawn ONE
     worker". Once `Agents.Quota` has no slot left every gate lets `finish`
     through, and the runtime appends the checks that did not run to the
     deliverable, marked UNVERIFIED.
-  - A quota refusal bumped the mistake counter and told a tool-less
-    orchestrator to do the work itself. The first refusal of a run is now
-    `{:error, :uncounted, text}`; later ones stay counted, because in
-    orchestrate mode (`max_iterations: :infinity`) the mistake counter is the
-    only turn-based guard left.
+  - A quota refusal bumped the mistake counter and told a tool-less orchestrator
+    to do the work itself. The first refusal of a run is now `{:error,
+    :uncounted, text}`; later ones stay counted, because in orchestrate mode
+    (`max_iterations: :infinity`) the mistake counter is the only turn-based
+    guard left.
   - Nothing showed the orchestrator how many workers were left. Every spawn
-    result and refusal now ends with `[runtime] worker 9 of 10 this run; 1
-    left — this is your LAST worker.`
+    result and refusal now ends with `[runtime] worker 9 of 10 this run; 1 left
+    — this is your LAST worker.`
 
   New public functions: `Provenance.command_outcome/3`,
   `Provenance.unconfirmed_commands/1`, `Quota.remaining/1`,
   `Quota.exhausted?/1`, `Quota.record_refusal/1`. Brief:
   `docs/design/issue-228-architecture.html`.
 
-- **The audit gate quoted `AGENTS.md` back as "the original request", and
-  every gate re-fired on a resume.**
+- **The audit gate quoted `AGENTS.md` back as "the original request", and every
+  gate re-fired on a resume.**
   ([#232](https://github.com/udin-io/ex_athena/issues/232)) `ExAthena.Memory`
   injects each memory file as a user-role message in front of the prompt, so in
   any session with project memory the first user-role message is the memory.
@@ -274,9 +272,9 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
   The four gate flags (`:verify_nudged`, `:test_nudged`, `:coverage_nudged`,
   `:audit_nudged`) live in `mode_state`, which `init/1` rebuilds on every
-  `Loop.run` — and a resume is a new run over the stored messages, so each gate
-  fired again on evidence it had already gated and the orchestrator was made to
-  re-argue an audit it had run. Each note now names its own gate
+  `Loop.run` — and a resume is a new run over the stored messages, so each
+  gate fired again on evidence it had already gated and the orchestrator was
+  made to re-argue an audit it had run. Each note now names its own gate
   (`[orchestration runtime: audit gate]` in place of the generic prefix) and
   `evidence/1` reads those names back, so the transcript a resume does carry
   answers the question. `mode_state` stays as the in-run answer, because a
@@ -292,8 +290,8 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   orchestrator did the one thing the notice forbids. In web session
   `e833005a94ef` a worker returned a 12,649-character codebase map, 8,000
   characters reached the orchestrator cut inside section 3, and it spawned a
-  second `explore` worker to fill in the truncated parts — a second local-model
-  run over the same files to recover text already on disk.
+  second `explore` worker to fill in the truncated parts — a second
+  local-model run over the same files to recover text already on disk.
   `read_worker_report` is now in the orchestrator's toolset. It only reads a
   worker's own report back off `.exathena/sessions/` and cannot inspect the
   codebase, so it does not reopen the self-investigation hole the small toolset
@@ -301,50 +299,49 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   defect class as the quota refusal above: the runtime handing the orchestrator
   an instruction its toolset cannot act on.
 
-- **A spawn result never named the worker, so `read_worker_report` had no id
-  to take.** ([#245](https://github.com/udin-io/ex_athena/issues/245)) Giving
-  the orchestrator that tool left it with nothing to pass: a worker's id
-  appeared only inside a truncation notice, and only when a report was
-  truncated. Web session `66f4204cd532` invented one from the agent type
-  (`"research-1"`); web session `272a4251558c` guessed from the allowance line,
-  turning `worker 1 of 24 this run; 23 left.` into `subagent_id: "1"` and then
-  `"worker_1"` — two errors against a mistake cap of three, then a re-spawn to
-  redo work it already had. That second session had no truncation at all: the
-  worker returned 559 characters and summarised. Every `spawn_agent` result now
-  names the worker on the success, timeout, handback, crashed and never-started
-  paths alike, riding on the existing allowance line rather than adding a
-  second runtime line:
+- **A spawn result never named the worker, so `read_worker_report` had no id to
+  take.** ([#245](https://github.com/udin-io/ex_athena/issues/245)) Giving the
+  orchestrator that tool left it with nothing to pass: a worker's id appeared
+  only inside a truncation notice, and only when a report was truncated. Web
+  session `66f4204cd532` invented one from the agent type (`"research-1"`); web
+  session `272a4251558c` guessed from the allowance line, turning `worker 1 of
+  24 this run; 23 left.` into `subagent_id: "1"` and then `"worker_1"` — two
+  errors against a mistake cap of three, then a re-spawn to redo work it already
+  had. That second session had no truncation at all: the worker returned 559
+  characters and summarised. Every `spawn_agent` result now names the worker on
+  the success, timeout, handback, crashed and never-started paths alike, riding
+  on the existing allowance line rather than adding a second runtime line:
 
       [runtime] worker 3 of 24 this run; 21 left. Worker id: subagent_crMIb9uB
       — read its full report or journal with read_worker_report.
 
-  The id is there on an unbounded run with no quota counter too — the worker it
-  names is real either way. `ReadWorkerReport`'s refusal for a malformed id,
-  its schema description and its tool description now point at that runtime
-  line instead of at "the truncation notice", which is exactly what was missing
-  in the second occurrence. The truncation notice itself is unchanged: it names
-  the offset as well as the id.
+  The id is there on an unbounded run with no quota counter too — the worker
+  it names is real either way. `ReadWorkerReport`'s refusal for a malformed id,
+  its schema description and its tool description now point at that runtime line
+  instead of at "the truncation notice", which is exactly what was missing in
+  the second occurrence. The truncation notice itself is unchanged: it names the
+  offset as well as the id.
 
-- **A malformed tool-call name was reported as an unknown tool, and charged as
-  a mistake.** ([#246](https://github.com/udin-io/ex_athena/issues/246)) In web
+- **A malformed tool-call name was reported as an unknown tool, and charged as a
+  mistake.** ([#246](https://github.com/udin-io/ex_athena/issues/246)) In web
   session `66f4204cd532`, events 37–40, a text-protocol parser scoped a fence
-  badly and handed dispatch a two-line fragment of the model's own broken
-  markup as the tool *name*. Nothing between the parser and
-  `unknown_tool_error/2` checked that a name was plausible, so the loop replied
-  `unknown tool: skill: architecture-brief-and-mocks\n</parameter. Available
-  tools: …` and charged it against `consecutive_mistakes` — twice in a row
-  against a cap of three. Validation now sits at the single dispatch choke
-  point in `Modes.ReAct`, before `Tools.find/2`, rather than duplicated inside
-  each of the three parsers: only dispatch holds the loop state that decides
-  which example to show. A name failing `^[a-zA-Z0-9_.\-]{1,64}$` is answered
-  as *malformed*, with one correct example in the protocol that run actually
-  speaks — the `~~~tool_call` fence for a text protocol, "call it by its exact
-  name only" for native tool calls. It is uncounted, mirroring
-  `ExAthena.Tool`'s own `{:error, :uncounted, text}` contract; a model that
-  keeps emitting the same broken shape is still bounded by the no-progress
-  guard. A well-formed but unknown name still gets today's message and its
-  near-match suggestion, and a real builtin outside the phase's toolset still
-  gets the delegate-via-`spawn_agent` redirect.
+  badly and handed dispatch a two-line fragment of the model's own broken markup
+  as the tool *name*. Nothing between the parser and `unknown_tool_error/2`
+  checked that a name was plausible, so the loop replied `unknown tool: skill:
+  architecture-brief-and-mocks\n</parameter. Available tools: …` and charged
+  it against `consecutive_mistakes` — twice in a row against a cap of three.
+  Validation now sits at the single dispatch choke point in `Modes.ReAct`,
+  before `Tools.find/2`, rather than duplicated inside each of the three
+  parsers: only dispatch holds the loop state that decides which example to
+  show. A name failing `^[a-zA-Z0-9_.\-]{1,64}$` is answered as *malformed*,
+  with one correct example in the protocol that run actually speaks — the
+  `~~~tool_call` fence for a text protocol, "call it by its exact name only" for
+  native tool calls. It is uncounted, mirroring `ExAthena.Tool`'s own `{:error,
+  :uncounted, text}` contract; a model that keeps emitting the same broken shape
+  is still bounded by the no-progress guard. A well-formed but unknown name
+  still gets today's message and its near-match suggestion, and a real builtin
+  outside the phase's toolset still gets the delegate-via-`spawn_agent`
+  redirect.
 
 - **Single-chunk worker reports were cut at 4,000 characters, mid-word.**
   ([#256](https://github.com/udin-io/ex_athena/issues/256))
@@ -352,53 +349,53 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `block_chars` (default 4,000) before `combine/4` ran. That limit exists so N
   chunk summaries fit into one combine pass — but the single-chunk path has no
   combine, so a report that fitted in one pass still paid a cost meant for the
-  rare multi-chunk case, against the 64,000-character `result_chars` that
-  should have applied instead. Web session `0335fe066a23` has two worker
-  reports of exactly 4,000 characters, one ending mid-word at ``"Screenshot
-  tests: `test/fud"``. `block_chars` now applies only inside `combine/5`, where
-  there is something to combine into, and the single-chunk path returns the
-  block untouched. A block that genuinely is capped now says so, naming
+  rare multi-chunk case, against the 64,000-character `result_chars` that should
+  have applied instead. Web session `0335fe066a23` has two worker reports of
+  exactly 4,000 characters, one ending mid-word at ``"Screenshot tests:
+  `test/fud"``. `block_chars` now applies only inside `combine/5`, where there
+  is something to combine into, and the single-chunk path returns the block
+  untouched. A block that genuinely is capped now says so, naming
   `read_worker_report` with `source: "transcript"` in the same wording
   `dropped_note/1` uses for a dropped middle chunk — the summariser's cap
   happens earlier than `SpawnAgent`'s own truncation notice and previously said
   nothing. Where a cut is still needed it lands on the last whitespace in the
   slice.
 
-- **A worker that narrated its next action instead of taking it was reported
-  as a success.** ([#258](https://github.com/udin-io/ex_athena/issues/258))
-  `ReAct` halts on any turn with no tool calls. Worker `subagent_J8xXdYDq`
-  (session `cfcf79154cb1`) ran 15 iterations, 38 tool calls, 608,954 input
-  tokens and 19 minutes, then ended a turn with *"… Writing the brief now."*
-  and nothing else: `finish_reason: :stop`, `ok: true`, no brief. The parent
-  was told it succeeded and re-delegated the same todo to a second worker —
-  the same waste as the truncated and unsummarised reports above, arriving by
-  a different route. A worker now gets ONE turn back when it closes on a
-  promise; the second stop is honoured whatever it says.
-  `Loop.NarratedStop.narrated?/1` reads the closing sentence alone and asks
-  whether it commits to an action not yet taken: `I'll …`, `I'm going to …`,
-  `Let me <verb> …` (but not `Let me know …`), or an explicit doing verb in
-  `-ing` form with "now". A sentence ending in `?` never fires — a worker
-  asking its parent something stopped on purpose. The closing sentence is the
-  whole test because that is where the two cases differ: a worker that
-  finished closes on its result, one that stopped mid-task closes on a
-  promise, and reports routinely name future work in their body. The nudge is
-  scoped to workers (`State.parent_session_id` set): a top-level run's text
-  goes to a human who can answer next turn, and `Orchestrate.maybe_nudge_stop/1`
-  already covers the orchestrator, which keeps the two from stacking on one
-  halt. One-shot across a resume, by the same two-part flag the verification
-  gates use — `mode_state[:narrated_stop_nudged]` plus a `[runtime:
-  narrated-stop]` marker read back out of the message history. The note names
-  the two acceptable outcomes, do the thing or hand back honestly saying what
-  is not done and where what exists is, rather than saying "continue", which
-  is what the model already believes it is doing.
+- **A worker that narrated its next action instead of taking it was reported as
+  a success.** ([#258](https://github.com/udin-io/ex_athena/issues/258)) `ReAct`
+  halts on any turn with no tool calls. Worker `subagent_J8xXdYDq` (session
+  `cfcf79154cb1`) ran 15 iterations, 38 tool calls, 608,954 input tokens and 19
+  minutes, then ended a turn with *"… Writing the brief now."* and nothing
+  else: `finish_reason: :stop`, `ok: true`, no brief. The parent was told it
+  succeeded and re-delegated the same todo to a second worker — the same waste
+  as the truncated and unsummarised reports above, arriving by a different
+  route. A worker now gets ONE turn back when it closes on a promise; the second
+  stop is honoured whatever it says. `Loop.NarratedStop.narrated?/1` reads the
+  closing sentence alone and asks whether it commits to an action not yet taken:
+  `I'll …`, `I'm going to …`, `Let me <verb> …` (but not `Let me know
+  …`), or an explicit doing verb in `-ing` form with "now". A sentence ending
+  in `?` never fires — a worker asking its parent something stopped on
+  purpose. The closing sentence is the whole test because that is where the two
+  cases differ: a worker that finished closes on its result, one that stopped
+  mid-task closes on a promise, and reports routinely name future work in their
+  body. The nudge is scoped to workers (`State.parent_session_id` set): a
+  top-level run's text goes to a human who can answer next turn, and
+  `Orchestrate.maybe_nudge_stop/1` already covers the orchestrator, which keeps
+  the two from stacking on one halt. One-shot across a resume, by the same
+  two-part flag the verification gates use —
+  `mode_state[:narrated_stop_nudged]` plus a `[runtime: narrated-stop]` marker
+  read back out of the message history. The note names the two acceptable
+  outcomes, do the thing or hand back honestly saying what is not done and where
+  what exists is, rather than saying "continue", which is what the model already
+  believes it is doing.
 
 - **The `gh` tool's three settings were silently dropped.**
   ([#230](https://github.com/udin-io/ex_athena/issues/230)) `Tools.Gh` reads
   `gh_default_timeout_ms`, `gh_max_timeout_ms` and `gh_output_chars` through
   `Tuning.get(:tools, …)`, but `Settings.schema/0` had no field for any of
   them, so a value a user set in the settings modal never reached `Tuning`. All
-  three are now in the `:tools` group, mirroring the `:bash` group's timeout
-  and output-cap fields, each default matching its module attribute in `gh.ex`
+  three are now in the `:tools` group, mirroring the `:bash` group's timeout and
+  output-cap fields, each default matching its module attribute in `gh.ex`
   (20,000 ms, 60,000 ms, 16,000 characters). The repo's own "every key wired to
   Tuning has a field in the modal" test had been red on `main` since the tool
   landed.
@@ -408,31 +405,31 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   the endpoint with a hand-rolled `Endpoint.start_link/0` and swallowed
   `{:error, {:already_started, _}}`, so a test could mount against the previous
   test's endpoint while that one's ETS config table was being torn down
-  mid-request — `the table identifier does not refer to an existing ETS table`,
-  on a different test of the module each run. `start_supervised!(Endpoint)`
-  makes ExUnit own the process and wait for it to terminate before the next
-  test starts. No other test file starts the endpoint that way.
+  mid-request — `the table identifier does not refer to an existing ETS
+  table`, on a different test of the module each run.
+  `start_supervised!(Endpoint)` makes ExUnit own the process and wait for it to
+  terminate before the next test starts. No other test file starts the endpoint
+  that way.
 
 - **Reading back through a thread no longer fights a live run.**
-  ([#206](https://github.com/udin-io/ex_athena/issues/206)) The web chat
-  pinned itself to the bottom on every LiveView diff — which, with the
-  message list re-diffed per streamed token, meant many times a second while
-  the agent worked. Scrolling up to re-read something was effectively
-  impossible. Auto-scroll is now armed only while the reader is already at
-  the bottom; scrolling away holds the view still, and a **jump to latest**
-  pill (counting what has arrived since) returns to the bottom and re-arms
-  it. Sending a message re-arms it too, so your own message can never land
-  off-screen. The chat thread and the details pane share the hook and so
-  behave the same.
+  ([#206](https://github.com/udin-io/ex_athena/issues/206)) The web chat pinned
+  itself to the bottom on every LiveView diff — which, with the message list
+  re-diffed per streamed token, meant many times a second while the agent
+  worked. Scrolling up to re-read something was effectively impossible.
+  Auto-scroll is now armed only while the reader is already at the bottom;
+  scrolling away holds the view still, and a **jump to latest**
+  pill (counting what has arrived since) returns to the bottom and re-arms it.
+  Sending a message re-arms it too, so your own message can never land
+  off-screen. The chat thread and the details pane share the hook and so behave
+  the same.
 
 - **A TUI run of a cloud provider no longer gets pointed at localhost.**
   ([#192](https://github.com/udin-io/ex_athena/issues/192)) The TUI runner's
-  base-url fallback routed every provider without a local-daemon default to
-  the `:ollama` config key, so an unconfigured `:openai` or `:claude` session
-  had `base_url: http://localhost:11434` injected into its run opts. The
-  default is now applied only to the providers that have one; everything else
-  leaves the Runner without a `:base_url` for the adapter and app config to
-  resolve.
+  base-url fallback routed every provider without a local-daemon default to the
+  `:ollama` config key, so an unconfigured `:openai` or `:claude` session had
+  `base_url: http://localhost:11434` injected into its run opts. The default is
+  now applied only to the providers that have one; everything else leaves the
+  Runner without a `:base_url` for the adapter and app config to resolve.
 
 ## v0.20.0 — One instrumented inference path, configurable rails & a settings UI
 
@@ -440,114 +437,111 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - **The local-model rails are configuration, not module attributes.**
   ([#199](https://github.com/udin-io/ex_athena/pull/199)) Running the
-  verification rails from #193 against more models showed the rails
-  themselves were the problem: every model wanted different numbers, and
-  changing one meant editing a module attribute and recompiling. Every
-  tunable now reads from `config :ex_athena, :model, …` through
-  `ExAthena.Tuning`, and the web UI edits them in a settings modal —
-  including the top-level run budgets. Malformed config degrades to the
-  built-in default rather than failing a run.
+  verification rails from #193 against more models showed the rails themselves
+  were the problem: every model wanted different numbers, and changing one meant
+  editing a module attribute and recompiling. Every tunable now reads from
+  `config :ex_athena, :model, …` through `ExAthena.Tuning`, and the web UI
+  edits them in a settings modal — including the top-level run budgets.
+  Malformed config degrades to the built-in default rather than failing a run.
 
 - **Orchestrate rails that catch the three ways a local coordinator drifts.**
-  (#199) A verification audit now runs against the **first user turn
-  verbatim** rather than the orchestrator's own restatement — a paraphrase
-  is where a dropped requirement goes missing, and the live failure that
-  prompted this ran 37 iterations with zero compaction, so the request was
-  in context throughout and simply was never re-read. Two further rails
-  fire on repetition rather than first use, since one instance of either can
-  be a sound choice: dictating an implementation in a brief instead of
-  delegating it (fires on the second), and re-delegating the same objective
-  (fires on the third, matched on a normalised opening-line prefix).
+  (#199) A verification audit now runs against the **first user turn verbatim**
+  rather than the orchestrator's own restatement — a paraphrase is where a
+  dropped requirement goes missing, and the live failure that prompted this ran
+  37 iterations with zero compaction, so the request was in context throughout
+  and simply was never re-read. Two further rails fire on repetition rather than
+  first use, since one instance of either can be a sound choice: dictating an
+  implementation in a brief instead of delegating it (fires on the second), and
+  re-delegating the same objective (fires on the third, matched on a normalised
+  opening-line prefix).
 
-- **A run's structural events survive a LiveView reconnect.** (#199)
-  `RunServer` retains up to 2,000 structural events so a client that
-  reattaches mid-run can rebuild the window it missed, replayed oldest-first
-  in wire order. The cap is a runaway backstop — an orchestrate run is
-  uncapped by design — and drops from the front, where the events are least
-  useful to a reattaching client.
+- **A run's structural events survive a LiveView reconnect.** (#199) `RunServer`
+  retains up to 2,000 structural events so a client that reattaches mid-run can
+  rebuild the window it missed, replayed oldest-first in wire order. The cap is
+  a runaway backstop — an orchestrate run is uncapped by design — and drops
+  from the front, where the events are least useful to a reattaching client.
 
 - **`:reasoning_effort` — turn a thinking model down.**
-  ([#198](https://github.com/udin-io/ex_athena/issues/198)) Qwen3.8 ships
-  pinned at `xhigh` and spends whole completion budgets circling one problem,
-  which in an agent loop costs a turn rather than an answer. Runs now take
-  `reasoning_effort:` (`:none` through `:xhigh`, req_llm's canonical ladder)
-  on `ExAthena.query/2`, `stream/3` and `Loop.run/2`, falling back to
-  `config :ex_athena, :model, reasoning_effort: …`. Omitting both sends
-  nothing and leaves the model on its own default, so hosts that configure
-  nothing are unaffected. An unrecognised level degrades to "send nothing"
-  rather than failing the run, and providers with no notion of reasoning
-  effort — the Claude Code CLI — drop it. See
-  [docs/10-providers.md](docs/10-providers.md) for which backends honour it
-  (Ollama does not: it substitutes the chat template the setting lives in).
+  ([#198](https://github.com/udin-io/ex_athena/issues/198)) Qwen3.8 ships pinned
+  at `xhigh` and spends whole completion budgets circling one problem, which in
+  an agent loop costs a turn rather than an answer. Runs now take
+  `reasoning_effort:` (`:none` through `:xhigh`, req_llm's canonical ladder) on
+  `ExAthena.query/2`, `stream/3` and `Loop.run/2`, falling back to `config
+  :ex_athena, :model, reasoning_effort: …`. Omitting both sends nothing and
+  leaves the model on its own default, so hosts that configure nothing are
+  unaffected. An unrecognised level degrades to "send nothing" rather than
+  failing the run, and providers with no notion of reasoning effort — the
+  Claude Code CLI — drop it. See [docs/10-providers.md](docs/10-providers.md)
+  for which backends honour it (Ollama does not: it substitutes the chat
+  template the setting lives in).
 
 ### Fixed
 
 - **Provider errors are classified honestly instead of collapsing to
   `:server_error`.** ([#200](https://github.com/udin-io/ex_athena/pull/200),
-  closes [#155](https://github.com/udin-io/ex_athena/issues/155)) Every
-  non-HTTP failure — a connection refused, a DNS failure, a TLS error, a
-  receive timeout, a stream that died mid-flight — was reported as
-  `:server_error`, so a host could not tell a dead endpoint from an
-  overloaded one. Transport failures now classify as `:timeout` or
-  `:transport` by unwrapping req_llm's wrapped cause, and `ExAthena.Error`
-  carries a new `retry_after_ms` field. The loop's single transient retry
-  honours a server's `Retry-After` header (both the delta-seconds and
-  HTTP-date forms), capped at 30s so a hostile or misconfigured header
-  cannot stall a run, falling back to the previous 2s wait. The
-  context-overflow sniff no longer reads the request body — prompts
+  closes [#155](https://github.com/udin-io/ex_athena/issues/155)) Every non-HTTP
+  failure — a connection refused, a DNS failure, a TLS error, a receive
+  timeout, a stream that died mid-flight — was reported as `:server_error`, so
+  a host could not tell a dead endpoint from an overloaded one. Transport
+  failures now classify as `:timeout` or `:transport` by unwrapping req_llm's
+  wrapped cause, and `ExAthena.Error` carries a new `retry_after_ms` field. The
+  loop's single transient retry honours a server's `Retry-After` header (both
+  the delta-seconds and HTTP-date forms), capped at 30s so a hostile or
+  misconfigured header cannot stall a run, falling back to the previous 2s wait.
+  The context-overflow sniff no longer reads the request body — prompts
   legitimately mention "context window" — and no longer truncates at 2,000
   characters, where it could miss the phrase it was looking for.
 
-- **The session sidebar was ordered by day-of-month.** (#199) Session
-  headers were sorted on `%DateTime{}` structs in raw term order, which
-  compares key-by-key in ascending key name — reaching `:day` long before
-  `:month` or `:year`. `~U[2026-05-31]` therefore sorted above
-  `~U[2026-08-10]`. Sorting goes through the `DateTime` module; a header
-  with a missing or malformed timestamp sorts last instead of raising.
+- **The session sidebar was ordered by day-of-month.** (#199) Session headers
+  were sorted on `%DateTime{}` structs in raw term order, which compares
+  key-by-key in ascending key name — reaching `:day` long before `:month` or
+  `:year`. `~U[2026-05-31]` therefore sorted above `~U[2026-08-10]`. Sorting
+  goes through the `DateTime` module; a header with a missing or malformed
+  timestamp sorts last instead of raising.
 
 - **A run's tool history is recovered rather than eroded on reload.** (#199)
   Tool history was persisted twice, inconsistently: the live LiveView wrote
   `tool_events`, while the durable path that runs whether or not a browser is
   attached hardcoded `tool_events: []`. Reloading mid-run rebuilt the stream
-  from that empty field and wrote the truncated result back over the full
-  one, eroding it further on each reload. The full transcript always survived
-  in `ex_snapshot`, and is now recovered at read time — so **existing
-  sessions become readable with no migration**. A turn's snapshot holds the
-  whole conversation up to that point, so the walk is chronological and
-  attributes each call to the first turn that ran it.
+  from that empty field and wrote the truncated result back over the full one,
+  eroding it further on each reload. The full transcript always survived in
+  `ex_snapshot`, and is now recovered at read time — so **existing sessions
+  become readable with no migration**. A turn's snapshot holds the whole
+  conversation up to that point, so the walk is chronological and attributes
+  each call to the first turn that ran it.
 
 - **Asking whether a run is alive no longer crashes the caller.** (#199)
   `whereis` followed by `call` is a time-of-check/time-of-use race: a server
   that retires in between makes the call exit `:noproc`. A gone server is the
   answer to the question, so it is returned rather than raised.
 
-- **Plan phase names the part of a bash chain that lost.** (#199) A denial
-  that said only "not recognized as read-only" told a model nothing it could
-  act on, and sent a live subagent into a retry loop re-sending the same
-  shape three times. Denials now name the offending segment and the construct
-  that tripped — command substitution, a redirect, a specific write pattern.
-  `cd` also joins the read-only allowlist: it moves the shell's own working
-  directory and grants no reach (`cat` already takes absolute paths), but its
-  absence denied every `cd repo && <read-only cmd>` chain, which is how
-  models habitually scope a command to a project.
+- **Plan phase names the part of a bash chain that lost.** (#199) A denial that
+  said only "not recognized as read-only" told a model nothing it could act on,
+  and sent a live subagent into a retry loop re-sending the same shape three
+  times. Denials now name the offending segment and the construct that tripped
+  — command substitution, a redirect, a specific write pattern. `cd` also
+  joins the read-only allowlist: it moves the shell's own working directory and
+  grants no reach (`cat` already takes absolute paths), but its absence denied
+  every `cd repo && <read-only cmd>` chain, which is how models habitually scope
+  a command to a project.
 
 - **A configured reasoning effort now actually reaches the model.**
   ([#198](https://github.com/udin-io/ex_athena/issues/198)) req_llm 1.10
   validated `:reasoning_effort`, translated it, and then encoded the OpenAI
   chat-completions body without it — the path every local backend uses. The
-  settings-modal knob looked configured and changed nothing. Raises the
-  req_llm floor to 1.15, where upstream fixed it
-  ([agentjido/req_llm#753](https://github.com/agentjido/req_llm/pull/753)),
-  and locks 1.15.0. Three packages move in total — `req_llm` plus the two it
-  pins, `llm_db` and `server_sent_events`. The latter crosses a major
-  (0.2 → 1.1) on the streaming path and is not separable: 1.15.0 requires it.
+  settings-modal knob looked configured and changed nothing. Raises the req_llm
+  floor to 1.15, where upstream fixed it
+  ([agentjido/req_llm#753](https://github.com/agentjido/req_llm/pull/753)), and
+  locks 1.15.0. Three packages move in total — `req_llm` plus the two it pins,
+  `llm_db` and `server_sent_events`. The latter crosses a major (0.2 → 1.1) on
+  the streaming path and is not separable: 1.15.0 requires it.
 
 ### Changed
 
 - **Every provider call a run makes now goes through one instrumented path.**
   ([#201](https://github.com/udin-io/ex_athena/pull/201), closes
-  [#136](https://github.com/udin-io/ex_athena/issues/136)) ReAct's main turn
-  was the only call with the full treatment; PlanAndSolve's planning turn,
+  [#136](https://github.com/udin-io/ex_athena/issues/136)) ReAct's main turn was
+  the only call with the full treatment; PlanAndSolve's planning turn,
   Reflexion's critique, the conclusion-distillation micro-call and the
   compaction summary each hand-rolled their own subset and diverged.
   `ExAthena.Loop.Inference.call/3` applies all of it uniformly: the request
@@ -555,49 +549,48 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   sibling worker is mid-call), the `[:ex_athena, :chat]` telemetry span, and
   budget accounting.
 
-  **Two host-visible consequences.** ChatParams hooks now fire for
-  mode-internal inference, not just the main turn — a host that adjusts
-  params or halts in a `ChatParams` hook will see invocations it did not see
-  before, each tagged with a `:purpose` (`:turn`, `:planning`,
-  `:reflection`, `:conclusion_distillation`, `:compaction_summary`) so it can
-  discriminate. And reported cost goes **up** without spend going up: the
-  reflection, distillation and summary calls were always billed by the
-  provider, but only the main turn's usage reached `state.budget`. Utility
-  calls opt out of the hooks (`chat_params: false`) so a fixed 256-token call
-  is not reshaped by conversational per-turn logic, and out-of-output
-  micro-calls no longer trigger the kernel's `max_tokens` escalation, which
-  would 4x the main turn's completion cap for the rest of the run.
+  **Two host-visible consequences.** ChatParams hooks now fire for mode-internal
+  inference, not just the main turn — a host that adjusts params or halts in a
+  `ChatParams` hook will see invocations it did not see before, each tagged with
+  a `:purpose` (`:turn`, `:planning`, `:reflection`, `:conclusion_distillation`,
+  `:compaction_summary`) so it can discriminate. And reported cost goes **up**
+  without spend going up: the reflection, distillation and summary calls were
+  always billed by the provider, but only the main turn's usage reached
+  `state.budget`. Utility calls opt out of the hooks (`chat_params: false`) so a
+  fixed 256-token call is not reshaped by conversational per-turn logic, and
+  out-of-output micro-calls no longer trigger the kernel's `max_tokens`
+  escalation, which would 4x the main turn's completion cap for the rest of the
+  run.
 
 - **BREAKING for cost and latency expectations — two loop defaults moved.**
   (#199) `:max_iterations` goes 25 → 55 and `:tool_timeout_ms` goes 60s →
-  120s, tuned against local 27B-class models where the old ceilings cut runs
-  off mid-task and killed legitimately slow tool calls. Hosts that relied on
-  the old numbers as a cost ceiling should set them explicitly on
-  `ExAthena.Loop.run/2` — the same run can now take roughly twice as many
-  iterations before it stops itself.
+  120s, tuned against local 27B-class models where the old ceilings cut runs off
+  mid-task and killed legitimately slow tool calls. Hosts that relied on the old
+  numbers as a cost ceiling should set them explicitly on `ExAthena.Loop.run/2`
+  — the same run can now take roughly twice as many iterations before it stops
+  itself.
 
 - **The reasoning-effort setting now governs every entry point, not just the
-  browser.** ([#198](https://github.com/udin-io/ex_athena/issues/198)) The
-  chat LiveView was the only caller carrying the `:model` rail into a run, so
-  the TUI ignored it and library callers had to pass
-  `provider_opts: [reasoning_effort: …]` by hand. The ReqLLM adapter resolves
-  the rail itself; `ExAthena.Web.Settings.provider_opts/0` is removed.
+  browser.** ([#198](https://github.com/udin-io/ex_athena/issues/198)) The chat
+  LiveView was the only caller carrying the `:model` rail into a run, so the TUI
+  ignored it and library callers had to pass `provider_opts: [reasoning_effort:
+  …]` by hand. The ReqLLM adapter resolves the rail itself;
+  `ExAthena.Web.Settings.provider_opts/0` is removed.
 
 ### Security
 
 - **Stored XSS in the web chat: assistant Markdown was rendered through
-  `innerHTML`.** ([#187](https://github.com/udin-io/ex_athena/pull/187))
-  The client-side Markdown renderer interpolated model text, link labels and
-  link destinations into HTML strings and assigned the result to
-  `innerHTML`. Only code spans and fenced blocks were escaped, so any model
-  output — including output persisted in a session and re-rendered on
-  reload — could create executable DOM. Rendering moved server-side to
-  `ExAthena.Web.Markdown`, which is safe by construction: it emits only a
-  fixed set of hardcoded tags and classes, escapes every dynamic value
-  through `Phoenix.HTML.Safe`, and displays raw HTML as text. Link
-  destinations are restricted to HTTP(S), `mailto:` and same-origin relative
-  targets, with control characters, entity-encoded schemes and
-  quote-breaking destinations rejected before parsing; anything else renders
+  `innerHTML`.** ([#187](https://github.com/udin-io/ex_athena/pull/187)) The
+  client-side Markdown renderer interpolated model text, link labels and link
+  destinations into HTML strings and assigned the result to `innerHTML`. Only
+  code spans and fenced blocks were escaped, so any model output — including
+  output persisted in a session and re-rendered on reload — could create
+  executable DOM. Rendering moved server-side to `ExAthena.Web.Markdown`, which
+  is safe by construction: it emits only a fixed set of hardcoded tags and
+  classes, escapes every dynamic value through `Phoenix.HTML.Safe`, and displays
+  raw HTML as text. Link destinations are restricted to HTTP(S), `mailto:` and
+  same-origin relative targets, with control characters, entity-encoded schemes
+  and quote-breaking destinations rejected before parsing; anything else renders
   as text with no anchor. Accepted links get fixed `target="_blank"` and
   `rel="noopener noreferrer"`. The `MarkdownRender` hook and the `data-raw`
   transport are gone, and no `innerHTML` assignment remains in the web UI.
@@ -605,23 +598,21 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - **`EX_ATHENA_SEARCH_BACKEND` no longer creates atoms from an env var.**
   (#199) The runtime read it with `String.to_atom/1`. An env var is external
-  input and the atom table is never garbage-collected, so this allowed
-  unbounded atom creation; restored to `String.to_existing_atom/1`.
+  input and the atom table is never garbage-collected, so this allowed unbounded
+  atom creation; restored to `String.to_existing_atom/1`.
 
 - **Sandbox fail-closed: confined `bash` refuses to run when no OS sandbox
   helper exists.** (#135) Previously a confined run (`confine: true` /
   `allowed_roots: [...]`) whose host lacked `sandbox-exec`/`bwrap` executed
-  shell commands **unconfined** with only a `Logger.warning` — the
-  confinement contract silently degraded. `bash` now fails closed by
-  default: it returns `{:error, {:sandbox_unavailable, helper}}` (naming
-  the missing helper) without running the command. Hosts that accept
-  degradation opt in per run with `confine: :best_effort`, which keeps the
-  old warn-and-run behaviour. Both paths emit an
-  `[:ex_athena, :sandbox, :unavailable]` telemetry event
-  (`meta.outcome` `:denied` / `:ran_unconfined`). Subagents inherit the
-  parent's mode clamped: an `:enforced` parent never spawns a
-  `:best_effort` child. Unconfined runs (the library default) are
-  unaffected.
+  shell commands **unconfined** with only a `Logger.warning` — the confinement
+  contract silently degraded. `bash` now fails closed by default: it returns
+  `{:error, {:sandbox_unavailable, helper}}` (naming the missing helper) without
+  running the command. Hosts that accept degradation opt in per run with
+  `confine: :best_effort`, which keeps the old warn-and-run behaviour. Both
+  paths emit an `[:ex_athena, :sandbox, :unavailable]` telemetry event
+  (`meta.outcome` `:denied` / `:ran_unconfined`). Subagents inherit the parent's
+  mode clamped: an `:enforced` parent never spawns a `:best_effort` child.
+  Unconfined runs (the library default) are unaffected.
 
 ## v0.19.0 — Verification rails, starvation-proof turns & compaction integrity
 
@@ -631,19 +622,18 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `ExAthena.Coverage`).** (#193) A run's report now carries a factual footer
   derived from its own tool calls — files written, commands run, exit status,
   in order — so an orchestrator can distinguish "I verified it" from "I said I
-  verified it". Four one-shot gates sit between a run and `finish` (ran
-  nothing / no green test run / changed module never executed / requirements
-  audit), each firing at most once so a run cannot deadlock. A
-  repeated-delegation guard breaks orchestrator re-spawn loops that the
-  no-progress guard cannot see. `ExAthena.Coverage` parses `mix test --cover`
-  and gates only on zero coverage — the one claim the table supports
-  unambiguously.
+  verified it". Four one-shot gates sit between a run and `finish` (ran nothing
+  / no green test run / changed module never executed / requirements audit),
+  each firing at most once so a run cannot deadlock. A repeated-delegation guard
+  breaks orchestrator re-spawn loops that the no-progress guard cannot see.
+  `ExAthena.Coverage` parses `mix test --cover` and gates only on zero coverage
+  — the one claim the table supports unambiguously.
 - **New builtin tool: `read_summary`.** (#193) Summarizes a file through a
   single one-off LLM call — purpose, key functions with approximate line
   numbers, types, notable imports — without loading the full content into the
   main conversation context. Joins the default toolset; intended as the first
-  touch on any unfamiliar file, with `read` (plus `offset`/`limit`) reserved
-  for the sections that need full detail. The summarizer provider comes from
+  touch on any unfamiliar file, with `read` (plus `offset`/`limit`) reserved for
+  the sections that need full detail. The summarizer provider comes from
   `ctx.assigns[:spawn_agent_opts]`, falling back to the configured default.
 - **Orchestrate-mode hardening for local models.** (#193) The orchestrator is
   now steered to brief *outcomes* rather than dictating code it composed blind
@@ -652,25 +642,25 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `prompt` key (falls back to `objective`, then `todo`); unknown-tool errors
   list the available tools and suggest the closest match; worker report caps
   rose from 8k to 24k chars with the cut stated instead of a silent `…`. The
-  streaming status line names what the deepest running worker is doing, and
-  each run reports its orchestrator/worker token split.
+  streaming status line names what the deepest running worker is doing, and each
+  run reports its orchestrator/worker token split.
 - **Opt-in compaction stage: `ExAthena.Compactors.EpisodicArchive`.** (#193)
-  Before `Summary` compresses the middle of history into a paragraph, this
-  stage slices it into discrete episodes kept in a sidecar
+  Before `Summary` compresses the middle of history into a paragraph, this stage
+  slices it into discrete episodes kept in a sidecar
   (`state.meta[:episodic_archive]`) and re-injects episodes that BM25-match the
   current turn — exact-token recall on file paths, function names and error
   strings, which embedding-based retrieval models poorly for agent transcripts.
   Not in `default_pipeline/0`; opt in via `meta[:compaction_pipeline]`.
 - **Web UI: the run record survives a reload.** (#193) RunServer retains
-  structural events in a bounded queue and replays them on reattach (text
-  deltas coalesced); live delivery and replay share one `apply_event/2` path.
+  structural events in a bounded queue and replays them on reattach (text deltas
+  coalesced); live delivery and replay share one `apply_event/2` path.
   Interrupted runs reopen their assistant turn instead of rendering a blank
   screen; the orchestrator snapshot persists so the Overview survives reload;
-  the sidebar session list builds on load and sorts by real DateTime order
-  (it previously sorted `%DateTime{}` structs as raw terms — i.e. by
+  the sidebar session list builds on load and sorts by real DateTime order (it
+  previously sorted `%DateTime{}` structs as raw terms — i.e. by
   day-of-month).
-- **Thinking-starvation detection and escalating retry.** (#195, closes #194)
-  A hybrid thinking model that spends the entire completion budget reasoning no
+- **Thinking-starvation detection and escalating retry.** (#195, closes #194) A
+  hybrid thinking model that spends the entire completion budget reasoning no
   longer halts the run as a *success* with blank text. The ReqLLM adapter now
   detects starvation (blank text, zero tool calls, and the budget demonstrably
   exhausted: `finish_reason: :length` or output tokens at the cap) on both the
@@ -679,13 +669,13 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   retries the same iteration once with `min(cap × 4, context_window −
   estimated_prompt)` — the 8,192 default escalates to the field-validated
   32,768 — emitting a `{:max_tokens_escalation, %{from:, to:, ...}}` event
-  (analogous to `{:compaction, _}`); the raised cap persists for the rest of
-  the run. A still-starved retry (or no headroom at all) terminates with
-  `:error_thinking_starved` (category `:capacity`, like `:error_prompt_too_long`)
-  whose message and `Result.error_diagnostic` name every token count.
-  Legitimate empty `:stop` answers and `:length` truncations with partial text
-  are never flagged. `reasoning_tokens` now survives `Budget.merge_usage/2`
-  into `Result.usage` when a provider reports it.
+  (analogous to `{:compaction, _}`); the raised cap persists for the rest of the
+  run. A still-starved retry (or no headroom at all) terminates with
+  `:error_thinking_starved` (category `:capacity`, like
+  `:error_prompt_too_long`) whose message and `Result.error_diagnostic` name
+  every token count. Legitimate empty `:stop` answers and `:length` truncations
+  with partial text are never flagged. `reasoning_tokens` now survives
+  `Budget.merge_usage/2` into `Result.usage` when a provider reports it.
 
 ### Fixed
 
@@ -693,42 +683,42 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   BudgetReduction was the only stage with no pin check — a pinned tool result
   over the size cap was placeholdered into the archive, losing exactly what
   pinning protects, and `restore_pinned/2`'s value-equality check then
-  re-inserted the original next to the placeholder, duplicating
-  `tool_call_id`s (a 400 on strict OpenAI-compatible servers). ContextCollapse
-  also rewrote pinned assistant messages. Pinned messages now short-circuit
-  BudgetReduction, restoration is keyed on tool-call identity as a multiset,
-  and ContextCollapse passes pins through untouched.
+  re-inserted the original next to the placeholder, duplicating `tool_call_id`s
+  (a 400 on strict OpenAI-compatible servers). ContextCollapse also rewrote
+  pinned assistant messages. Pinned messages now short-circuit BudgetReduction,
+  restoration is keyed on tool-call identity as a multiset, and ContextCollapse
+  passes pins through untouched.
 - **Mid-pipeline compaction estimates now include the system prompt.** (#190,
-  closes #148) All six stages re-estimated with the messages-only form while
-  the loop's trigger included the system prompt — so after the first stage
-  applied, the pipeline could declare itself under budget while the real
-  request (system prompt carrying tool schemas and the skill catalog) stayed
-  oversized, and later stages were never consulted. `Compactor.re_estimate/3`
-  folds the system prompt into every mid-pipeline estimate. The five
-  copy-pasted config cascades collapsed into `ExAthena.Compactor.Config`
-  (fixing one real drift: Summary raised on malformed `:compactor` app env
-  where the other stages defaulted).
+  closes #148) All six stages re-estimated with the messages-only form while the
+  loop's trigger included the system prompt — so after the first stage
+  applied, the pipeline could declare itself under budget while the real request
+  (system prompt carrying tool schemas and the skill catalog) stayed oversized,
+  and later stages were never consulted. `Compactor.re_estimate/3` folds the
+  system prompt into every mid-pipeline estimate. The five copy-pasted config
+  cascades collapsed into `ExAthena.Compactor.Config` (fixing one real drift:
+  Summary raised on malformed `:compactor` app env where the other stages
+  defaulted).
 - **`ExAthena.list_models/2` works out of the box for local daemons again.**
   (#191, closes #189) PR #183 dropped the per-backend base-URL defaults, so
-  `list_models(:ollama)` with no app config raised `ArgumentError` inside
-  Finch — crashing `mix athena.chat` at startup. A missing/blank base URL now
+  `list_models(:ollama)` with no app config raised `ArgumentError` inside Finch
+  — crashing `mix athena.chat` at startup. A missing/blank base URL now
   returns a structured `:no_base_url` capability error instead of raising, and
   `Config.default_base_url/1` restores the stock daemon hosts (ollama `:11434`,
-  llamacpp `:8080`, exo `:52415`) in one place — explicit config or caller URLs
-  always win; cloud providers never inherit localhost.
+  llamacpp `:8080`, exo `:52415`) in one place — explicit config or caller
+  URLs always win; cloud providers never inherit localhost.
 - **`read_only?/0` implemented across all builtin tools.** (#193) The callback
-  was declared on `ExAthena.Tool`, read by `Spec.from_module/1`, and demanded
-  by `Permissions` — and no builtin implemented it; the builtins passed
-  read-only checks only via a hardcoded allow-list. The new `read_summary` was
-  the first tool to fall through that gap (denied in the read-only `:plan`
-  phase despite only ever reading a file), and every builtin now declares the
-  callback instead.
+  was declared on `ExAthena.Tool`, read by `Spec.from_module/1`, and demanded by
+  `Permissions` — and no builtin implemented it; the builtins passed read-only
+  checks only via a hardcoded allow-list. The new `read_summary` was the first
+  tool to fall through that gap (denied in the read-only `:plan` phase despite
+  only ever reading a file), and every builtin now declares the callback
+  instead.
 - **Context-window over-detection on Ollama.** (#193) Ollama's `/api/show`
   reports the GGUF architecture ceiling (e.g. 262144) rather than what the
   runner actually serves. The detected window is now the minimum of the
   Modelfile `num_ctx`, the architecture ceiling, and the loaded runner's real
-  context length, so compaction budgets are no longer sized against a window
-  the server never honors.
+  context length, so compaction budgets are no longer sized against a window the
+  server never honors.
 
 ## v0.18.0 — Embeddings, model listing, code intelligence & confinement hardening
 
@@ -736,41 +726,42 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - **Model listing API — `ExAthena.list_models/2`.** Enumerating a provider's
   models was possible only for `:claude_code` and JSON-spec providers; the
-  ReqLLM adapter — through which every mainstream provider routes — could not do
-  it at all, and Ollama listing sat off to the side in `ExAthena.Chat.Ollama`
-  hitting `/api/tags` directly. Host apps consequently re-implemented Ollama's
-  API themselves to build a model picker. `list_models/2` covers every provider
-  from one call and returns `%ExAthena.Model{}` structs (id, name, provider,
-  context window, max output tokens, source) rather than provider-specific JSON,
-  so hosts never parse a wire format. Live endpoints are enumerated where one
-  exists (`/api/tags` for Ollama, `/v1/models` for OpenAI-wire servers) and the
-  llm_db catalog answers for providers that publish no list endpoint (Anthropic,
-  Gemini) — neither `req_llm` nor `llm_db` can enumerate a live server, so the
-  transport is ours while the catalog supplies metadata. Context windows are
-  reported as `nil` rather than guessed when nothing can establish them, since a
-  wrong value mis-sizes compaction silently. Results share the existing
+  ReqLLM adapter — through which every mainstream provider routes — could
+  not do it at all, and Ollama listing sat off to the side in
+  `ExAthena.Chat.Ollama` hitting `/api/tags` directly. Host apps consequently
+  re-implemented Ollama's API themselves to build a model picker.
+  `list_models/2` covers every provider from one call and returns
+  `%ExAthena.Model{}` structs (id, name, provider, context window, max output
+  tokens, source) rather than provider-specific JSON, so hosts never parse a
+  wire format. Live endpoints are enumerated where one exists (`/api/tags` for
+  Ollama, `/v1/models` for OpenAI-wire servers) and the llm_db catalog answers
+  for providers that publish no list endpoint (Anthropic, Gemini) — neither
+  `req_llm` nor `llm_db` can enumerate a live server, so the transport is ours
+  while the catalog supplies metadata. Context windows are reported as `nil`
+  rather than guessed when nothing can establish them, since a wrong value
+  mis-sizes compaction silently. Results share the existing
   `ExAthena.ModelDiscovery` TTL cache instead of adding a second one; pass
   `cache: false` to force a refresh. Advertised as `model_listing: true` in
   `capabilities/0` for feature detection, and backed by a new optional
-  `c:ExAthena.Provider.list_models/1` callback that takes per-call opts — which
-  models exist depends on where the provider is pointed, so the config-blind
-  `list_models/0` could not answer it.
+  `c:ExAthena.Provider.list_models/1` callback that takes per-call opts —
+  which models exist depends on where the provider is pointed, so the
+  config-blind `list_models/0` could not answer it.
   ([#128](https://github.com/udin-io/ex_athena/issues/128))
 
-- **Embeddings API — `ExAthena.embed/2`.** Retrieval features (pgvector search,
-  grounded code Q&A, dedup) previously had to bypass the library and make their
-  own HTTP calls, because ex_athena had no embeddings support at all. `embed/2`
-  accepts a string or a list of strings and returns `%ExAthena.Embedding{}` with
-  one vector per input — batching a whole indexing run into a single provider
-  round-trip, and taking a request-queue slot like every other provider call so
-  it can't swamp a local server. Embeddings are an optional provider callback
-  (`c:ExAthena.Provider.embed/2`) advertised as `embeddings: true` in
-  `capabilities/0`, so callers can feature-detect; the Mock provider implements
-  it for host-app tests. Models are configured per provider under
-  `embedding_model:` — the chat `model:` is deliberately not a fallback, since
-  embedding with a chat model degrades retrieval silently. Routed through
-  `req_llm`'s own embeddings API, so Ollama, OpenAI, Gemini and OpenRouter are
-  all covered by one adapter path.
+- **Embeddings API — `ExAthena.embed/2`.** Retrieval features (pgvector
+  search, grounded code Q&A, dedup) previously had to bypass the library and
+  make their own HTTP calls, because ex_athena had no embeddings support at all.
+  `embed/2` accepts a string or a list of strings and returns
+  `%ExAthena.Embedding{}` with one vector per input — batching a whole
+  indexing run into a single provider round-trip, and taking a request-queue
+  slot like every other provider call so it can't swamp a local server.
+  Embeddings are an optional provider callback (`c:ExAthena.Provider.embed/2`)
+  advertised as `embeddings: true` in `capabilities/0`, so callers can
+  feature-detect; the Mock provider implements it for host-app tests. Models are
+  configured per provider under `embedding_model:` — the chat `model:` is
+  deliberately not a fallback, since embedding with a chat model degrades
+  retrieval silently. Routed through `req_llm`'s own embeddings API, so Ollama,
+  OpenAI, Gemini and OpenRouter are all covered by one adapter path.
   ([#127](https://github.com/udin-io/ex_athena/issues/127))
 
 - **Elixir code intelligence — `workspace_symbol` and `document_symbol` on the
@@ -795,16 +786,17 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   immediately after startup may return few results.
 
 - **LSP server resolution prefers Expert but falls back to ElixirLS.** The
-  Elixir language server default moved to [Expert](https://github.com/elixir-lang/expert)
-  (`expert --stdio`), the official next-generation server. Making that a hard
-  switch would have silently disabled code intelligence for everyone who has
-  ElixirLS installed and not Expert, so the default is a *candidate list*:
-  `expert` when it is on `PATH`, otherwise `elixir-ls`, and only
-  `{:error, :unsupported}` when neither is. Existing ElixirLS users keep
-  working with zero configuration and get Expert automatically the day they
-  install it. An explicit `config :ex_athena, :lsp_servers` override still
-  replaces the candidate list outright. The README gains a "Code intelligence"
-  section with the install steps and the per-language override.
+  Elixir language server default moved to
+  [Expert](https://github.com/elixir-lang/expert) (`expert --stdio`), the
+  official next-generation server. Making that a hard switch would have silently
+  disabled code intelligence for everyone who has ElixirLS installed and not
+  Expert, so the default is a *candidate list*: `expert` when it is on `PATH`,
+  otherwise `elixir-ls`, and only `{:error, :unsupported}` when neither is.
+  Existing ElixirLS users keep working with zero configuration and get Expert
+  automatically the day they install it. An explicit `config :ex_athena,
+  :lsp_servers` override still replaces the candidate list outright. The README
+  gains a "Code intelligence" section with the install steps and the
+  per-language override.
 
 - **Write-capable `implementer` agent, and orchestrate now routes to it.** The
   orchestrate protocol instructed the orchestrator to delegate everything to
@@ -812,8 +804,8 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   which is read-only (`permissions: plan`, no `write`/`edit`/`bash`). Handing an
   implementation todo to `explore` cannot succeed, so orchestrated runs either
   stalled on that step or reported work complete that had never touched the
-  filesystem. The new built-in `implementer` agent is write-capable
-  (`read`, `glob`, `grep`, `write`, `edit`, `apply_patch`, `bash`, `web_fetch`,
+  filesystem. The new built-in `implementer` agent is write-capable (`read`,
+  `glob`, `grep`, `write`, `edit`, `apply_patch`, `bash`, `web_fetch`,
   `web_search`, `usage_rules`, `lsp`, `todo_write`) and its prompt requires it
   to investigate before editing, make the smallest change that matches
   surrounding style, verify with the narrowest proving command, and report
@@ -822,20 +814,21 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   carries an explicit worker roster (`explore` for read-only investigation,
   `research` for external facts, `implementer` for anything that changes the
   workspace) and a rule that implementation todos must never go to `explore`.
-  The orchestrator itself stays non-acting: it still holds only coordination
-  and read-only tools.
+  The orchestrator itself stays non-acting: it still holds only coordination and
+  read-only tools.
 
-- **Opt-in read-only declarations for plan mode — `c:ExAthena.Tool.read_only?/0`,
-  MCP `readOnlyHint`, and the `:readonly_tools` option.** Plan mode is now
-  deny-by-default (see Security below), which requires a way for a tool to say
-  it is safe there. Three routes, in decreasing order of trust: an optional
-  `c:ExAthena.Tool.read_only?/0` callback (cached on the tool
-  spec at build time); an MCP server's `annotations.readOnlyHint == true` from
-  `tools/list`, treated as a hint that only relaxes plan-phase gating; and a
-  host-supplied `readonly_tools: ["name", …]` option on `ExAthena.Loop.run/2`
-  for tools whose definitions you do not control. `ExAthena.Tool.Spec` gains a
-  `read_only?` field, defaulting to `false` — the conservative direction, so a
-  tool that says nothing is gated rather than trusted.
+- **Opt-in read-only declarations for plan mode —
+  `c:ExAthena.Tool.read_only?/0`, MCP `readOnlyHint`, and the `:readonly_tools`
+  option.** Plan mode is now deny-by-default (see Security below), which
+  requires a way for a tool to say it is safe there. Three routes, in decreasing
+  order of trust: an optional `c:ExAthena.Tool.read_only?/0` callback (cached on
+  the tool spec at build time); an MCP server's `annotations.readOnlyHint ==
+  true` from `tools/list`, treated as a hint that only relaxes plan-phase
+  gating; and a host-supplied `readonly_tools: ["name", …]` option on
+  `ExAthena.Loop.run/2` for tools whose definitions you do not control.
+  `ExAthena.Tool.Spec` gains a `read_only?` field, defaulting to `false` — the
+  conservative direction, so a tool that says nothing is gated rather than
+  trusted.
 
 - **`allow_local_hosts: true` on `ExAthena.run/2`** — the deliberate escape
   hatch for the SSRF guard now that it applies unconditionally (see Security).
@@ -844,12 +837,12 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   private/loopback host check; the `http`/`https` scheme restriction still
   applies.
 
-- **The Igniter installer configures embeddings, and the upgrader covers
-  0.17 → 0.18.** `mix ex_athena.install` wrote per-provider chat config but knew
+- **The Igniter installer configures embeddings, and the upgrader covers 0.17
+  → 0.18.** `mix ex_athena.install` wrote per-provider chat config but knew
   nothing about `embedding_model:`, so a fresh install left `ExAthena.embed/2`
-  returning a `:bad_request` until the user found the key themselves — the chat
-  `model:` is deliberately not a fallback, so there was nothing to degrade to.
-  The installer now writes `config :ex_athena, :ollama, embedding_model:
+  returning a `:bad_request` until the user found the key themselves — the
+  chat `model:` is deliberately not a fallback, so there was nothing to degrade
+  to. The installer now writes `config :ex_athena, :ollama, embedding_model:
   "nomic-embed-text"` (idempotent, like every other key it writes) and says so
   in its notice along with the `ollama pull` needed to make it real;
   `nomic-embed-text` is the recommended local default because its 8192-token
@@ -878,22 +871,22 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   ```
 
   The zero-arity `list_models/0` on that module is **unchanged**, so if you call
-  the zero-arity form — or reach the provider through `ExAthena.list_models/2`,
-  which is the supported path — there is nothing to do. Only direct callers that
-  pass a `ModelSource` explicitly (in practice, tests injecting a fake CLI) break
-  on upgrade, and they break loudly with an `UndefinedFunctionError` rather than
-  silently. `mix ex_athena.upgrade 0.17.0 0.18.0` rewrites the call sites and
-  function references for you.
+  the zero-arity form — or reach the provider through
+  `ExAthena.list_models/2`, which is the supported path — there is nothing to
+  do. Only direct callers that pass a `ModelSource` explicitly (in practice,
+  tests injecting a fake CLI) break on upgrade, and they break loudly with an
+  `UndefinedFunctionError` rather than silently. `mix ex_athena.upgrade 0.17.0
+  0.18.0` rewrites the call sites and function references for you.
 
 - **The `lsp` tool's argument contract changed:** `required` narrowed from
   `["action", "file"]` to `["action"]`, because `workspace_symbol` is
   workspace-scoped and has no file to name. `file` is still mandatory for every
-  other action — it is now validated per-action rather than by the schema. Hosts
-  that mirror the tool schema into their own UI should re-read it.
+  other action — it is now validated per-action rather than by the schema.
+  Hosts that mirror the tool schema into their own UI should re-read it.
 
-- **The default Elixir language server is now `expert --stdio`**, falling back to
-  `elixir-ls` when Expert is not on `PATH` (see Added). An explicit
-  `config :ex_athena, :lsp_servers` override still wins outright.
+- **The default Elixir language server is now `expert --stdio`**, falling back
+  to `elixir-ls` when Expert is not on `PATH` (see Added). An explicit `config
+  :ex_athena, :lsp_servers` override still wins outright.
 
 ### Deprecated
 
@@ -911,8 +904,8 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **The web model picker no longer discards what you typed.** The combobox
   committed a model only on option-click or on the free-type input's blur, so
   typing a name into the filter and then dismissing the dropdown — by clicking
-  away, or by pressing Enter, which is what people actually do — silently threw
-  the text away and left the previous selection active. The failure was
+  away, or by pressing Enter, which is what people actually do — silently
+  threw the text away and left the previous selection active. The failure was
   invisible until the next message, and the most common way to hit it was the
   worst one: a user replacing a stale *embedding* model with a chat model kept
   the embedding model and got an unexplained HTTP 400. Closing the dropdown and
@@ -930,10 +923,10 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - **The web Overview panel no longer crashes on unlinked agents.** Its
   orphan-agent filter used strict `not/1` against `a.linked_todo && …`, which
-  evaluates to `nil` — not a boolean — precisely when `linked_todo` is `nil`,
-  i.e. for the top-level unlinked workers the filter exists to find. Every
-  Overview render raised `ArgumentError` as soon as one appeared, so the subtree
-  the panel was written to show could never actually be shown.
+  evaluates to `nil` — not a boolean — precisely when `linked_todo` is
+  `nil`, i.e. for the top-level unlinked workers the filter exists to find.
+  Every Overview render raised `ArgumentError` as soon as one appeared, so the
+  subtree the panel was written to show could never actually be shown.
 
 ### Security
 
@@ -941,36 +934,36 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `ExAthena.ToolContext.within_roots?/2` compared paths *lexically*:
   `Path.expand/1` collapses `.`, `..` and `~` as text and never touches the
   filesystem. A symlink **inside** an allowed root that pointed **outside** it
-  therefore passed the check, and the file tools then followed it through the OS.
-  One `ln -s /etc/passwd ./notes.txt` — or a pre-existing directory symlink such
-  as `./vendor -> /` — turned a confined `read` into an arbitrary read, and
-  `write`/`edit`/`apply_patch` into arbitrary writes *outside* the sandbox,
-  including creating new files through an escaping directory symlink. Bash was
-  never exposed (the OS sandbox resolves real paths); this was specific to the
-  pure-Elixir file tools. Both the candidate path and each root are now
+  therefore passed the check, and the file tools then followed it through the
+  OS. One `ln -s /etc/passwd ./notes.txt` — or a pre-existing directory
+  symlink such as `./vendor -> /` — turned a confined `read` into an arbitrary
+  read, and `write`/`edit`/`apply_patch` into arbitrary writes *outside* the
+  sandbox, including creating new files through an escaping directory symlink.
+  Bash was never exposed (the OS sandbox resolves real paths); this was specific
+  to the pure-Elixir file tools. Both the candidate path and each root are now
   canonicalised component-by-component via `File.read_link/1`, restarting the
   walk whenever a link is followed because the target may itself contain links,
-  and capped at 40 hops (mirroring the kernel's `SYMLOOP_MAX`) so a symlink cycle
-  denies rather than hangs. Missing trailing components are kept lexically, which
-  is what makes "create a file through an escaping directory symlink" refusable.
-  The rule is *canonical target inside canonical roots*, not *no symlinks* — so
-  benign in-root links (`node_modules/.bin`, `_build`) and canonicalising roots
-  themselves (macOS `/tmp -> /private/tmp`) keep working. `resolve_path/2` still
-  returns the lexical path, so tool output and error messages name the path the
-  model asked for.
+  and capped at 40 hops (mirroring the kernel's `SYMLOOP_MAX`) so a symlink
+  cycle denies rather than hangs. Missing trailing components are kept
+  lexically, which is what makes "create a file through an escaping directory
+  symlink" refusable. The rule is *canonical target inside canonical roots*, not
+  *no symlinks* — so benign in-root links (`node_modules/.bin`, `_build`) and
+  canonicalising roots themselves (macOS `/tmp -> /private/tmp`) keep working.
+  `resolve_path/2` still returns the lexical path, so tool output and error
+  messages name the path the model asked for.
   ([#133](https://github.com/udin-io/ex_athena/issues/133))
 
 - **The `web_fetch` SSRF guard now applies unconfined, and re-validates every
   redirect hop.** Two holes, either of which was sufficient. First, the guard
-  was gated on `confined?(ctx)` — and the library default is *unconfined*, so in
-  the default configuration `web_fetch` would happily GET
+  was gated on `confined?(ctx)` — and the library default is *unconfined*, so
+  in the default configuration `web_fetch` would happily GET
   `http://169.254.169.254/latest/meta-data/iam/security-credentials/` and hand
   cloud IAM credentials to the model, or reach `localhost` and RFC1918 services
   behind the host's firewall. A prompt-injected web page is enough to trigger
   it. Second, even confined, only the *initial* URL was checked: `Req` followed
   `Location` headers automatically, so `https://attacker.example/x` returning
-  `302 → http://169.254.169.254/…` bypassed the guard entirely. The check is now
-  default-deny regardless of confinement, and auto-redirects are disabled in
+  `302 → http://169.254.169.254/…` bypassed the guard entirely. The check is
+  now default-deny regardless of confinement, and auto-redirects are disabled in
   favour of a manual loop (max 5 hops) that runs the same validation on every
   hop, resolving relative `Location`s with `URI.merge/2`. Exhausting the hops
   returns `{:error, :too_many_redirects}`. Legitimate local fetches opt in with
@@ -993,17 +986,17 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   narrower, never more privileged* — requested roots are intersected with the
   parent's, `disallowed_tools` is unioned, `allowed_tools` intersected, and the
   phase clamped by the new `ExAthena.Permissions.most_restrictive_phase/2`
-  (where an unrecognised phase atom ranks as most permissive and therefore always
-  loses, so a typo in an agent definition can never escalate). The clamp is
-  recorded per run rather than only at the top, so it composes correctly through
-  arbitrarily deep nesting. Separately, orchestrate's watchdog and
+  (where an unrecognised phase atom ranks as most permissive and therefore
+  always loses, so a typo in an agent definition can never escalate). The clamp
+  is recorded per run rather than only at the top, so it composes correctly
+  through arbitrarily deep nesting. Separately, orchestrate's watchdog and
   research-escalation paths called `SpawnAgent.execute/2` directly, skipping the
-  permission gate — a host that had explicitly forbidden `spawn_agent` still got
-  delegated child runs. Both now route through the same gate as a model-issued
-  call, and a denial surfaces to the orchestrator as a runtime note. Consequences
-  worth knowing before upgrading: `can_use_tool` now fires for child tool calls
-  (expect more prompts), and an agent definition asking for a wider phase or
-  roots outside the parent is clamped rather than honoured.
+  permission gate — a host that had explicitly forbidden `spawn_agent` still
+  got delegated child runs. Both now route through the same gate as a
+  model-issued call, and a denial surfaces to the orchestrator as a runtime
+  note. Consequences worth knowing before upgrading: `can_use_tool` now fires
+  for child tool calls (expect more prompts), and an agent definition asking for
+  a wider phase or roots outside the parent is clamped rather than honoured.
   ([#130](https://github.com/udin-io/ex_athena/issues/130))
 
 - **Three plan-mode read-only bypasses are closed.** `:plan` is advertised as a
@@ -1014,14 +1007,14 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
      itself write and shell access with a single `plan_mode(action: "exit")`
      call, without the approval the tool's own docs promised. Worse, the
      transition was keyed on the *result shape* alone, so **any** custom or MCP
-     tool could smuggle an escalation by returning
-     `%{phase_transition: :bypass_permissions}`. The transition is now honoured
-     only from `plan_mode` itself, and only after the normal `can_use_tool`
-     prompt; a host-pinned `:plan` run with no callback cannot exit at all. A
-     model that *entered* plan mode from a looser phase can still leave it —
-     exiting merely restores the grant the host gave.
-  2. **Interpreter one-liners.** Bash's read-only classifier was a *blocklist* of
-     write verbs, which `python -c "open('x','w').write(…)"`, `perl -e`,
+     tool could smuggle an escalation by returning `%{phase_transition:
+     :bypass_permissions}`. The transition is now honoured only from `plan_mode`
+     itself, and only after the normal `can_use_tool` prompt; a host-pinned
+     `:plan` run with no callback cannot exit at all. A model that *entered*
+     plan mode from a looser phase can still leave it — exiting merely
+     restores the grant the host gave.
+  2. **Interpreter one-liners.** Bash's read-only classifier was a *blocklist*
+     of write verbs, which `python -c "open('x','w').write(…)"`, `perl -e`,
      `ruby -e`, `node -e`, `ex` and `ed` all sailed straight through: arbitrary
      code execution and arbitrary writes from inside "read-only" planning. It is
      now an allowlist — every segment of a pipeline must head with a known
@@ -1029,18 +1022,18 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
      `mix`, and command substitution or any file redirect disqualifies the whole
      line. Quoted spans are masked before parsing so `grep -E "a|b"` is not
      mis-split. Unknown commands are mutating by default.
-  3. **Everything that was not on a list.** The `:plan` gate handled a handful of
-     named tools and then fell through to `:allow`, so every mutating MCP tool,
-     every host-registered custom tool, and the built-in `apply_patch` — which
-     appeared on neither list — ran unchallenged. `:plan` is now
+  3. **Everything that was not on a list.** The `:plan` gate handled a handful
+     of named tools and then fell through to `:allow`, so every mutating MCP
+     tool, every host-registered custom tool, and the built-in `apply_patch` —
+     which appeared on neither list — ran unchallenged. `:plan` is now
      **deny-by-default**, with only session bookkeeping (`todo_write`,
      `ask_user`, `finish`) allowed unconditionally and three opt-in routes for
      everything else (see Added). Denials explain which route to use.
 
-  Expect `:plan` to be noticeably stricter after upgrading: `mix test`,
-  `mix compile`, `gh api`, `git branch <name>`, and any custom or MCP tool that
-  has not declared itself read-only are now refused. The refusals are explicit
-  and the model adapts; the shipped hosts are unaffected, since the TUI starts in
+  Expect `:plan` to be noticeably stricter after upgrading: `mix test`, `mix
+  compile`, `gh api`, `git branch <name>`, and any custom or MCP tool that has
+  not declared itself read-only are now refused. The refusals are explicit and
+  the model adapts; the shipped hosts are unaffected, since the TUI starts in
   `:default`, the web host in `:accept_edits`, and the built-in `:plan` workers
   never receive the `plan_mode` tool.
   ([#131](https://github.com/udin-io/ex_athena/issues/131))
@@ -1052,9 +1045,9 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   opt-in: `--lan` (or `--host HOST`) requires a shared-secret token —
   `--token` / `ATHENA_WEB_TOKEN`, auto-generated otherwise — printed as a
   tokened URL at startup and enforced both by a plug (HTTP) and a LiveView
-  `on_mount` hook (the websocket, where plugs don't run). The websocket
-  origin check is no longer disabled: `check_origin: :conn` requires an
-  exact scheme/host/port match.
+  `on_mount` hook (the websocket, where plugs don't run). The websocket origin
+  check is no longer disabled: `check_origin: :conn` requires an exact
+  scheme/host/port match.
   ([#134](https://github.com/udin-io/ex_athena/issues/134))
 
 ## v0.17.0 — Workspace confinement & sandboxing
@@ -1113,14 +1106,15 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed — agent nesting (behavior change)
 
-- The hard **depth-1** rail is replaced by a **configurable
-  `config :ex_athena, max_agent_depth` (default `5`)**, overridable per run via
+- The hard **depth-1** rail is replaced by a **configurable `config :ex_athena,
+  max_agent_depth` (default `5`)**, overridable per run via
   `assigns[:max_agent_depth]`. Any worker may now delegate sub-agents up to the
   cap (a ceiling is kept on purpose so a degenerate model can't spawn an
   unbounded tree). Nested agents report to the `Coordinator` with
-  `parent_id`/`depth`, and the web **Overview is now a clean task → agent tree**
-  that grows as agents spawn sub-agents — each node shows its name (click → full
-  details), status, and live action.
+  `parent_id`/`depth`, and the web **Overview is now a clean task → agent
+  tree**
+  that grows as agents spawn sub-agents — each node shows its name (click →
+  full details), status, and live action.
 
 ### Fixed
 
@@ -1135,8 +1129,8 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - The git-diff view (web Git tab + TUI Changes) is **unified and now includes
   untracked (new) files**, not just modified/deleted.
 - `todo_write` is **allowed in the `:plan` phase** (it mutates session
-  bookkeeping, not the workspace), so orchestrate planning and read-only
-  workers can record their plan.
+  bookkeeping, not the workspace), so orchestrate planning and read-only workers
+  can record their plan.
 - **Web runs survive LiveView reconnects.** A run is now owned by a per-session
   `ExAthena.Web.RunServer` (keyed by a stable session id carried in a new
   `/c/:session_id` URL), not by the LiveView pid that started it. A reconnect
@@ -1159,43 +1153,43 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   tool_guidance, boundaries; rejected with a model-visible error when
   incomplete). Deterministic rails enforced in code, not prompts: **bounded
   nesting depth** (configurable `max_agent_depth`, default 5 — see "Changed"),
-  **fan-out capped at the provider's queue
-  slots**, summary-only returns (`max_result_chars` arg), and a worker
-  contract appended to every sub-agent's system prompt.
+  **fan-out capped at the provider's queue slots**, summary-only returns
+  (`max_result_chars` arg), and a worker contract appended to every sub-agent's
+  system prompt.
 - **Per-iteration conclusions in every mode**: the system prompt asks for a
-  trailing `CONCLUSION: <one sentence>` line; `ExAthena.Conclusions` parses
-  it with fallbacks (final paragraph → derived from tool activity) so the
+  trailing `CONCLUSION: <one sentence>` line; `ExAthena.Conclusions` parses it
+  with fallbacks (final paragraph → derived from tool activity) so the
   timeline never has holes, and a `{:conclusion, %{iteration, text, source}}`
   event is emitted each turn. The rolling ledger is **recited Manus-style**
-  as an ephemeral message at the request tail (KV-cache-friendly). Opt out
-  with `conclusions: false`.
+  as an ephemeral message at the request tail (KV-cache-friendly). Opt out with
+  `conclusions: false`.
 - **Orchestrator.Coordinator** — a per-run blackboard GenServer (Registry +
-  DynamicSupervisor, `restart: :temporary`): ingests attributed events from
-  the main loop and every subagent (cast-only — a coordinator crash can never
+  DynamicSupervisor, `restart: :temporary`): ingests attributed events from the
+  main loop and every subagent (cast-only — a coordinator crash can never
   stall a run), maintains pure `AgentInfo` reducers (status machine incl.
   `:waiting_gpu`/`:stalling`, bounded transcript tails, capped conclusions),
-  keeps a **runtime todo ledger** (stable ids diffed from full rewrites,
-  single in_progress enforced, todos auto-completed when their linked worker
-  succeeds), and broadcasts batched snapshots (100 ms) to monitored
-  subscribers. Wire with `Loop.run(..., coordinator: pid)`.
-- **Web Overview tab is live**: agent tree (orchestrator + workers) with
-  status badges, todo checklists, conclusions timeline, current action,
-  per-agent token/cost counters, expandable bounded transcripts, GPU slot/
-  queue indicator, and a "working on now" strip. The Orchestrate mode is in
-  the mode dropdown.
-- Tightened the no-progress signal: blank or repeated assistant text no
-  longer counts as productivity (local reasoning models often emit a bare
-  `" "` while re-issuing identical tool calls).
+  keeps a **runtime todo ledger** (stable ids diffed from full rewrites, single
+  in_progress enforced, todos auto-completed when their linked worker succeeds),
+  and broadcasts batched snapshots (100 ms) to monitored subscribers. Wire with
+  `Loop.run(..., coordinator: pid)`.
+- **Web Overview tab is live**: agent tree (orchestrator + workers) with status
+  badges, todo checklists, conclusions timeline, current action, per-agent
+  token/cost counters, expandable bounded transcripts, GPU slot/ queue
+  indicator, and a "working on now" strip. The Orchestrate mode is in the mode
+  dropdown.
+- Tightened the no-progress signal: blank or repeated assistant text no longer
+  counts as productivity (local reasoning models often emit a bare `" "` while
+  re-issuing identical tool calls).
 - **Orchestrate runs are uncapped** (`max_iterations: :infinity` unless the
   caller passes an explicit cap; the kernel now supports `:infinity`). The
-  no-progress guard, mistake counter, budget cap, and host stop control
-  bound the run instead. The orchestrator's toolset is coordination-only
-  (`todo_write`/`spawn_agent`/`finish`/`ask_user` — no specialist tools on
-  the supervisor), and an **auto-delegation watchdog** enforces
-  one-worker-per-task: after 2 spawn-less turns with pending todos, the
-  runtime spawns a worker for the first pending todo itself and feeds the
-  summary back. Clicking an agent card in the web Overview opens its focus
-  view (own task, sub-todos, full conclusions, usage, bounded transcript).
+  no-progress guard, mistake counter, budget cap, and host stop control bound
+  the run instead. The orchestrator's toolset is coordination-only
+  (`todo_write`/`spawn_agent`/`finish`/`ask_user` — no specialist tools on the
+  supervisor), and an **auto-delegation watchdog** enforces one-worker-per-task:
+  after 2 spawn-less turns with pending todos, the runtime spawns a worker for
+  the first pending todo itself and feeds the summary back. Clicking an agent
+  card in the web Overview opens its focus view (own task, sub-todos, full
+  conclusions, usage, bounded transcript).
 
 ### Fixed
 
@@ -1205,30 +1199,29 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Changed — request queue (behavior change)
 
-- **The request queue is now enabled by default.** Kill switch:
-  `config :ex_athena, :request_queue, enabled: false`. Local inference
-  servers serve 1–3 concurrent requests; the gate keeps concurrent loops and
-  subagents from overwhelming them (a client-side gate also measurably
-  reduces server-side queue contention).
+- **The request queue is now enabled by default.** Kill switch: `config
+  :ex_athena, :request_queue, enabled: false`. Local inference servers serve
+  1–3 concurrent requests; the gate keeps concurrent loops and subagents from
+  overwhelming them (a client-side gate also measurably reduces server-side
+  queue contention).
 - **Per-call granularity inside the agent loop.** `run/2` no longer holds one
   slot for the entire run — every provider call inside the loop (ReAct turns,
-  PlanAndSolve planning) acquires its own slot via
-  `RequestQueue.with_slot/3` and releases it between iterations. This removes
-  the deadlock/starvation class where one long run monopolized a depth-1
-  provider, and means subagent loops now queue too (they previously bypassed
-  the queue entirely). In-loop acquisition waits `:infinity` by default
-  (override with `queue_timeout:`); the provider's own `timeout_ms` only
-  starts after the slot is acquired, so queue wait never burns the HTTP
-  timeout.
-- **Local provider slots default to 1** (`ollama`, `llamacpp`, `exo`) until
-  your serving setup is load-tested. Raise at runtime with
-  `ExAthena.Config.set_request_queue_max_depth/2` — exposed as the
-  "Parallel slots" input next to the provider selector in the web chat and
-  the `/slots N` command in the TUI. If you raise ollama past 1, match it
-  server-side with `OLLAMA_NUM_PARALLEL` (its server default is 1).
-- **Holder crash safety.** Slot holders are now monitored: a process that
-  dies mid-request without releasing (even a brutal kill that skips `after`
-  blocks) has its slot reclaimed and handed to the next waiter.
+  PlanAndSolve planning) acquires its own slot via `RequestQueue.with_slot/3`
+  and releases it between iterations. This removes the deadlock/starvation class
+  where one long run monopolized a depth-1 provider, and means subagent loops
+  now queue too (they previously bypassed the queue entirely). In-loop
+  acquisition waits `:infinity` by default (override with `queue_timeout:`); the
+  provider's own `timeout_ms` only starts after the slot is acquired, so queue
+  wait never burns the HTTP timeout.
+- **Local provider slots default to 1** (`ollama`, `llamacpp`, `exo`) until your
+  serving setup is load-tested. Raise at runtime with
+  `ExAthena.Config.set_request_queue_max_depth/2` — exposed as the "Parallel
+  slots" input next to the provider selector in the web chat and the `/slots N`
+  command in the TUI. If you raise ollama past 1, match it server-side with
+  `OLLAMA_NUM_PARALLEL` (its server default is 1).
+- **Holder crash safety.** Slot holders are now monitored: a process that dies
+  mid-request without releasing (even a brutal kill that skips `after` blocks)
+  has its slot reclaimed and handed to the next waiter.
 
 ### Added — request queue
 
@@ -1236,16 +1229,16 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `queue:`/`timeout:`/`on_wait:` options.
 - `ExAthena.RequestQueue.waiting_count/1` for queue-pressure UIs.
 - New loop event `{:queue_wait, %{provider:, status: :waiting | :acquired,
-  waited_ms?}}` — emitted only when a provider call actually blocks on a
-  slot, so hosts can render a "waiting on GPU" state.
+  waited_ms?}}` — emitted only when a provider call actually blocks on a slot,
+  so hosts can render a "waiting on GPU" state.
 
 ## v0.15.0 — Runtime JSON provider config + per-provider request queue
 
 Two coordinated upgrades to provider handling: a runtime JSON registry so users
 can add providers (OpenRouter, Groq, Together, Fireworks, DeepSeek, …) by
-dropping a config file — no code change or redeploy required — and a built-in
-per-provider request queue with telemetry for safe concurrency control across
-every public entry point.
+dropping a config file — no code change or redeploy required — and a
+built-in per-provider request queue with telemetry for safe concurrency control
+across every public entry point.
 
 ### Added
 
@@ -1259,9 +1252,8 @@ every public entry point.
   not set (opt-in, default disabled).
 
 - **Request queue telemetry.** Four new events emitted around slot
-  acquire/release: `[:ex_athena, :request_queue, :wait]`,
-  `[:ex_athena, :request_queue, :acquired]`,
-  `[:ex_athena, :request_queue, :released]`, and
+  acquire/release: `[:ex_athena, :request_queue, :wait]`, `[:ex_athena,
+  :request_queue, :acquired]`, `[:ex_athena, :request_queue, :released]`, and
   `[:ex_athena, :request_queue, :timeout]`. All carry `%{provider: atom}`
   metadata and conform to the existing telemetry shape so they wire directly
   into OpenTelemetry.
@@ -1271,8 +1263,8 @@ every public entry point.
   startup with no changes to `config.exs`. The new `ExAthena.ProviderRegistry`
   reads every file at boot, validates the schema, and registers each provider
   under its `name` string. Files that fail validation are skipped with a warning
-  — a bad file does not prevent the application from starting. Five ready-to-copy
-  example providers ship in `priv/provider_examples/`:
+  — a bad file does not prevent the application from starting. Five
+  ready-to-copy example providers ship in `priv/provider_examples/`:
   - **`openrouter.json`** — OpenRouter gateway; routes to hundreds of models
     from Anthropic, Google, Meta, and Mistral through a single OpenAI-compatible
     endpoint. Also registered as the `:openrouter` built-in atom for
@@ -1283,8 +1275,8 @@ every public entry point.
     models with optional fine-tuning support.
   - **`fireworks.json`** — Fireworks AI; fast serverless inference for popular
     open-source models.
-  - **`deepseek.json`** — DeepSeek; cost-effective inference for DeepSeek-series
-    models including the reasoning variant.
+  - **`deepseek.json`** — DeepSeek; cost-effective inference for
+    DeepSeek-series models including the reasoning variant.
 
   See the [Providers guide](guides/providers.md#runtime-json-config) for the
   full schema reference and the new [Upgrading guide](guides/upgrading.md) for
@@ -1299,31 +1291,33 @@ every public entry point.
   `req_llm_provider_tag` was silently ignored. OpenRouter requests on the
   JSON-registry path went out tagged `"openai"` instead of `"openrouter"`. The
   registry spec is now authoritative; the built-in map is the fallback when no
-  spec is loaded for the atom or the spec's tag is unset. `provider_module/1`
-  is unchanged — its built-in-first order is correct (a JSON spec can't
-  override which Elixir module backs a built-in atom).
+  spec is loaded for the atom or the spec's tag is unset. `provider_module/1` is
+  unchanged — its built-in-first order is correct (a JSON spec can't override
+  which Elixir module backs a built-in atom).
 
 ## v0.14.0 — Mid-loop intervention hook + structured completion signal
 
-Two control-flow features for steering long agent loops: a per-iteration hook for
-mid-loop intervention, and a structured `finish` tool so models can declare task
-completion explicitly instead of relying on free-text sentinels.
+Two control-flow features for steering long agent loops: a per-iteration hook
+for mid-loop intervention, and a structured `finish` tool so models can declare
+task completion explicitly instead of relying on free-text sentinels.
 
 ### Added
 
-- **`:PreIteration` hook for mid-loop intervention.** Fires at the start of every
-  iteration (after compaction, before `mode.iterate/1`), with a payload exposing
-  the iteration index, the consecutive unproductive-iteration count, and the last
-  tool fingerprint. Return `{:inject, msg}` to append message(s) before the model
-  call, `{:halt, reason}` to stop cleanly (`finish_reason: :error_halted`), or
-  `:ok` to proceed. Lets consumers detect a stall and inject guidance mid-loop
-  rather than absorbing a terminal `:error_no_progress` (#107, closes #106).
-- **`ExAthena.Tools.Finish` — structured completion signal.** A builtin tool the
-  model calls to declare the task/phase done, optionally supplying a `deliverable`
-  (and/or `summary`). The loop stops cleanly with the new `:submitted` termination
-  subtype (a success category) and surfaces the payload on `Result.deliverable`; a
-  `{:submitted, deliverable}` event is emitted just before `{:done, Result}`. More
-  reliable than free-text sentinels for weak or local models (#108).
+- **`:PreIteration` hook for mid-loop intervention.** Fires at the start of
+  every iteration (after compaction, before `mode.iterate/1`), with a payload
+  exposing the iteration index, the consecutive unproductive-iteration count,
+  and the last tool fingerprint. Return `{:inject, msg}` to append message(s)
+  before the model call, `{:halt, reason}` to stop cleanly (`finish_reason:
+  :error_halted`), or `:ok` to proceed. Lets consumers detect a stall and inject
+  guidance mid-loop rather than absorbing a terminal `:error_no_progress` (#107,
+  closes #106).
+- **`ExAthena.Tools.Finish` — structured completion signal.** A builtin tool
+  the model calls to declare the task/phase done, optionally supplying a
+  `deliverable` (and/or `summary`). The loop stops cleanly with the new
+  `:submitted` termination subtype (a success category) and surfaces the payload
+  on `Result.deliverable`; a `{:submitted, deliverable}` event is emitted just
+  before `{:done, Result}`. More reliable than free-text sentinels for weak or
+  local models (#108).
 
 ## v0.13.0 — Compaction budget sized from the model's real context window
 
@@ -1336,9 +1330,9 @@ point for both small local models and large hosted ones.
 - **`capabilities/1` optional provider callback.** Providers can return a
   model-aware capability map — given the per-call opts (including
   `:req_llm_provider_tag` and `:model`) — so `max_tokens` reflects the model's
-  real context window instead of a static default. Backward-compatible: providers
-  that implement only `capabilities/0` are unaffected, as the loop falls back to
-  it via `function_exported?`.
+  real context window instead of a static default. Backward-compatible:
+  providers that implement only `capabilities/0` are unaffected, as the loop
+  falls back to it via `function_exported?`.
 - **Runtime context-window detection for local models.** Resolves the real
   context window for Ollama and llama.cpp at runtime, cached in ETS, feeding the
   dynamic compaction budget. The bundled `ExAthena.Providers.ReqLLM` resolves
@@ -1346,50 +1340,51 @@ point for both small local models and large hosted ones.
 
 ### Changed
 
-- **Compaction budget is derived from the model's context window** rather than the
-  previous static 200k-token assumption, so compaction triggers appropriately
-  across models of very different sizes (#103).
+- **Compaction budget is derived from the model's context window** rather than
+  the previous static 200k-token assumption, so compaction triggers
+  appropriately across models of very different sizes (#103).
 
 ## v0.12.2 — Provider base_url leak fix + Igniter/docs refresh
 
 Fixes a cross-provider `base_url` config leak and refreshes the Igniter
-installer/upgrader and docs for v0.12 (no runtime changes beyond the config fix).
+installer/upgrader and docs for v0.12 (no runtime changes beyond the config
+fix).
 
 ### Added
 
 - **`0.12.0` Igniter upgrade migration.** `mix igniter.upgrade ex_athena` from a
   pre-0.12 version now emits a notice that the TUI/web deps (`ex_ratatui`,
   `phoenix`, `phoenix_live_view`, `bandit`) became `optional` in v0.12, so
-  consumers who rely on `mix athena.chat` / `mix athena.web` know to add the deps
-  to their own `mix.exs`. Library-only consumers are unaffected. Previously the
-  upgrader only carried the `0.4.0` migration, so the v0.12 packaging change was a
-  silent footgun.
+  consumers who rely on `mix athena.chat` / `mix athena.web` know to add the
+  deps to their own `mix.exs`. Library-only consumers are unaffected. Previously
+  the upgrader only carried the `0.4.0` migration, so the v0.12 packaging change
+  was a silent footgun.
 
 ### Changed
 
 - **Installer notice covers the v0.12 front-ends.** `mix ex_athena.install`'s
-  post-install notice advertised only the v0.4 feature set; it now also points at
-  the optional `mix athena.chat` (TUI) and `mix athena.web` (web UI) front-ends
-  and the deps each requires. The moduledoc's dep-pin example is bumped from
-  `~> 0.4` to `~> 0.12`.
+  post-install notice advertised only the v0.4 feature set; it now also points
+  at the optional `mix athena.chat` (TUI) and `mix athena.web` (web UI)
+  front-ends and the deps each requires. The moduledoc's dep-pin example is
+  bumped from `~> 0.4` to `~> 0.12`.
 
 ### Fixed
 
 - **`Config.provider_opts/3` is now scoped to the requested provider atom.**
   Every built-in provider atom (`:ollama`, `:openai`, `:gemini`, `:claude`, …)
   maps to the same `ExAthena.Providers.ReqLLM` module, and the previous
-  `provider_app_env` accumulated `Application.get_env(:ex_athena, <atom>)` across
-  **all** of a module's atoms. An instance-specific key — most damagingly
-  `:base_url` — set for one provider therefore leaked into requests for another:
-  a consumer's `config :ex_athena, ollama: [base_url: "http://localhost:11434"]`
-  was sent on `:gemini`/`:claude` requests, 404ing against the wrong host. The
-  concrete provider atom is now threaded from the loop and only that atom's
-  config is read (unknown atoms / custom modules still fall back to module-wide
-  accumulation); per-call opts still override (#99).
+  `provider_app_env` accumulated `Application.get_env(:ex_athena, <atom>)`
+  across **all** of a module's atoms. An instance-specific key — most
+  damagingly `:base_url` — set for one provider therefore leaked into requests
+  for another: a consumer's `config :ex_athena, ollama: [base_url:
+  "http://localhost:11434"]` was sent on `:gemini`/`:claude` requests, 404ing
+  against the wrong host. The concrete provider atom is now threaded from the
+  loop and only that atom's config is read (unknown atoms / custom modules still
+  fall back to module-wide accumulation); per-call opts still override (#99).
 - **Gemini guide now renders on hexdocs.** `guides/gemini.md` shipped in the
   package and was linked from the README and other guides, but it was missing
-  from `docs.extras` — so those links broke and the guide never appeared in the
-  published docs. Added it to the docs extras.
+  from `docs.extras` — so those links broke and the guide never appeared in
+  the published docs. Added it to the docs extras.
 - **Stale dependency-version pins in the docs.** `guides/getting_started.md`
   pinned `{:ex_athena, "~> 0.1"}`; corrected to `~> 0.12` to match the README.
 
@@ -1397,8 +1392,8 @@ installer/upgrader and docs for v0.12 (no runtime changes beyond the config fix)
 
 A hotfix for v0.12.0: the now-`optional` `:ex_ratatui` dependency was still
 referenced at compile time, so any consumer that didn't pull it failed to
-compile ExAthena at all. Upgrade straight to v0.12.1 — v0.12.0 has been retired
-on Hex.
+compile ExAthena at all. Upgrade straight to v0.12.1 — v0.12.0 has been
+retired on Hex.
 
 ### Fixed
 
@@ -1414,15 +1409,16 @@ on Hex.
 ## v0.12.0 — Interactive TUI, web UI, llama.cpp provider, thinking, prompt hardening
 
 The headline release for ExAthena's two new front-ends — a full-screen
-terminal TUI (`mix athena.chat`) and a Phoenix LiveView web UI
-(`mix athena.web`) — plus first-class llama.cpp support, real-time
+terminal TUI (`mix athena.chat`) and a Phoenix LiveView web UI (`mix
+athena.web`) — plus first-class llama.cpp support, real-time
 thinking/reasoning streaming, and a batch of tool/permission refinements. The
 TUI and web stacks ship as **optional** dependencies so the core library stays
 lean (see _Changed → Packaging_).
 
 ### Added — interactive TUI (`mix athena.chat`)
 
-- **Full-screen terminal chat built on [`ex_ratatui`](https://hex.pm/packages/ex_ratatui).**
+- **Full-screen terminal chat built on
+  [`ex_ratatui`](https://hex.pm/packages/ex_ratatui).**
   A streaming REPL against the ExAthena agent loop, defaulting to the `:ollama`
   provider, the `:react` runner, and every builtin tool. Slash commands switch
   state mid-session and `/model` lists live models from the provider.
@@ -1434,8 +1430,8 @@ lean (see _Changed → Packaging_).
   thinking pane (#63, #65). A "thinking…" placeholder shows while the model is
   silent.
 - **Live `git diff` Changes tab** — shows the working-tree diff in the cwd,
-  including untracked files, with compact side-by-side and inline rendering,
-  and a self-explanatory empty/error state (#71, #74, #77, #81).
+  including untracked files, with compact side-by-side and inline rendering, and
+  a self-explanatory empty/error state (#71, #74, #77, #81).
 - **Claude-Code-style tool blocks** in the messages pane, with a compact
   single-line tool-result preview and an `/expand` command to view a collapsed
   result in full (#76).
@@ -1461,9 +1457,9 @@ lean (see _Changed → Packaging_).
 
 - **llama.cpp provider** — `provider: :llamacpp` talks to a local llama-server
   through `req_llm`, including correct tool-call argument streaming (#55, #57).
-- **Thinking / reasoning plumbed through `req_llm` to loop events** — reasoning
-  deltas now surface as loop events so front-ends can render them live (#64).
-  Inline `%LLMDB.Model{}` specs are passed through to suppress req_llm's
+- **Thinking / reasoning plumbed through `req_llm` to loop events** —
+  reasoning deltas now surface as loop events so front-ends can render them live
+  (#64). Inline `%LLMDB.Model{}` specs are passed through to suppress req_llm's
   unverified-model warning.
 
 ### Changed
@@ -1471,28 +1467,29 @@ lean (see _Changed → Packaging_).
 - **Tooling.** `Glob` / `Grep` now exclude `_build`, `deps`, and `node_modules`
   by default, including nested copies in Phoenix-in-subdir layouts (#80, #82).
   `Write` now emits a `:diff` UI payload like `Edit` (#85).
-- **Permissions.** New `ExAthena.Permissions.plan_mode_tools/0` (read-only
-  tools + bash) (#91), and read-only bash commands are now allowed in the
-  `:plan` phase (#90).
+- **Permissions.** New `ExAthena.Permissions.plan_mode_tools/0` (read-only tools
+  + bash) (#91), and read-only bash commands are now allowed in the `:plan`
+  phase (#90).
 - **`ExAthena.Request.new/2` now fails loud on an invalid prompt.** The prompt
   contract is `String.t() | nil`; a non-string prompt (most commonly a
-  content-block list built by a caller that should have used the `:images`
-  opt) previously degraded silently into an empty user message, swallowing the
-  whole turn. It now raises `ArgumentError`, consistent with `normalize_images/1` (#92).
+  content-block list built by a caller that should have used the `:images` opt)
+  previously degraded silently into an empty user message, swallowing the whole
+  turn. It now raises `ArgumentError`, consistent with `normalize_images/1`
+  (#92).
 - **Packaging — TUI/web deps are now `optional`.** `ex_ratatui`, `phoenix`,
   `phoenix_live_view`, and `bandit` are marked `optional: true`. The core agent
   loop never starts a web server or a TUI, so library consumers no longer pull
-  in Phoenix + Bandit transitively. Add these deps yourself to use
-  `mix athena.chat` / `mix athena.web` (see the README).
+  in Phoenix + Bandit transitively. Add these deps yourself to use `mix
+  athena.chat` / `mix athena.web` (see the README).
 
 ### Fixed
 
 - **Caller-supplied `assigns[:spawn_agent_opts]` is no longer clobbered.**
-  `Loop.run/2` overwrote it with the auto-derived provider config via
-  `Map.put`, discarding any options the caller passed (e.g. a `:mock`
-  responder, `:tools`, `:memory`). Switched to `Map.put_new` so explicit
-  caller config — and a grandparent's config when this loop is itself a
-  subagent — survives, matching the documented intent (#93).
+  `Loop.run/2` overwrote it with the auto-derived provider config via `Map.put`,
+  discarding any options the caller passed (e.g. a `:mock` responder, `:tools`,
+  `:memory`). Switched to `Map.put_new` so explicit caller config — and a
+  grandparent's config when this loop is itself a subagent — survives,
+  matching the documented intent (#93).
 - **Compaction token accounting.** `tokens_for` now counts `tool_result`
   payloads, so compaction triggers on the true conversation size instead of
   undercounting tool-heavy turns (#84).
@@ -1513,7 +1510,8 @@ lean (see _Changed → Packaging_).
   library forwards multimodal content parts (image / image_url / file) to the
   underlying provider. Downstream callers (e.g. `udin_code`) can call this
   instead of using `function_exported?/3` hacks. References
-  `ExAthena.Messages.ContentPart`. See [#53](https://github.com/udin-io/ex_athena/issues/53).
+  `ExAthena.Messages.ContentPart`. See
+  [#53](https://github.com/udin-io/ex_athena/issues/53).
 
 ## v0.9.0 — Loop robustness: no-progress detector, compaction pinning, structured denials, typed terminations
 
@@ -1522,59 +1520,55 @@ lean (see _Changed → Packaging_).
 - **`:error_no_progress` termination + kernel-level productivity detector
   (#49)** — `ExAthena.Loop` now detects when consecutive iterations produce
   identical tool calls with no new state and terminates with the new
-  `:error_no_progress` finish_reason (category `:capacity`). State grows
-  four fields (`max_unproductive_iterations` — default 3,
-  `unproductive_iterations`, `last_tool_fingerprint`,
-  `no_progress_snapshot`); `Result` gains `no_progress_snapshot` carrying
-  the last `N*4` messages for downstream remediation reprompts.
-  `ExAthena.Loop.Mode` gains an optional `productivity_signal/2`
-  callback so specialised modes can define richer progress semantics;
-  `Modes.ReAct` ships the reference implementation. The kernel default
-  fingerprints sorted `[{tool_name, args_binary}]` from new assistant
-  messages and treats new non-empty assistant text as productive. See
+  `:error_no_progress` finish_reason (category `:capacity`). State grows four
+  fields (`max_unproductive_iterations` — default 3,
+  `unproductive_iterations`, `last_tool_fingerprint`, `no_progress_snapshot`);
+  `Result` gains `no_progress_snapshot` carrying the last `N*4` messages for
+  downstream remediation reprompts. `ExAthena.Loop.Mode` gains an optional
+  `productivity_signal/2` callback so specialised modes can define richer
+  progress semantics; `Modes.ReAct` ships the reference implementation. The
+  kernel default fingerprints sorted `[{tool_name, args_binary}]` from new
+  assistant messages and treats new non-empty assistant text as productive. See
   ADR-0026.
 
 - **`pin: boolean` on `Message` + `auto_pin:` loop option (#52)** —
-  `ExAthena.Messages.Message` grows a `pin: false` field; any message
-  with `pin: true` is immune to compaction. `Loop.run/2` accepts
-  `auto_pin: %{tool_names: [...]}`; on the reactive-recovery path
-  (`force_compact` triggered by `:error_prompt_too_long`), tool-role
-  messages whose results carry a matching tool name are stamped
-  `pin: true` before the pipeline runs. All five stages (`Snip`,
-  `Microcompact`, `ContextCollapse`, `Summary`, `BudgetReduction`)
-  respect the flag — `Summary` partitions and stitches pinned messages
-  back in after the summary. Prevents silent loss of load-bearing tool
-  results (e.g. `ExitPlanMode` plan text, `set_pr_url` URLs, completion
-  sentinels). See ADR-0027.
+  `ExAthena.Messages.Message` grows a `pin: false` field; any message with `pin:
+  true` is immune to compaction. `Loop.run/2` accepts `auto_pin: %{tool_names:
+  [...]}`; on the reactive-recovery path (`force_compact` triggered by
+  `:error_prompt_too_long`), tool-role messages whose results carry a matching
+  tool name are stamped `pin: true` before the pipeline runs. All five stages
+  (`Snip`, `Microcompact`, `ContextCollapse`, `Summary`, `BudgetReduction`)
+  respect the flag — `Summary` partitions and stitches pinned messages back in
+  after the summary. Prevents silent loss of load-bearing tool results (e.g.
+  `ExitPlanMode` plan text, `set_pr_url` URLs, completion sentinels). See
+  ADR-0027.
 
-- **`ExAthena.Permissions.Denial` struct + `:ToolDenied` hook event
-  (#50)** — `Permissions.check/3` now returns `{:deny, %Denial{}}` with
-  three fields: `reason` (human-readable), `code`
-  (`:phase_gated | :budget_exceeded | :user_denied | :sandbox_violation |
-  :unknown`), and `metadata` (structured context including
-  `requested_tool`, `allowed_tools`, and `phase` where applicable). The
-  new `:ToolDenied` hook fires from `Loop.Parallel.fire_permission_denied`
-  alongside the existing `:PermissionDenied`, carrying the typed struct
-  so consumers can pattern-match on `denial.code` instead of grepping
-  reason strings. `Modes.ReAct` uses `denial.reason` directly as the
-  tool-result content (no more `inspect`-formatted tuples). A
-  `String.Chars` impl returns `denial.reason` for backwards-compat with
-  callers using `to_string/1`. See ADR-0028.
+- **`ExAthena.Permissions.Denial` struct + `:ToolDenied` hook event (#50)** —
+  `Permissions.check/3` now returns `{:deny, %Denial{}}` with three fields:
+  `reason` (human-readable), `code` (`:phase_gated | :budget_exceeded |
+  :user_denied | :sandbox_violation | :unknown`), and `metadata` (structured
+  context including `requested_tool`, `allowed_tools`, and `phase` where
+  applicable). The new `:ToolDenied` hook fires from
+  `Loop.Parallel.fire_permission_denied` alongside the existing
+  `:PermissionDenied`, carrying the typed struct so consumers can pattern-match
+  on `denial.code` instead of grepping reason strings. `Modes.ReAct` uses
+  `denial.reason` directly as the tool-result content (no more
+  `inspect`-formatted tuples). A `String.Chars` impl returns `denial.reason` for
+  backwards-compat with callers using `to_string/1`. See ADR-0028.
 
-- **`:error_schema_validation` + `:error_provider_auth` termination
-  subtypes (#51)** — `ExAthena.Loop.Terminations` splits two cases out
-  of the catch-all `:error_during_execution`:
-  - `:error_schema_validation` (category `:retryable`) — model output
-    failed `ToolCalls.extract`; callers can retry with a reformat hint.
+- **`:error_schema_validation` + `:error_provider_auth` termination subtypes
+  (#51)** — `ExAthena.Loop.Terminations` splits two cases out of the catch-all
+  `:error_during_execution`:
+  - `:error_schema_validation` (category `:retryable`) — model output failed
+    `ToolCalls.extract`; callers can retry with a reformat hint.
   - `:error_provider_auth` (category `:fatal`) — provider returned HTTP
-    401/403 (detected via `%ExAthena.Error{kind: :unauthorized}`); blind
-    retry will not help.
-  `ExAthena.Result` gains `error_diagnostic: nil`, populated when
-  `finish_reason: :error_schema_validation` with `%{schema:, received:,
-  violations:}` (violations carry `reason` strings; future parsers can
-  add structured `path` data). `ExAthena.Modes.ReAct.do_iterate/2`
-  classifies both branches; `Loop.to_result/2` threads the diagnostic
-  through `state.meta[:error_diagnostic]`. See ADR-0029.
+    401/403 (detected via `%ExAthena.Error{kind: :unauthorized}`); blind retry
+    will not help. `ExAthena.Result` gains `error_diagnostic: nil`, populated
+    when `finish_reason: :error_schema_validation` with `%{schema:, received:,
+    violations:}` (violations carry `reason` strings; future parsers can add
+    structured `path` data). `ExAthena.Modes.ReAct.do_iterate/2` classifies both
+    branches; `Loop.to_result/2` threads the diagnostic through
+    `state.meta[:error_diagnostic]`. See ADR-0029.
 
 
 
@@ -1582,46 +1576,44 @@ lean (see _Changed → Packaging_).
 
 - **Multimodal content in `ExAthena.Messages.Message` (#44)** — `content` may
   now be either `String.t()` or a list of `ExAthena.Messages.ContentPart`
-  structs, enabling structured payloads (text + images) within a single
-  message. Text-only callers are unaffected; existing string-content
-  workflows pass through unchanged. See ADR-0024.
+  structs, enabling structured payloads (text + images) within a single message.
+  Text-only callers are unaffected; existing string-content workflows pass
+  through unchanged. See ADR-0024.
 
-- **`ExAthena.Messages.ContentPart` thin wrapper** — abstracts the
-  supported media types behind small constructors:
-  `ContentPart.text/1`, `ContentPart.image/2` (base64 + media type),
-  `ContentPart.image_url/1`, and `ContentPart.file/2`. Mirrors the part
-  shapes used by upstream provider APIs without leaking adapter
-  specifics into caller code. See ADR-0024.
+- **`ExAthena.Messages.ContentPart` thin wrapper** — abstracts the supported
+  media types behind small constructors: `ContentPart.text/1`,
+  `ContentPart.image/2` (base64 + media type), `ContentPart.image_url/1`, and
+  `ContentPart.file/2`. Mirrors the part shapes used by upstream provider APIs
+  without leaking adapter specifics into caller code. See ADR-0024.
 
-- **`images:` shorthand on `ExAthena.query/2`, `stream/3`, and `run/2`
-  (#44)** — implemented in `ExAthena.Request.new/2` so all three public
-  entry points gain the shorthand from a single normalisation point.
-  Image specs may be `%{data: binary(), media_type: String.t()}`,
-  `%{url: String.t()}`, or `%{data: binary()}` (defaults to
-  `"image/png"`). Image parts are merged into the last user message or
-  appended as a new user message alongside the prompt. See ADR-0023.
+- **`images:` shorthand on `ExAthena.query/2`, `stream/3`, and `run/2` (#44)**
+  — implemented in `ExAthena.Request.new/2` so all three public entry points
+  gain the shorthand from a single normalisation point. Image specs may be
+  `%{data: binary(), media_type: String.t()}`, `%{url: String.t()}`, or `%{data:
+  binary()}` (defaults to `"image/png"`). Image parts are merged into the last
+  user message or appended as a new user message alongside the prompt. See
+  ADR-0023.
 
 - **`ExAthena.Providers.ReqLLM` adapter forwards multimodal parts** —
-  `to_req_llm_message/1` and the per-part serialiser now traverse
-  `ContentPart` lists and emit the `req_llm` message format with image
-  payloads intact (previously images were silently dropped at the
-  adapter boundary). See ADR-0025.
+  `to_req_llm_message/1` and the per-part serialiser now traverse `ContentPart`
+  lists and emit the `req_llm` message format with image payloads intact
+  (previously images were silently dropped at the adapter boundary). See
+  ADR-0025.
 
 - **`guides/multimodal.md`** — end-to-end guide covering the `images:`
-  shorthand, manual `ContentPart` construction, supported media types,
-  and the per-provider matrix. Linked from `guides/providers.md` and
-  registered as a HexDocs extra in `mix.exs`.
+  shorthand, manual `ContentPart` construction, supported media types, and the
+  per-provider matrix. Linked from `guides/providers.md` and registered as a
+  HexDocs extra in `mix.exs`.
 
 ## v0.7.1 — First-class `:gemini` provider atom
 
 ### Added
 
-- **`:gemini` provider atom (#39)** — callers can now write
-  `provider: :gemini, model: "gemini-2.5-flash"` directly. The atom
-  delegates to `ExAthena.Providers.ReqLLM` via `req_llm`'s `google`
-  adapter; no hand-rolled HTTP client. Hosted, authenticated — requires
-  a `GEMINI_API_KEY`. See `guides/providers.md` for configuration and
-  the live `@tag :external` test in
+- **`:gemini` provider atom (#39)** — callers can now write `provider:
+  :gemini, model: "gemini-2.5-flash"` directly. The atom delegates to
+  `ExAthena.Providers.ReqLLM` via `req_llm`'s `google` adapter; no hand-rolled
+  HTTP client. Hosted, authenticated — requires a `GEMINI_API_KEY`. See
+  `guides/providers.md` for configuration and the live `@tag :external` test in
   `test/ex_athena/providers/gemini_live_test.exs`.
 
 ## v0.6.0 — Session persistence, native MCP, and first-class LSP integration
@@ -1629,8 +1621,8 @@ lean (see _Changed → Packaging_).
 ### Added
 
 - **Session persistence (#35)** — full lifecycle for conversational state:
-  resume, checkpoint, fork, and undo/redo. Built on a GenServer-backed ETS
-  store with JSONL migration and snapshot indexing. New public API:
+  resume, checkpoint, fork, and undo/redo. Built on a GenServer-backed ETS store
+  with JSONL migration and snapshot indexing. New public API:
   `ExAthena.Session.resume/2`, `checkpoint/2`, `fork/2`, `rewind/3`. See
   ADR-0010 through ADR-0013.
 
@@ -1643,62 +1635,60 @@ lean (see _Changed → Packaging_).
     (line-framed Port for stdio; `Req` with JSON/SSE handling for HTTP).
   - `ExAthena.Mcp.Config` — OpenCode-shaped JSONC config loader with
     string/atom and `"local"`/`:local` normalisation.
-  - `ExAthena.Mcp.Server` + `ExAthena.Mcp.Supervisor` + `ExAthena.Mcp.Registry` —
-    per-server GenServers with cached `tools/list`, registered by name and
+  - `ExAthena.Mcp.Server` + `ExAthena.Mcp.Supervisor` + `ExAthena.Mcp.Registry`
+    — per-server GenServers with cached `tools/list`, registered by name and
     supervised under `:one_for_one` (`max_restarts: 3/60s`).
-  - MCP tools registered into the loop catalog with namespacing,
-    permission scoping, and hook support.
+  - MCP tools registered into the loop catalog with namespacing, permission
+    scoping, and hook support.
   - Application gated behind `:enable_mcp` (off in test). See ADR-0014,
     ADR-0015, ADR-0016.
 
 - **First-class Language Server Protocol integration (#37)** — definitions,
   references, hover, and diagnostics, plus an automatic post-edit hook:
   - `ExAthena.Lsp.Client` — JSON-RPC over stdio Port with Content-Length
-    framing, request/response correlation, and `publishDiagnostics`
-    caching via the `initialize/shutdown` handshake.
+    framing, request/response correlation, and `publishDiagnostics` caching via
+    the `initialize/shutdown` handshake.
   - `ExAthena.Lsp.Manager` + `ExAthena.Lsp.ServerRegistry` — per-project
     `(root, language)` lazy spawning for `elixir-ls`, `pyright`,
-    `rust-analyzer`, `gopls`, and `typescript-language-server`; override
-    the spawn map at `{:ex_athena, :lsp_servers}`.
-  - `ExAthena.Tools.Lsp` — exposes `definition`, `references`,
-    `diagnostics`, and `hover` to the loop.
+    `rust-analyzer`, `gopls`, and `typescript-language-server`; override the
+    spawn map at `{:ex_athena, :lsp_servers}`.
+  - `ExAthena.Tools.Lsp` — exposes `definition`, `references`, `diagnostics`,
+    and `hover` to the loop.
   - `ExAthena.Lsp.ImplicitDiagnostics` — built-in `PostToolUse` hook that
     fetches LSP diagnostics after every `Edit`/`Write` call and injects
-    errors/warnings into the next-turn tool result via the new
-    `{:augment, String.t()}` hook return type.
-  - Telemetry: `[:ex_athena, :lsp, :spawn]`,
-    `[:ex_athena, :lsp, :request, :start | :stop]`, and
-    `[:ex_athena, :lsp, :implicit_diagnostics, :start | :stop]`.
+    errors/warnings into the next-turn tool result via the new `{:augment,
+    String.t()}` hook return type.
+  - Telemetry: `[:ex_athena, :lsp, :spawn]`, `[:ex_athena, :lsp, :request,
+    :start | :stop]`, and `[:ex_athena, :lsp, :implicit_diagnostics, :start |
+    :stop]`.
   - Application gated behind `:enable_lsp` (off in test). See ADR-0017,
     ADR-0018, ADR-0019.
 
-- **`PostToolUse` hooks may return `{:augment, String.t()}`** — appends
-  text to the tool-result content the model sees on the next turn. Used
-  by `ImplicitDiagnostics` and now part of the public hook contract; see
+- **`PostToolUse` hooks may return `{:augment, String.t()}`** — appends text
+  to the tool-result content the model sees on the next turn. Used by
+  `ImplicitDiagnostics` and now part of the public hook contract; see
   `guides/hooks_reference.md`.
 
 ### Fixed
 
 - **`ExAthena.Loop.do_iterate/2` resets `consecutive_mistakes` at the turn
   boundary on any tool success (#38)** — after the parallel-fold fix in
-  v0.5.0, per-call reset/bump interleaving in serial batches and
-  single-failure turns left the counter stale, occasionally tripping
-  `error_consecutive_mistakes` on loops with no actually-consecutive
-  mistakes. The reset decision is now made once after `Parallel.run/3`:
-  reset if any result in the batch is non-error; per-call bumps remain.
-  See ADR-0020.
+  v0.5.0, per-call reset/bump interleaving in serial batches and single-failure
+  turns left the counter stale, occasionally tripping
+  `error_consecutive_mistakes` on loops with no actually-consecutive mistakes.
+  The reset decision is now made once after `Parallel.run/3`: reset if any
+  result in the batch is non-error; per-call bumps remain. See ADR-0020.
 
-- **`ExAthena.Sessions.Stores.ETSTest` cleanup no longer races on a dead
-  `Jsonl` process** — `GenServer.stop` in `setup` and `on_exit` is now
-  wrapped to tolerate `:exit` from a process that died between `whereis`
-  and `stop`. Previously caused intermittent failures under certain test
-  orderings.
+- **`ExAthena.Sessions.Stores.ETSTest` cleanup no longer races on a dead `Jsonl`
+  process** — `GenServer.stop` in `setup` and `on_exit` is now wrapped to
+  tolerate `:exit` from a process that died between `whereis` and `stop`.
+  Previously caused intermittent failures under certain test orderings.
 
 - **`ExAthena.Lsp.ImplicitDiagnosticsTest` no longer leaks the
   `:lsp_implicit_diagnostics_enabled` env across tests** — `on_exit` now
   resets to `false` (matching `config/test.exs`) instead of
-  `Application.delete_env/2`, which left subsequent tests reading the
-  module's literal default of `true`.
+  `Application.delete_env/2`, which left subsequent tests reading the module's
+  literal default of `true`.
 
 ### Internal
 
@@ -1710,341 +1700,322 @@ lean (see _Changed → Packaging_).
 
 ### Added
 
-- `ExAthena.Tools.ApplyPatch` — a new builtin tool that applies a unified
-  diff atomically across one or more files in a single tool call. Replaces
-  N sequential `Edit` calls on multi-region/multi-file refactors. Backend
-  is selected at execution time:
-  - When `cwd` is inside a git work tree, the tool shells out to
-    `git apply --whitespace=nowarn` (and `--check` for `dry_run`).
-    Atomicity comes from `git apply` itself.
-  - Otherwise, a pure-Elixir parser/applier handles standard unified-diff
-    hunks with two-pass semantics: every file's new contents are computed
-    in memory; nothing is written until every hunk validates.
-  Path safety, snapshotting, and permission/hook integration reuse the
-  existing `ToolContext.resolve_path/2`, `ExAthena.Checkpoint.snapshot/3`,
-  and loop dispatch — no new wiring or attack surface. v1 deliberately
-  omits binary diffs, `/dev/null` create/delete, rename detection beyond
-  what unified-diff carries, and fuzzy context matching; unsupported
-  inputs return a structured error so the model can retry. See ADR-0008.
+- `ExAthena.Tools.ApplyPatch` — a new builtin tool that applies a unified diff
+  atomically across one or more files in a single tool call. Replaces N
+  sequential `Edit` calls on multi-region/multi-file refactors. Backend is
+  selected at execution time:
+  - When `cwd` is inside a git work tree, the tool shells out to `git apply
+    --whitespace=nowarn` (and `--check` for `dry_run`). Atomicity comes from
+    `git apply` itself.
+  - Otherwise, a pure-Elixir parser/applier handles standard unified-diff hunks
+    with two-pass semantics: every file's new contents are computed in memory;
+    nothing is written until every hunk validates. Path safety, snapshotting,
+    and permission/hook integration reuse the existing
+    `ToolContext.resolve_path/2`, `ExAthena.Checkpoint.snapshot/3`, and loop
+    dispatch — no new wiring or attack surface. v1 deliberately omits binary
+    diffs, `/dev/null` create/delete, rename detection beyond what unified-diff
+    carries, and fuzzy context matching; unsupported inputs return a structured
+    error so the model can retry. See ADR-0008.
 
 ### Fixed
 
-- `ExAthena.Loop.Parallel.fold_deltas/2` now propagates downward movement
-  of the `consecutive_mistakes` counter from parallel tasks back into the
-  main state. Previously only `budget` was merged, which discarded
-  `reset_mistakes/1` calls from successful parallel-safe tool calls
-  (`Glob`, `Read`). Over multiple iterations the counter could exceed
-  `max_consecutive_mistakes` and trigger `error_consecutive_mistakes` on
-  loops where no actually-consecutive mistakes had occurred — the
-  counter simply never got reset by intervening successes. The fix uses
-  the minimal predicate `n < state.consecutive_mistakes` so resets
+- `ExAthena.Loop.Parallel.fold_deltas/2` now propagates downward movement of the
+  `consecutive_mistakes` counter from parallel tasks back into the main state.
+  Previously only `budget` was merged, which discarded `reset_mistakes/1` calls
+  from successful parallel-safe tool calls (`Glob`, `Read`). Over multiple
+  iterations the counter could exceed `max_consecutive_mistakes` and trigger
+  `error_consecutive_mistakes` on loops where no actually-consecutive mistakes
+  had occurred — the counter simply never got reset by intervening successes.
+  The fix uses the minimal predicate `n < state.consecutive_mistakes` so resets
   propagate while race-prone bumps from concurrent tasks continue to be
   discarded. See ADR-0007.
 
 ### Internal
 
 - Reformat `lib/ex_athena/providers/req_llm.ex` and
-  `test/ex_athena/structured_output_test.exs` to satisfy
-  `mix format --check-formatted` (#33). No behavioural change. See
-  ADR-0009.
+  `test/ex_athena/structured_output_test.exs` to satisfy `mix format
+  --check-formatted` (#33). No behavioural change. See ADR-0009.
 
 ## v0.4.9 — `ToolCalls.Native` recognises `%ReqLLM.StreamChunk{}` tool-call shape
 
 ### Fixed
 
 - `ExAthena.ToolCalls.Native.parse_one/1` now has a clause for
-  `%ReqLLM.StreamChunk{type: :tool_call, name:, arguments:, metadata:}`.
-  Without it, streamed tool calls accumulated by the req_llm provider
-  reached the catch-all and failed with
-  `{:unrecognised_tool_call, chunk}`, halting planning sessions on the
-  Ollama/req_llm path. The new clause extracts an optional id from
-  `metadata["id"]` or `metadata[:id]` (generates one if absent) and
-  delegates to the existing `build/3` helper, so the parser remains the
-  single source of truth for tool-call shapes — provider boundaries stay
-  unaware of struct normalisation.
+  `%ReqLLM.StreamChunk{type: :tool_call, name:, arguments:, metadata:}`. Without
+  it, streamed tool calls accumulated by the req_llm provider reached the
+  catch-all and failed with `{:unrecognised_tool_call, chunk}`, halting planning
+  sessions on the Ollama/req_llm path. The new clause extracts an optional id
+  from `metadata["id"]` or `metadata[:id]` (generates one if absent) and
+  delegates to the existing `build/3` helper, so the parser remains the single
+  source of truth for tool-call shapes — provider boundaries stay unaware of
+  struct normalisation.
 
 ### Why
 
-req_llm streams tool calls as raw `%ReqLLM.StreamChunk{}` structs rather
-than the OpenAI/Claude/pre-parsed map shapes the parser already handled.
-Adding the fourth clause closes the gap without changing the public API
-or any provider code. See ADR-0005.
+req_llm streams tool calls as raw `%ReqLLM.StreamChunk{}` structs rather than
+the OpenAI/Claude/pre-parsed map shapes the parser already handled. Adding the
+fourth clause closes the gap without changing the public API or any provider
+code. See ADR-0005.
 
 ## v0.4.8 — Canonical `%ReqLLM.ToolCall{}` on assistant replay (llama.cpp HTTP 500 fix)
 
 ### Fixed
 
 - `ExAthena.Providers.ReqLLM.format_tool_calls/1` now constructs
-  `%ReqLLM.ToolCall{}` via `ReqLLM.ToolCall.new/3` instead of a flat
-  `%{id, name, arguments}` map. The canonical struct nests the function
-  payload under `type: "function"` / `function: %{name, arguments}`,
-  which is what llama.cpp's strict parser requires on assistant
-  tool_call replay (iteration 2+ of a tool-calling loop). Without this,
-  llama.cpp returned HTTP 500 `Failed to parse messages: Missing tool
-  call type` on every multi-turn tool run; OpenAI/Anthropic/Ollama
-  silently tolerated the looser shape and so the bug only surfaced
-  against llama-server.
-- Arguments are JSON-encoded once at the provider boundary: `nil →
-  "{}"`, pre-encoded binaries pass through, maps go through
-  `Jason.encode!/1`. Internal ExAthena code continues to work with
-  Elixir maps; the canonical wire shape is materialised only at the
-  edge.
+  `%ReqLLM.ToolCall{}` via `ReqLLM.ToolCall.new/3` instead of a flat `%{id,
+  name, arguments}` map. The canonical struct nests the function payload under
+  `type: "function"` / `function: %{name, arguments}`, which is what llama.cpp's
+  strict parser requires on assistant tool_call replay (iteration 2+ of a
+  tool-calling loop). Without this, llama.cpp returned HTTP 500 `Failed to parse
+  messages: Missing tool call type` on every multi-turn tool run;
+  OpenAI/Anthropic/Ollama silently tolerated the looser shape and so the bug
+  only surfaced against llama-server.
+- Arguments are JSON-encoded once at the provider boundary: `nil → "{}"`,
+  pre-encoded binaries pass through, maps go through `Jason.encode!/1`. Internal
+  ExAthena code continues to work with Elixir maps; the canonical wire shape is
+  materialised only at the edge.
 
 ### Why
 
-req_llm 1.10/1.11's `%ReqLLM.ToolCall{}` mirrors the OpenAI Chat
-Completions wire format and is what every supported backend expects.
-Aligning to it fixes llama.cpp today and pre-empts breakage when
-req_llm tightens validation in future releases. See ADR-0004.
+req_llm 1.10/1.11's `%ReqLLM.ToolCall{}` mirrors the OpenAI Chat Completions
+wire format and is what every supported backend expects. Aligning to it fixes
+llama.cpp today and pre-empts breakage when req_llm tightens validation in
+future releases. See ADR-0004.
 
 ## v0.4.7 — `:llamacpp` placeholder api_key (parity with `:ollama`)
 
 ### Fixed
 
 - `ExAthena.Providers.ReqLLM.build_opts/2` now substitutes a placeholder
-  `api_key: "llamacpp"` when `provider: :llamacpp` is selected and no
-  `:api_key` is supplied. Mirrors the `:ollama` path added in v0.4.1.
-  Without this, `req_llm` 1.10/1.11's openai adapter rejected the
-  request with `Invalid parameter: :api_key option, ...` before any HTTP
-  call left the BEAM — manifesting downstream as
-  `ExAthena.Error{kind: :server_error, message: "{:http_streaming_failed,
-  {:provider_build_failed, ... 'Failed to build streaming request: ...'}}"}`,
-  which retry/recovery layers then classified as `:api_error` and
-  hammered every 3 minutes until the recovery budget exhausted.
-- `ExAthena.Config.@local_openai_compatible_backends` now includes
-  `llamacpp: :llamacpp` so the backend marker is threaded through
-  `Config.pop_provider!/1` for `provider: :llamacpp` as it already was
-  for `provider: :ollama`.
+  `api_key: "llamacpp"` when `provider: :llamacpp` is selected and no `:api_key`
+  is supplied. Mirrors the `:ollama` path added in v0.4.1. Without this,
+  `req_llm` 1.10/1.11's openai adapter rejected the request with `Invalid
+  parameter: :api_key option, ...` before any HTTP call left the BEAM —
+  manifesting downstream as `ExAthena.Error{kind: :server_error, message:
+  "{:http_streaming_failed, {:provider_build_failed, ... 'Failed to build
+  streaming request: ...'}}"}`, which retry/recovery layers then classified as
+  `:api_error` and hammered every 3 minutes until the recovery budget exhausted.
+- `ExAthena.Config.@local_openai_compatible_backends` now includes `llamacpp:
+  :llamacpp` so the backend marker is threaded through `Config.pop_provider!/1`
+  for `provider: :llamacpp` as it already was for `provider: :ollama`.
 
 ### Why
 
-Local llama-server (the `:llamacpp` provider) accepts unauthenticated
-HTTP just like Ollama; the OpenAI-compatible adapter in `req_llm`
-nevertheless requires *some* non-nil `:api_key`. Both bugs (no backend
-marker + no placeholder) had to land together for `:llamacpp` to work
-end-to-end against an unauthenticated local server. Verified against
-udin_code's failing planning run on
+Local llama-server (the `:llamacpp` provider) accepts unauthenticated HTTP just
+like Ollama; the OpenAI-compatible adapter in `req_llm` nevertheless requires
+*some* non-nil `:api_key`. Both bugs (no backend marker + no placeholder) had to
+land together for `:llamacpp` to work end-to-end against an unauthenticated
+local server. Verified against udin_code's failing planning run on
 `http://localhost:8080` with model auto-detected from `/v1/models`.
 
 ## v0.4.6 — Weak-model reliability: raw-JSON tool calls, compact schemas, strict structured output
 
 ### Added — `ExAthena.ToolCalls.RawJson` (ADR 0001)
 
-- Third tool-call extraction tier behind `Native` and `TextTagged`.
-  Recognises bare and ` ```json ` -fenced JSON objects with a
-  `name` / `arguments` shape using a balanced-brace scanner that tracks
-  in-string state and backslash escapes. Wired into
-  `ToolCalls.extract/2` as the final fallback so weak open-weight
-  models (e.g. `qwen2.5-coder:14b` on Ollama) that emit tool calls as
-  bare JSON in assistant prose are no longer silently dropped.
-- A cheap pre-check requires both `"name"` and `"arguments"`
-  substrings before the scanner runs, so non-tool prose is rejected in
-  O(n) without engaging the brace walker.
+- Third tool-call extraction tier behind `Native` and `TextTagged`. Recognises
+  bare and ` ```json ` -fenced JSON objects with a `name` / `arguments` shape
+  using a balanced-brace scanner that tracks in-string state and backslash
+  escapes. Wired into `ToolCalls.extract/2` as the final fallback so weak
+  open-weight models (e.g. `qwen2.5-coder:14b` on Ollama) that emit tool calls
+  as bare JSON in assistant prose are no longer silently dropped.
+- A cheap pre-check requires both `"name"` and `"arguments"` substrings before
+  the scanner runs, so non-tool prose is rejected in O(n) without engaging the
+  brace walker.
 
 ### Added — per-request capability override (ADR 0001)
 
-- `ExAthena.Loop.run/2` now accepts a `:capabilities` opt that is
-  merged on top of `provider_mod.capabilities()` for the duration of
-  the run. Lets callers flip `native_tool_calls: false` for a single
-  request to force `Modes.ReAct` into fence-augmented prompting, with
-  no provider-module fork required. The merge is shallow and
-  forward-compatible: future capability flags slot in the same way.
+- `ExAthena.Loop.run/2` now accepts a `:capabilities` opt that is merged on top
+  of `provider_mod.capabilities()` for the duration of the run. Lets callers
+  flip `native_tool_calls: false` for a single request to force `Modes.ReAct`
+  into fence-augmented prompting, with no provider-module fork required. The
+  merge is shallow and forward-compatible: future capability flags slot in the
+  same way.
 
 ### Added — compact tool-schema mode (ADR 0002)
 
-- `ExAthena.ToolCalls.augment_system_prompt/3` (was `/2`) takes a new
-  `compact: true` opt that emits one type-signature line per tool
-  instead of dumping the full JSON schema, e.g.
-  `- read_file(path: string, content?: string) — read a file`.
-  Required vs optional marked with `?`; types compacted to
-  `string|number|integer|boolean|array|object|null`; scalar arrays
-  rendered as `T[]`; nested object structure collapsed past depth 2;
-  description truncated to first sentence and capped near 80 chars.
-- Default behaviour is byte-identical — `compact: true` is opt-in and
-  the existing 2-arity call sites still work unchanged.
+- `ExAthena.ToolCalls.augment_system_prompt/3` (was `/2`) takes a new `compact:
+  true` opt that emits one type-signature line per tool instead of dumping the
+  full JSON schema, e.g. `- read_file(path: string, content?: string) — read a
+  file`. Required vs optional marked with `?`; types compacted to
+  `string|number|integer|boolean|array|object|null`; scalar arrays rendered as
+  `T[]`; nested object structure collapsed past depth 2; description truncated
+  to first sentence and capped near 80 chars.
+- Default behaviour is byte-identical — `compact: true` is opt-in and the
+  existing 2-arity call sites still work unchanged.
 - New static capability `compact_tool_schemas: true` on
-  `ExAthena.Providers.ReqLLM.capabilities/0` so downstream callers can
-  gate per-model heuristics on it (e.g. AthenaRunner deciding to flip
-  on `compact: true` only for known-weak Ollama model ids).
+  `ExAthena.Providers.ReqLLM.capabilities/0` so downstream callers can gate
+  per-model heuristics on it (e.g. AthenaRunner deciding to flip on `compact:
+  true` only for known-weak Ollama model ids).
 
 ### Why (ADRs 0001 + 0002)
 
 Weak Ollama models such as `qwen2.5-coder:14b` show measurable quality
 degradation past ~4 KB of system prompt and don't reliably honour the
 `~~~tool_call` fence when given a 5–10 KB schema dump from
-`augment_system_prompt/2`. Together the two changes mean: (a) tool
-calls those models *do* emit (often as bare JSON) are now caught by
-`RawJson`, and (b) the prompt budget those models see drops by ~80%
-on a 10-tool fixture, raising fence compliance. Strong hosted models
-(Claude, GPT-4) are unaffected — they still receive tools structurally
-via native `tool_calls`. Unblocks `udin-io/udin_code#1268`.
+`augment_system_prompt/2`. Together the two changes mean: (a) tool calls those
+models *do* emit (often as bare JSON) are now caught by `RawJson`, and (b) the
+prompt budget those models see drops by ~80% on a 10-tool fixture, raising fence
+compliance. Strong hosted models (Claude, GPT-4) are unaffected — they still
+receive tools structurally via native `tool_calls`. Unblocks
+`udin-io/udin_code#1268`.
 
 ### Added — strict structured-output pass-through (ADR 0003)
 
-- `ExAthena.Providers.ReqLLM.build_opts/2` now forwards
-  `response_format` to req_llm, preferring `opts[:response_format]`
-  over `request.response_format`. Accepts `:json`, `"json"`, and
-  JSON-schema maps verbatim — req_llm normalises before hitting the
-  Ollama / OpenAI / etc. backend.
-- New `:structured_output` capability key on
-  `ExAthena.Capabilities` typespec; `Providers.ReqLLM.capabilities/0`
-  declares `structured_output: true`.
-- New module `ExAthena.StructuredOutput` with `request/3`. Strict
-  one-shot variant: requires the resolved provider (after merging the
-  per-request `:capabilities` override from ADR 0001) to declare
-  `:structured_output`. Returns `{:ok, decoded_map}` on success,
-  `{:error, :no_structured_output}` when the capability is absent,
-  `{:error, :invalid_json}` on decode failure, and passes provider
-  errors through.
+- `ExAthena.Providers.ReqLLM.build_opts/2` now forwards `response_format` to
+  req_llm, preferring `opts[:response_format]` over `request.response_format`.
+  Accepts `:json`, `"json"`, and JSON-schema maps verbatim — req_llm
+  normalises before hitting the Ollama / OpenAI / etc. backend.
+- New `:structured_output` capability key on `ExAthena.Capabilities` typespec;
+  `Providers.ReqLLM.capabilities/0` declares `structured_output: true`.
+- New module `ExAthena.StructuredOutput` with `request/3`. Strict one-shot
+  variant: requires the resolved provider (after merging the per-request
+  `:capabilities` override from ADR 0001) to declare `:structured_output`.
+  Returns `{:ok, decoded_map}` on success, `{:error, :no_structured_output}`
+  when the capability is absent, `{:error, :invalid_json}` on decode failure,
+  and passes provider errors through.
 - The existing `ExAthena.Structured.extract/2` retry/repair flavour is
-  unchanged. The two helpers coexist by design — `Structured.extract/2`
-  for best-effort retry-with-validation, `StructuredOutput.request/3`
-  for the strict provider-enforced contract.
+  unchanged. The two helpers coexist by design — `Structured.extract/2` for
+  best-effort retry-with-validation, `StructuredOutput.request/3` for the strict
+  provider-enforced contract.
 
 ### Why (ADR 0003)
 
-Downstream `udin_code` flows that need schema-conforming JSON (scope
-decisions, ExitPlanMode-style phase-end signals) currently rely on
-brittle text extraction because weaker open-weight models don't emit
-structured `tool_calls`. Now those flows can request provider-enforced
-JSON when the resolved provider supports it, and get a loud
-`:no_structured_output` error otherwise — never a silent text-parse
-fallback.
+Downstream `udin_code` flows that need schema-conforming JSON (scope decisions,
+ExitPlanMode-style phase-end signals) currently rely on brittle text extraction
+because weaker open-weight models don't emit structured `tool_calls`. Now those
+flows can request provider-enforced JSON when the resolved provider supports it,
+and get a loud `:no_structured_output` error otherwise — never a silent
+text-parse fallback.
 
 ## v0.4.5 — Stream heartbeat + time-to-first-token (TTFT)
 
 ### Added
 
-- `ExAthena.Providers.ReqLLM.consume_stream/3` now emits a heartbeat
-  log every 10 s while no chunk has arrived yet, and a one-time
-  TTFT line on the first content/tool_call chunk:
-  - `[ExAthena.ReqLLM] ⋯ waiting on stream (Ns elapsed)` (info,
-    repeats every 10 s during the prompt-processing phase, stops
-    automatically once chunks start flowing).
-  - `[ExAthena.ReqLLM] ←first_chunk after Yms (TTFT)` (info, fires
-    exactly once per stream).
+- `ExAthena.Providers.ReqLLM.consume_stream/3` now emits a heartbeat log every
+  10 s while no chunk has arrived yet, and a one-time TTFT line on the first
+  content/tool_call chunk:
+  - `[ExAthena.ReqLLM] ⋯ waiting on stream (Ns elapsed)` (info, repeats every
+    10 s during the prompt-processing phase, stops automatically once chunks
+    start flowing).
+  - `[ExAthena.ReqLLM] ←first_chunk after Yms (TTFT)` (info, fires exactly
+    once per stream).
 
 ### Why
 
-Local Ollama / llama.cpp on a 14 B+ model regularly spends 30–120 s
-processing the prompt before emitting the first chunk. Until 0.4.5
-nothing surfaced on the wire during that wait — callers had no way
-to distinguish "slow but alive" from "stalled and silent". The
-heartbeat closes that gap with a single info-level line every 10 s,
-and the TTFT log captures the latency once tokens start flowing so
-operators can compare cold vs. warm runs. The heartbeat process
-exits as soon as the reduce returns (success or crash) via
-`try/after`, and self-checks `Process.alive?(parent)` before
-emitting in case the calling process was killed mid-stream.
+Local Ollama / llama.cpp on a 14 B+ model regularly spends 30–120 s processing
+the prompt before emitting the first chunk. Until 0.4.5 nothing surfaced on the
+wire during that wait — callers had no way to distinguish "slow but alive"
+from "stalled and silent". The heartbeat closes that gap with a single
+info-level line every 10 s, and the TTFT log captures the latency once tokens
+start flowing so operators can compare cold vs. warm runs. The heartbeat process
+exits as soon as the reduce returns (success or crash) via `try/after`, and
+self-checks `Process.alive?(parent)` before emitting in case the calling process
+was killed mid-stream.
 
 ## v0.4.4 — Adapter-boundary message logging (Claude Code-style)
 
 ### Added
 
-- `ExAthena.Providers.ReqLLM` now emits structured Logger messages at
-  the adapter boundary, mirroring the Claude Code SDK's `[SDK]` log
-  style for parity with consumers that already grep for that prefix:
-  - `[ExAthena.ReqLLM] →query|→stream model=… msgs=N tools=K base_url=… backend=…`
-    (info level, one line per request).
-  - `[ExAthena.ReqLLM] →query system_prompt=…\n  msg[i] role: <preview>`
-    (debug level, full message body previews with whitespace collapsed
-    and capped at 200B/message).
-  - `[ExAthena.ReqLLM] ←text_delta NB: <preview>` per streamed chunk
-    (debug level).
-  - `[ExAthena.ReqLLM] ←tool_call name=… args=…` per tool call
-    (debug level).
-  - `[ExAthena.ReqLLM] ←meta finish_reason=…` and `←usage …`
-    (debug level).
-  - `[ExAthena.ReqLLM] ←done finish_reason=… text_chars=N tool_calls=K usage=…`
-    on completion (info level).
-  - `[ExAthena.ReqLLM] ←error …` when req_llm returns an error
-    (warning level).
-- All debug-level lines wrap their message construction in
-  `Logger.debug(fn -> … end)` so log assembly is skipped at higher
-  log levels — zero overhead in production.
+- `ExAthena.Providers.ReqLLM` now emits structured Logger messages at the
+  adapter boundary, mirroring the Claude Code SDK's `[SDK]` log style for parity
+  with consumers that already grep for that prefix:
+  - `[ExAthena.ReqLLM] →query|→stream model=… msgs=N tools=K base_url=…
+    backend=…` (info level, one line per request).
+  - `[ExAthena.ReqLLM] →query system_prompt=…\n msg[i] role: <preview>`
+    (debug level, full message body previews with whitespace collapsed and
+    capped at 200B/message).
+  - `[ExAthena.ReqLLM] ←text_delta NB: <preview>` per streamed chunk (debug
+    level).
+  - `[ExAthena.ReqLLM] ←tool_call name=… args=…` per tool call (debug
+    level).
+  - `[ExAthena.ReqLLM] ←meta finish_reason=…` and `←usage …` (debug
+    level).
+  - `[ExAthena.ReqLLM] ←done finish_reason=… text_chars=N tool_calls=K
+    usage=…` on completion (info level).
+  - `[ExAthena.ReqLLM] ←error …` when req_llm returns an error (warning
+    level).
+- All debug-level lines wrap their message construction in `Logger.debug(fn ->
+  … end)` so log assembly is skipped at higher log levels — zero overhead in
+  production.
 
 ### Why
 
-Until 0.4.4 the adapter forwarded request/response data to req_llm
-without leaving any breadcrumb in the host application's log. When a
-streaming run stalled or the LLM returned unexpected content, callers
-had no way to see what was sent or what came back without attaching a
-telemetry handler. The new lines give the same kind of visibility
-ClaudeCode's SDK provides, so debugging Ollama/OpenAI/llama.cpp flows
-is a `tail -f phoenix_output.log | grep '\[ExAthena.ReqLLM\]'` away.
+Until 0.4.4 the adapter forwarded request/response data to req_llm without
+leaving any breadcrumb in the host application's log. When a streaming run
+stalled or the LLM returned unexpected content, callers had no way to see what
+was sent or what came back without attaching a telemetry handler. The new lines
+give the same kind of visibility ClaudeCode's SDK provides, so debugging
+Ollama/OpenAI/llama.cpp flows is a `tail -f phoenix_output.log | grep
+'\[ExAthena.ReqLLM\]'` away.
 
 ## v0.4.3 — Convert tools to %ReqLLM.Tool{} structs at the adapter boundary
 
 ### Fixed
 
-- `ExAthena.Providers.ReqLLM.build_opts/2` now converts the modes' tool
-  list (OpenAI-format maps from `Tools.describe_for_provider/1`) into
-  `%ReqLLM.Tool{}` structs before forwarding to req_llm. Without this,
-  req_llm 1.10's openai adapter raised
-  `no function clause matching in ReqLLM.Tool.to_schema/2` while building
-  the streaming request — `to_schema/2` only matches `%ReqLLM.Tool{}`.
-  The conversion sets a stub callback because ex_athena executes tools
-  server-side via the loop, not via req_llm's client-side dispatch.
-  Already-formed `%ReqLLM.Tool{}` structs and string-keyed maps are
-  passed through unchanged for forward compatibility.
+- `ExAthena.Providers.ReqLLM.build_opts/2` now converts the modes' tool list
+  (OpenAI-format maps from `Tools.describe_for_provider/1`) into
+  `%ReqLLM.Tool{}` structs before forwarding to req_llm. Without this, req_llm
+  1.10's openai adapter raised `no function clause matching in
+  ReqLLM.Tool.to_schema/2` while building the streaming request —
+  `to_schema/2` only matches `%ReqLLM.Tool{}`. The conversion sets a stub
+  callback because ex_athena executes tools server-side via the loop, not via
+  req_llm's client-side dispatch. Already-formed `%ReqLLM.Tool{}` structs and
+  string-keyed maps are passed through unchanged for forward compatibility.
 
 ## v0.4.2 — Ollama tagged model spec follow-up
 
 ### Fixed
 
-- `ExAthena.Providers.ReqLLM.resolve_model/2` no longer skips the
-  provider-tag prefix when the model id contains a colon. Ollama model
-  ids legitimately use `:` as the version separator
-  (`qwen2.5-coder:14b`, `qwen3-coder:30b`), so the previous "model
-  contains `:` ⇒ already tagged" heuristic shipped bare names like
-  `"qwen2.5-coder:14b"` to req_llm, which then split on the first
-  colon and tried to validate `"qwen2.5-coder"` as a provider name —
-  failing the `^[a-z0-9_-]+$` regex (rejects `.`) with
-  `{:error, :bad_provider}`. Now always prepends the tag unless the
-  model already starts with `"<tag>:"` (caller passed a fully-formed
-  spec).
+- `ExAthena.Providers.ReqLLM.resolve_model/2` no longer skips the provider-tag
+  prefix when the model id contains a colon. Ollama model ids legitimately use
+  `:` as the version separator (`qwen2.5-coder:14b`, `qwen3-coder:30b`), so the
+  previous "model contains `:` ⇒ already tagged" heuristic shipped bare names
+  like `"qwen2.5-coder:14b"` to req_llm, which then split on the first colon and
+  tried to validate `"qwen2.5-coder"` as a provider name — failing the
+  `^[a-z0-9_-]+$` regex (rejects `.`) with `{:error, :bad_provider}`. Now always
+  prepends the tag unless the model already starts with `"<tag>:"` (caller
+  passed a fully-formed spec).
 
 ## v0.4.1 — Ollama via OpenAI-compatible adapter
 
 ### Fixed
 
 - `provider: :ollama` now talks to local Ollama through `req_llm`'s OpenAI
-  adapter instead of looking up an `:ollama` provider in `llm_db`'s
-  catalog. `llm_db` 2026.4.x removed first-class local-Ollama support
-  (it only catalogues `:ollama_cloud` now), so `"ollama:<model>"` model
-  specs were rejected with `{:error, :unknown_provider}` from
-  `LLMDB.Spec`. The fix routes `:ollama` (and `:llamacpp`) through the
-  `"openai:<model>"` tag and threads
-  `openai_compatible_backend: :ollama` so `req_llm` 1.10's openai
-  adapter tolerates the missing API key on unauthenticated local
-  deployments. Mirrors the recipe in `req_llm/guides/ollama.md`.
-- `base_url` for Ollama now auto-appends `/v1` when callers pass the
-  bare host (`http://localhost:11434`) — req_llm's openai adapter
-  expects the prefix to already include `/v1`.
-- A placeholder `api_key` (`"ollama"`) is substituted when the
-  `:ollama` backend marker is set and no key was supplied — Ollama
-  ignores the Authorization header but `req_llm`'s HTTP layer still
-  emits one, so a non-nil value is required.
+  adapter instead of looking up an `:ollama` provider in `llm_db`'s catalog.
+  `llm_db` 2026.4.x removed first-class local-Ollama support (it only catalogues
+  `:ollama_cloud` now), so `"ollama:<model>"` model specs were rejected with
+  `{:error, :unknown_provider}` from `LLMDB.Spec`. The fix routes `:ollama` (and
+  `:llamacpp`) through the `"openai:<model>"` tag and threads
+  `openai_compatible_backend: :ollama` so `req_llm` 1.10's openai adapter
+  tolerates the missing API key on unauthenticated local deployments. Mirrors
+  the recipe in `req_llm/guides/ollama.md`.
+- `base_url` for Ollama now auto-appends `/v1` when callers pass the bare host
+  (`http://localhost:11434`) — req_llm's openai adapter expects the prefix to
+  already include `/v1`.
+- A placeholder `api_key` (`"ollama"`) is substituted when the `:ollama` backend
+  marker is set and no key was supplied — Ollama ignores the Authorization
+  header but `req_llm`'s HTTP layer still emits one, so a non-nil value is
+  required.
 
 ### Internal
 
-- `ExAthena.Config.@req_llm_provider_tag[:ollama]` now resolves to
-  `"openai"` (was `"ollama"`).
-- New `@local_openai_compatible_backends` map drives
-  `openai_compatible_backend` injection in `Config.pop_provider!/1`.
-- `ExAthena.Providers.ReqLLM.build_opts/2` reads the backend marker,
-  normalises base_url, and falls back to the placeholder api_key.
+- `ExAthena.Config.@req_llm_provider_tag[:ollama]` now resolves to `"openai"`
+  (was `"ollama"`).
+- New `@local_openai_compatible_backends` map drives `openai_compatible_backend`
+  injection in `Config.pop_provider!/1`.
+- `ExAthena.Providers.ReqLLM.build_opts/2` reads the backend marker, normalises
+  base_url, and falls back to the placeholder api_key.
 
 ## v0.4.0 — operational harness (memory, skills, hooks, modes, agents, storage)
 
-The "1.6% reasoning, 98.4% harness" upgrade. Where v0.3 perfected the
-loop kernel, v0.4 builds the *operational harness* the [Claude Code paper](https://arxiv.org/abs/2604.14228)
-calls out as the bulk of a production agent's value: file-based memory
-+ skills, a five-stage compaction pipeline with reactive recovery, a
-14-event hook surface with `{:inject, msg}` / `{:transform, prompt}`
-returns, two new permission modes, structured tool results, custom
-agent definitions with optional git-worktree isolation, and append-only
-session storage with file-checkpointing + `/rewind`.
+The "1.6% reasoning, 98.4% harness" upgrade. Where v0.3 perfected the loop
+kernel, v0.4 builds the *operational harness* the [Claude Code
+paper](https://arxiv.org/abs/2604.14228) calls out as the bulk of a production
+agent's value: file-based memory + skills, a five-stage compaction pipeline with
+reactive recovery, a 14-event hook surface with `{:inject, msg}` / `{:transform,
+prompt}` returns, two new permission modes, structured tool results, custom
+agent definitions with optional git-worktree isolation, and append-only session
+storage with file-checkpointing + `/rewind`.
 
 Landed as seven tightly-scoped commits (PR0 → PR5) — each one keeps the
 existing test suite passing and adds focused new tests on top.
@@ -2054,40 +2025,40 @@ existing test suite passing and adds focused new tests on top.
 #### Added
 
 - `:session_id` and `:parent_session_id` plumbed through `Loop.State`,
-  `Loop.run/2` opts, the resulting `ToolContext`, and the `SessionStart`
-  hook payload. The `Session` GenServer auto-generates a stable id at
-  start_link, reuses it on every turn, and refuses to let per-call
-  `extra_opts` redirect mid-conversation. PR4 + PR5 read these.
-- `:error_prompt_too_long` finish-reason in `Loop.Terminations` with
-  category `:capacity`. Modes signal context-window-exceeded uniformly;
-  PR2's reactive compaction switches on this.
-- Doctest in `Permissions.check/4` documenting and locking the
-  deny-first ordering (`:disallowed_tools` survives `:bypass_permissions`,
-  `:allowed_tools` survives a permissive callback).
+  `Loop.run/2` opts, the resulting `ToolContext`, and the `SessionStart` hook
+  payload. The `Session` GenServer auto-generates a stable id at start_link,
+  reuses it on every turn, and refuses to let per-call `extra_opts` redirect
+  mid-conversation. PR4 + PR5 read these.
+- `:error_prompt_too_long` finish-reason in `Loop.Terminations` with category
+  `:capacity`. Modes signal context-window-exceeded uniformly; PR2's reactive
+  compaction switches on this.
+- Doctest in `Permissions.check/4` documenting and locking the deny-first
+  ordering (`:disallowed_tools` survives `:bypass_permissions`, `:allowed_tools`
+  survives a permissive callback).
 
 ### PR1 — Memory + Skills (file-based context)
 
 #### Added — `ExAthena.Memory`
 
-- Loads `AGENTS.md` (preferred) / `CLAUDE.md` from a 3-level hierarchy:
-  user (`~/.config/ex_athena/`) → project (`<cwd>/`) → local override
+- Loads `AGENTS.md` (preferred) / `CLAUDE.md` from a 3-level hierarchy: user
+  (`~/.config/ex_athena/`) → project (`<cwd>/`) → local override
   (`<cwd>/AGENTS.local.md`).
-- Each file becomes a single user-role message tagged `name: "memory"`
-  placed at the front of the conversation. The Claude Code paper notes
-  Claude Code uses user-context (not system) for probabilistic
-  compliance — we copy the pattern.
+- Each file becomes a single user-role message tagged `name: "memory"` placed at
+  the front of the conversation. The Claude Code paper notes Claude Code uses
+  user-context (not system) for probabilistic compliance — we copy the
+  pattern.
 - `AGENTS.md` wins over `CLAUDE.md` at the same level (matches opencode).
 
 #### Added — `ExAthena.Skills`
 
 - Claude Code-style progressive disclosure. `SKILL.md` files have YAML
   frontmatter (`name`, `description`, `disable-model-invocation`,
-  `allowed-tools`) plus a markdown body. The frontmatter is auto-injected
-  into the system prompt as a `## Available Skills` catalog (~50 tokens
-  per skill); bodies stay on disk until needed.
-- Two activation paths: a `[skill: name]` sentinel the model writes in
-  its response, or the new `:preload_skills` opt for hosts that know
-  up-front what's needed.
+  `allowed-tools`) plus a markdown body. The frontmatter is auto-injected into
+  the system prompt as a `## Available Skills` catalog (~50 tokens per skill);
+  bodies stay on disk until needed.
+- Two activation paths: a `[skill: name]` sentinel the model writes in its
+  response, or the new `:preload_skills` opt for hosts that know up-front what's
+  needed.
 - Loaded from `~/.config/ex_athena/skills/<name>/SKILL.md` and
   `<cwd>/.exathena/skills/<name>/SKILL.md`. Project overrides user.
 
@@ -2109,39 +2080,37 @@ existing test suite passing and adds focused new tests on top.
 
 - `ExAthena.Compactor.Pipeline` — the new default compactor. Walks a
   configurable list of `Compactor.Stage` modules cheapest-first, short-
-  circuiting once the conversation falls below target. Each stage runs
-  inside its own `[:ex_athena, :compaction, <:stage_name>, :start | :stop]`
-  telemetry span.
+  circuiting once the conversation falls below target. Each stage runs inside
+  its own `[:ex_athena, :compaction, <:stage_name>, :start | :stop]` telemetry
+  span.
 - `ExAthena.Compactor.Stage` behaviour with `compact_stage/2` + `name/0`
   callbacks. Existing `Compactors.Summary` keeps its legacy
-  `Compactor.compact/2` callback AND now implements `Stage` via a thin
-  adapter — fully backward-compatible for direct callers.
+  `Compactor.compact/2` callback AND now implements `Stage` via a thin adapter
+  — fully backward-compatible for direct callers.
 
 #### Added — five built-in stages
 
-1. **`Compactors.BudgetReduction`** — replaces oversized tool-result
-   bodies (>16k chars by default) with a `[truncated; ref=<id>]` pointer.
-   Full payload moves to `state.meta[:tool_result_archive]`. Pure-Elixir.
+1. **`Compactors.BudgetReduction`** — replaces oversized tool-result bodies
+   (>16k chars by default) with a `[truncated; ref=<id>]` pointer. Full payload
+   moves to `state.meta[:tool_result_archive]`. Pure-Elixir.
 2. **`Compactors.Snip`** — drops stale tool-result bodies older than
    `:snip_age_iterations` whose paired assistant turn already happened,
    replacing each with a `<snipped: stale tool-result for call …>` marker.
-3. **`Compactors.Microcompact`** — collapses runs of 3+ adjacent
-   tool-result messages into a single elided summary tagged
-   `name: "microcompact"`. Pure-Elixir.
-4. **`Compactors.ContextCollapse`** — non-destructive view-time
-   projection. Detects superseded reads (file later edited) and
-   consecutive duplicate tool calls; writes the projection to
-   `state.meta[:compact_view]` for the next request to consume. The
-   authoritative `state.messages` is never mutated, so resume / replay
-   / rewind (PR5) stay correct.
+3. **`Compactors.Microcompact`** — collapses runs of 3+ adjacent tool-result
+   messages into a single elided summary tagged `name: "microcompact"`.
+   Pure-Elixir.
+4. **`Compactors.ContextCollapse`** — non-destructive view-time projection.
+   Detects superseded reads (file later edited) and consecutive duplicate tool
+   calls; writes the projection to `state.meta[:compact_view]` for the next
+   request to consume. The authoritative `state.messages` is never mutated, so
+   resume / replay / rewind (PR5) stay correct.
 5. **`Compactors.Summary`** — existing LLM summary stage, refactored.
 
 #### Added — reactive recovery
 
-- When a mode returns `{:error, :error_prompt_too_long}` (PR0
-  finish-reason), the loop runs the pipeline with `force: true`
-  unconditionally and retries the same iteration once. Gated by
-  `:reactive_compact` opt (default `true`).
+- When a mode returns `{:error, :error_prompt_too_long}` (PR0 finish-reason),
+  the loop runs the pipeline with `force: true` unconditionally and retries the
+  same iteration once. Gated by `:reactive_compact` opt (default `true`).
 
 #### Configuration
 
@@ -2154,17 +2123,17 @@ existing test suite passing and adds focused new tests on top.
 
 - `Hooks.events/0` exposes the catalog: `SessionStart`, `SessionEnd`,
   `UserPromptSubmit`, `ChatParams`, `Stop`, `StopFailure`, `PreToolUse`,
-  `PostToolUse`, `PostToolUseFailure`, `PermissionRequest`,
-  `PermissionDenied`, `SubagentStart`, `SubagentStop`, `PreCompact`,
-  `PreCompactStage`, `PostCompact`, `Notification`.
+  `PostToolUse`, `PostToolUseFailure`, `PermissionRequest`, `PermissionDenied`,
+  `SubagentStart`, `SubagentStop`, `PreCompact`, `PreCompactStage`,
+  `PostCompact`, `Notification`.
 - New return values for hook callbacks:
   - `{:inject, message_or_messages}` — append context to the conversation.
     opencode's `experimental.chat.system.transform` pattern.
-  - `{:transform, prompt}` — only meaningful from `UserPromptSubmit`;
-    rewrites the user prompt before it enters the loop.
-- `run_lifecycle_with_outputs/3` returns `%{halt:, injects:, transform:}`
-  for callers that need the richer outputs. `run_lifecycle/3` keeps its
-  `:ok | {:halt, _}` shape.
+  - `{:transform, prompt}` — only meaningful from `UserPromptSubmit`; rewrites
+    the user prompt before it enters the loop.
+- `run_lifecycle_with_outputs/3` returns `%{halt:, injects:, transform:}` for
+  callers that need the richer outputs. `run_lifecycle/3` keeps its `:ok |
+  {:halt, _}` shape.
 
 #### Newly fired events
 
@@ -2180,23 +2149,21 @@ existing test suite passing and adds focused new tests on top.
 
 - `:accept_edits` — auto-allow Read/Glob/Grep/WebFetch + Edit/Write/TodoWrite
   + plan_mode/spawn_agent. Bash + custom tools still consult `can_use_tool`.
-- `:trusted` — skip the `can_use_tool` callback for every tool. Still
-  respects the denylist by default; pass `respect_denylist: false` to
-  disable that. The `:auto` name is reserved for the future ML safety
-  classifier.
+- `:trusted` — skip the `can_use_tool` callback for every tool. Still respects
+  the denylist by default; pass `respect_denylist: false` to disable that. The
+  `:auto` name is reserved for the future ML safety classifier.
 
-`:bypass_permissions` continues to respect the denylist (deny-first
-invariant from PR0's doctest is preserved).
+`:bypass_permissions` continues to respect the denylist (deny-first invariant
+from PR0's doctest is preserved).
 
 ### PR3b — Tool-result split (LLM content + UI payload) ⚠️ Breaking
 
-Tools may now return a 3-tuple `{:ok, llm, ui}` in addition to the
-existing `{:ok, text}`. The `llm` is the LLM-facing string the model
-sees on the next iteration; `ui` is a `%{kind:, payload:}` map hosts
-(TUIs, Phoenix LiveView frontends) can render as rich content
-(diffs, file previews, process output, match lists) without parsing
-the text. This is the Pi-style split adapted to Elixir's pattern-match
-idiom.
+Tools may now return a 3-tuple `{:ok, llm, ui}` in addition to the existing
+`{:ok, text}`. The `llm` is the LLM-facing string the model sees on the next
+iteration; `ui` is a `%{kind:, payload:}` map hosts (TUIs, Phoenix LiveView
+frontends) can render as rich content (diffs, file previews, process output,
+match lists) without parsing the text. This is the Pi-style split adapted to
+Elixir's pattern-match idiom.
 
 #### Added
 
@@ -2217,23 +2184,21 @@ idiom.
 
 #### Breaking change — direct tool callers
 
-The 6 builtins listed above (`Read`, `Edit`, `Bash`, `Glob`, `Grep`,
-`WebFetch`) now return `{:ok, text, ui}` 3-tuples instead of the
-`{:ok, text}` 2-tuple. Callers using these tools through the loop are
-unaffected — `Result.text` still surfaces the LLM-facing string. Code
-that calls these tools' `execute/2` directly needs to update its
-pattern matches. The `{:ok, text}` 2-tuple remains a fully supported
-return shape for custom and third-party tools.
+The 6 builtins listed above (`Read`, `Edit`, `Bash`, `Glob`, `Grep`, `WebFetch`)
+now return `{:ok, text, ui}` 3-tuples instead of the `{:ok, text}` 2-tuple.
+Callers using these tools through the loop are unaffected — `Result.text`
+still surfaces the LLM-facing string. Code that calls these tools' `execute/2`
+directly needs to update its pattern matches. The `{:ok, text}` 2-tuple remains
+a fully supported return shape for custom and third-party tools.
 
 ### PR4 — Subagents v2 (Agents.md + worktrees + sidechains)
 
 #### Added — `ExAthena.Agents`
 
-- File-based agent definitions in markdown + YAML frontmatter, loaded
-  from a 3-level hierarchy (builtin → user → project). Frontmatter
-  fields: `name`, `description`, `model`, `provider`, `tools`,
-  `permissions`, `mode`, `isolation`. Body becomes a system-prompt
-  addendum.
+- File-based agent definitions in markdown + YAML frontmatter, loaded from a
+  3-level hierarchy (builtin → user → project). Frontmatter fields: `name`,
+  `description`, `model`, `provider`, `tools`, `permissions`, `mode`,
+  `isolation`. Body becomes a system-prompt addendum.
 - Builtin definitions shipped in `priv/agents/`:
   - `general` — full-tool default (matches the prior SpawnAgent behaviour).
   - `explore` — read-only fast investigation.
@@ -2242,105 +2207,100 @@ return shape for custom and third-party tools.
 
 #### Added — worktree isolation
 
-- `ExAthena.Agents.Worktree.resolve/3` runs three safety checks before
-  creating a git worktree (git on PATH, cwd inside repo, clean tree).
-  If any check fails, the subagent transparently falls back to
-  `:in_process`.
+- `ExAthena.Agents.Worktree.resolve/3` runs three safety checks before creating
+  a git worktree (git on PATH, cwd inside repo, clean tree). If any check fails,
+  the subagent transparently falls back to `:in_process`.
 - Worktrees live under `~/.cache/ex_athena/worktrees/<sess>/<name>-<n>`,
   branched from `HEAD`. After the subagent finishes:
   - Changes left → worktree is kept; path + branch surface in the spawn
     result's `ui_payload` for review/merge.
   - Clean → `git worktree remove --force` cleans up.
-- `ExAthena.Agents.WorktreeSweeper` is a one-shot at boot under the
-  application supervisor that runs `git worktree prune` and removes
-  cache entries older than 7 days.
+- `ExAthena.Agents.WorktreeSweeper` is a one-shot at boot under the application
+  supervisor that runs `git worktree prune` and removes cache entries older than
+  7 days.
 - All internal git invocations bypass the parent's permission gate via
-  `System.cmd/3` directly — otherwise a parent in `:plan` mode could
-  never spawn a worktree-isolated subagent.
+  `System.cmd/3` directly — otherwise a parent in `:plan` mode could never
+  spawn a worktree-isolated subagent.
 
 #### Added — sidechain transcripts
 
-- `ExAthena.Agents.Sidechain.write/1` persists each subagent's full
-  transcript to `<cwd>/.exathena/sessions/<parent_session_id>/sidechains/<subagent_id>.jsonl`.
-  Parent only sees the subagent's final `text`; the full conversation
-  lives here.
+- `ExAthena.Agents.Sidechain.write/1` persists each subagent's full transcript
+  to
+  `<cwd>/.exathena/sessions/<parent_session_id>/sidechains/<subagent_id>.jsonl`.
+  Parent only sees the subagent's final `text`; the full conversation lives
+  here.
 
 #### `SpawnAgent` updates
 
-- New `agent: "<name>"` arg resolves a named definition and applies its
-  fields to the sub-loop opts.
+- New `agent: "<name>"` arg resolves a named definition and applies its fields
+  to the sub-loop opts.
 - `SubagentStart` payload now includes `:agent` and `:isolation`.
 - `SubagentStop` payload includes the finalized isolation state.
-- Spawn returns the `{:ok, llm, ui}` 3-tuple from PR3b with a
-  `:subagent` UI payload carrying iterations / tool_calls_made /
-  cost_usd / duration_ms / isolation.
+- Spawn returns the `{:ok, llm, ui}` 3-tuple from PR3b with a `:subagent` UI
+  payload carrying iterations / tool_calls_made / cost_usd / duration_ms /
+  isolation.
 
 ### PR5 — Append-only session storage + checkpointing + rewind
 
 #### Added — `ExAthena.Sessions.Store`
 
-- Behaviour for append-only event storage with `append/2`, `read/1`,
-  `list/0`, `tail/2`. Each event carries an ISO 8601 timestamp + uuid.
-- `Sessions.Stores.InMemory` — ETS-backed default. The application
-  supervisor keeps a single named GenServer alive so the table is shared
-  across the BEAM.
+- Behaviour for append-only event storage with `append/2`, `read/1`, `list/0`,
+  `tail/2`. Each event carries an ISO 8601 timestamp + uuid.
+- `Sessions.Stores.InMemory` — ETS-backed default. The application supervisor
+  keeps a single named GenServer alive so the table is shared across the BEAM.
 - `Sessions.Stores.Jsonl` — ETS-buffered, periodic flush (default 250ms).
-  Hot-path appends never block on I/O. Files at
-  `<root>/<session_id>.jsonl`. Synchronous `flush/1` for tests + clean
-  shutdown.
+  Hot-path appends never block on I/O. Files at `<root>/<session_id>.jsonl`.
+  Synchronous `flush/1` for tests + clean shutdown.
 
 #### Session integration
 
-- `Session.start_link/1` accepts `:store` opt: `:in_memory` (default),
-  `:jsonl`, or a custom module.
-- On every `send_message/2`: emits `:user_message`, then walks
-  `result.messages` after the loop and emits `:assistant_message` /
-  `:tool_result` for new entries.
-- `Session.resume/2` reads events back, filters to user/assistant
-  messages, and returns the reconstructed message list. Permissions
-  deliberately don't survive resume (Claude Code's pattern: trust is
-  re-established per session).
+- `Session.start_link/1` accepts `:store` opt: `:in_memory` (default), `:jsonl`,
+  or a custom module.
+- On every `send_message/2`: emits `:user_message`, then walks `result.messages`
+  after the loop and emits `:assistant_message` / `:tool_result` for new
+  entries.
+- `Session.resume/2` reads events back, filters to user/assistant messages, and
+  returns the reconstructed message list. Permissions deliberately don't survive
+  resume (Claude Code's pattern: trust is re-established per session).
 
 #### Added — `ExAthena.Checkpoint`
 
 - File-history backups before each `Tools.Edit` / `Tools.Write` at
-  `<cwd>/.exathena/file-history/<session_id>/<sha>/<version>.bin`.
-  SHA-256 of the absolute path; versions are 0-indexed and idempotent.
-  Tombstones (`<v>.tombstone`) mark "this file didn't exist at
-  checkpoint time".
+  `<cwd>/.exathena/file-history/<session_id>/<sha>/<version>.bin`. SHA-256 of
+  the absolute path; versions are 0-indexed and idempotent. Tombstones
+  (`<v>.tombstone`) mark "this file didn't exist at checkpoint time".
 - `Checkpoint.rewind/3` modes:
-  - `:code_and_history` — restore each file to its version-0 snapshot
-    AND truncate the JSONL session log to the chosen `to_uuid`.
+  - `:code_and_history` — restore each file to its version-0 snapshot AND
+    truncate the JSONL session log to the chosen `to_uuid`.
   - `:history_only` — only truncate the JSONL.
 - `ExAthena.Checkpoint.Sweeper` — startup task that GCs file-history
   directories older than 30 days.
 
 ### Distribution
 
-- `mix.exs` `:files` now includes `priv/` so the builtin agent
-  definitions ship with the package on Hex.
+- `mix.exs` `:files` now includes `priv/` so the builtin agent definitions ship
+  with the package on Hex.
 
 ### Tests
 
 - 248 tests + 2 doctests, 0 failures (was 147 + 0 in v0.3.1).
-- Backward-compatible by design: existing v0.3 tests untouched, except
-  for the 6 builtin tools whose return shape changed (PR3b — tightened
-  to `{:ok, text, ui}`).
+- Backward-compatible by design: existing v0.3 tests untouched, except for the 6
+  builtin tools whose return shape changed (PR3b — tightened to `{:ok, text,
+  ui}`).
 
 ## v0.3.1 — per-token streaming in the ReAct mode
 
 ### Added
 
-- `Modes.ReAct` now dispatches to `provider_mod.stream/3` (instead of
-  `query/2`) whenever the caller registered an `on_event` callback on
-  `Loop.run/2`. Every `%Streaming.Event{type: :text_delta, data: ...}`
-  produced by the provider is forwarded to `on_event` in real time, so
-  consumers (e.g. a LiveView chat UI) get character-level deltas again
-  without having to drive streaming themselves.
-- When no `on_event` is set the behaviour is unchanged — the mode uses
-  the cheaper one-shot `query/2` path.
-- When the provider module does not implement `stream/3` (it is an
-  optional callback) the mode transparently falls back to `query/2`.
+- `Modes.ReAct` now dispatches to `provider_mod.stream/3` (instead of `query/2`)
+  whenever the caller registered an `on_event` callback on `Loop.run/2`. Every
+  `%Streaming.Event{type: :text_delta, data: ...}` produced by the provider is
+  forwarded to `on_event` in real time, so consumers (e.g. a LiveView chat UI)
+  get character-level deltas again without having to drive streaming themselves.
+- When no `on_event` is set the behaviour is unchanged — the mode uses the
+  cheaper one-shot `query/2` path.
+- When the provider module does not implement `stream/3` (it is an optional
+  callback) the mode transparently falls back to `query/2`.
 
 ### Changed
 
@@ -2353,24 +2313,22 @@ return shape for custom and third-party tools.
 #### Added — OpenTelemetry GenAI semconv telemetry
 
 - `ExAthena.Telemetry` — emits `:telemetry`-library events shaped to the
-  OpenTelemetry GenAI semantic conventions. Consumers bridge to OTel
-  via `opentelemetry_telemetry` (no direct OTel dep). Events:
+  OpenTelemetry GenAI semantic conventions. Consumers bridge to OTel via
+  `opentelemetry_telemetry` (no direct OTel dep). Events:
   - `[:ex_athena, :loop, :start | :stop | :exception]`
   - `[:ex_athena, :chat, :start | :stop]`
   - `[:ex_athena, :tool, :start | :stop]`
   - `[:ex_athena, :compaction, :stop]`
   - `[:ex_athena, :subagent, :spawn | :stop]`
   - `[:ex_athena, :structured_retry]`
-- GenAI semconv metadata keys: `gen_ai_operation_name`,
-  `gen_ai_provider_name`, `gen_ai_request_model`, `gen_ai_agent_id`,
-  `gen_ai_conversation_id`, `gen_ai_tool_name`, `gen_ai_tool_call_id`,
-  `gen_ai_usage_input_tokens`, `gen_ai_usage_output_tokens`,
-  `gen_ai_response_finish_reasons`.
-- New `:conversation_id` / `:agent_id` opts on `Loop.run/2` — threaded
-  into every emitted event's metadata so OTel traces can stitch across
-  turns.
-- `Telemetry.span/3` helper wraps arbitrary work in a start/stop pair
-  with duration measurement + exception re-raising.
+- GenAI semconv metadata keys: `gen_ai_operation_name`, `gen_ai_provider_name`,
+  `gen_ai_request_model`, `gen_ai_agent_id`, `gen_ai_conversation_id`,
+  `gen_ai_tool_name`, `gen_ai_tool_call_id`, `gen_ai_usage_input_tokens`,
+  `gen_ai_usage_output_tokens`, `gen_ai_response_finish_reasons`.
+- New `:conversation_id` / `:agent_id` opts on `Loop.run/2` — threaded into
+  every emitted event's metadata so OTel traces can stitch across turns.
+- `Telemetry.span/3` helper wraps arbitrary work in a start/stop pair with
+  duration measurement + exception re-raising.
 
 #### Released
 
@@ -2384,107 +2342,103 @@ No additional breaking changes. New capabilities layer on top of PR 2.
 
 #### Added — context compaction
 
-- `ExAthena.Compactor` — behaviour for context-window reduction. Called
-  by the kernel before each iteration when the token estimate crosses
-  `:compact_at` (default 60% of the provider's `max_tokens`). Preserves
-  a pinned prefix (system prompt + rules) and a live suffix (recent
-  turns) while substituting the middle with a summary.
-- `ExAthena.Compactors.Summary` — default implementation. Uses the
-  session's own provider to generate a terse summary and replaces the
-  dropped messages with a single assistant message tagged
-  `name: "compactor_summary"`. Cost counts against the run's budget.
-- New options: `:compact_at` (default 0.6), `:pinned_prefix_count`
-  (default 1), `:live_suffix_count` (default 6), `:compactor` (override
-  module).
-- New events: `{:compaction, metadata}` fires after a successful
-  compaction with before/after token counts and dropped count.
+- `ExAthena.Compactor` — behaviour for context-window reduction. Called by the
+  kernel before each iteration when the token estimate crosses `:compact_at`
+  (default 60% of the provider's `max_tokens`). Preserves a pinned prefix
+  (system prompt + rules) and a live suffix (recent turns) while substituting
+  the middle with a summary.
+- `ExAthena.Compactors.Summary` — default implementation. Uses the session's
+  own provider to generate a terse summary and replaces the dropped messages
+  with a single assistant message tagged `name: "compactor_summary"`. Cost
+  counts against the run's budget.
+- New options: `:compact_at` (default 0.6), `:pinned_prefix_count` (default 1),
+  `:live_suffix_count` (default 6), `:compactor` (override module).
+- New events: `{:compaction, metadata}` fires after a successful compaction with
+  before/after token counts and dropped count.
 - New termination: `:error_compaction_failed` when compaction errors.
-- New hook: `:PreCompact` fires with `%{estimate: …}` before each
-  compaction attempt.
+- New hook: `:PreCompact` fires with `%{estimate: …}` before each compaction
+  attempt.
 
 #### Added — budget accounting from provider metadata
 
 - `extract_cost/1` in `ExAthena.Modes.ReAct` pulls `:total_cost` (or
-  `:input_cost + :output_cost`) from provider usage metadata and folds
-  it into the run's Budget. req_llm's `models.dev`-backed cost data
-  flows straight through.
-- `ExAthena.Result.cost_usd` is populated when the provider reports
-  cost; `nil` otherwise.
+  `:input_cost + :output_cost`) from provider usage metadata and folds it into
+  the run's Budget. req_llm's `models.dev`-backed cost data flows straight
+  through.
+- `ExAthena.Result.cost_usd` is populated when the provider reports cost; `nil`
+  otherwise.
 - `:max_budget_usd` (introduced as a knob in PR 2) now genuinely trips
   `:error_max_budget_usd` when cumulative cost crosses the cap.
 
 #### Added — structured-output repair loop (instructor-style)
 
-- `ExAthena.Structured.extract/2` now retries on validation failure by
-  appending the failed response + a user message carrying the validation
-  error and re-prompting. Default `:max_retries: 2`.
-- After retries exhaust, returns
-  `{:error, {:error_max_structured_output_retries, last_validation_error}}`.
-- New events: `{:structured_retry, %{attempt:, error:}}` fires on each
-  retry.
+- `ExAthena.Structured.extract/2` now retries on validation failure by appending
+  the failed response + a user message carrying the validation error and
+  re-prompting. Default `:max_retries: 2`.
+- After retries exhaust, returns `{:error,
+  {:error_max_structured_output_retries, last_validation_error}}`.
+- New events: `{:structured_retry, %{attempt:, error:}}` fires on each retry.
 
 #### Added — Plan-and-Solve mode
 
 - `ExAthena.Modes.PlanAndSolve` — two-phase mode. First iteration is
-  **planning-only** (no tools, plain-text plan following a structured
-  prompt). Subsequent iterations delegate to `ReAct`.
-- Rationale: smaller / local models produce better tool-calling
-  behaviour when they articulate a plan first.
+  **planning-only** (no tools, plain-text plan following a structured prompt).
+  Subsequent iterations delegate to `ReAct`.
+- Rationale: smaller / local models produce better tool-calling behaviour when
+  they articulate a plan first.
 
 #### Added — Reflexion mode
 
-- `ExAthena.Modes.Reflexion` — after each ReAct iteration, injects a
-  short self-critique pass and adds it to the conversation history.
-  Capped at 3 reflections (per research — beyond that,
-  degeneration-of-thought kicks in).
+- `ExAthena.Modes.Reflexion` — after each ReAct iteration, injects a short
+  self-critique pass and adds it to the conversation history. Capped at 3
+  reflections (per research — beyond that, degeneration-of-thought kicks in).
 - Triples per-loop cost; best reserved for correctness-sensitive tasks.
 
 #### Added — subagent supervision upgrade
 
 - `ExAthena.Tools.SpawnAgent` now runs sub-loops under
-  `Task.Supervisor.async_nolink` (supervisor name `ExAthena.Tasks`,
-  registered by `ExAthena.Application`). Sub-agent crashes no longer
-  propagate to the parent; timeouts are enforceable.
-- New events: `{:subagent_spawn, %{id:, prompt:}}` and
-  `{:subagent_result, %{id:, text:}}` fire around sub-loop execution.
+  `Task.Supervisor.async_nolink` (supervisor name `ExAthena.Tasks`, registered
+  by `ExAthena.Application`). Sub-agent crashes no longer propagate to the
+  parent; timeouts are enforceable.
+- New events: `{:subagent_spawn, %{id:, prompt:}}` and `{:subagent_result,
+  %{id:, text:}}` fire around sub-loop execution.
 - New optional arg: `timeout_ms` (default 300_000).
 - New error subtypes from SpawnAgent: `{:sub_agent_crashed, reason}`,
   `{:sub_agent_timeout, ms}`.
 
 ### Tests
 
-- **140 total** (up from 126 in PR 2). 14 new cover compaction
-  (threshold detection, middle-replacement, error surfacing), budget
-  caps (cost-based termination, `cost_usd` accumulation, nil fallback),
-  structured repair loop (retry success, retry exhaustion, retry
-  events), Plan-and-Solve (planning turn assertion, execution-phase
-  tool use), and Reflexion (reflection cap, history injection).
+- **140 total** (up from 126 in PR 2). 14 new cover compaction (threshold
+  detection, middle-replacement, error surfacing), budget caps (cost-based
+  termination, `cost_usd` accumulation, nil fallback), structured repair loop
+  (retry success, retry exhaustion, retry events), Plan-and-Solve (planning turn
+  assertion, execution-phase tool use), and Reflexion (reflection cap, history
+  injection).
 
 ### PR 2 — Kernel rewrite (**breaking changes**)
 
-**The return type of `ExAthena.Loop.run/2` is now `{:ok, %Result{}}`
-instead of the v0.2 `{:ok, map()}`.** Consumers pattern-matching on the
-old map shape must update.
+**The return type of `ExAthena.Loop.run/2` is now `{:ok, %Result{}}` instead of
+the v0.2 `{:ok, map()}`.** Consumers pattern-matching on the old map shape must
+update.
 
 #### Added — pluggable Mode behaviour
 
-- `ExAthena.Loop.Mode` — behaviour with `init/1` + `iterate/1`. Drives
-  the turn-by-turn control flow. Kernel handles caps, budget, hooks,
-  counters, events, and Result construction.
+- `ExAthena.Loop.Mode` — behaviour with `init/1` + `iterate/1`. Drives the
+  turn-by-turn control flow. Kernel handles caps, budget, hooks, counters,
+  events, and Result construction.
 - `ExAthena.Modes.ReAct` — default mode. ReAct cycle (reason → act →
   observe) with parallel tool execution, mistake counter, and typed
   terminations.
-- `ExAthena.Modes.PlanAndSolve` + `ExAthena.Modes.Reflexion` — stubs
-  returning `:not_implemented`. Full implementations land in PR 3.
+- `ExAthena.Modes.PlanAndSolve` + `ExAthena.Modes.Reflexion` — stubs returning
+  `:not_implemented`. Full implementations land in PR 3.
 - `ExAthena.Loop.Mode.resolve/1` translates atom shortcuts (`:react`,
   `:plan_and_solve`, `:reflexion`) to modules.
 
 #### Added — reliability knobs
 
 - `:max_consecutive_mistakes` (default 3) — trips
-  `:error_consecutive_mistakes` after N consecutive tool errors. A
-  successful tool call resets the counter. Prevents runaway loops
-  (Cline pattern).
+  `:error_consecutive_mistakes` after N consecutive tool errors. A successful
+  tool call resets the counter. Prevents runaway loops (Cline pattern).
 - `:max_budget_usd` — trips `:error_max_budget_usd` when the budget
   accumulator crosses the cap. PR 3 wires cost computation from provider
   metadata.
@@ -2494,42 +2448,37 @@ old map shape must update.
 
 #### Added — parallel tool execution
 
-- `ExAthena.Loop.Parallel` — classifies a single iteration's tool calls
-  into parallel-safe (read-only) and serial (mutating) groups. Runs
-  mutating calls first in order, then parallel-safe calls concurrently
-  via `Task.async_stream/3`. Result order always matches input call
-  order so the model sees aligned results.
-- `ExAthena.Tool.parallel_safe?/0` — optional behaviour callback.
-  Defaults to `false`.
+- `ExAthena.Loop.Parallel` — classifies a single iteration's tool calls into
+  parallel-safe (read-only) and serial (mutating) groups. Runs mutating calls
+  first in order, then parallel-safe calls concurrently via
+  `Task.async_stream/3`. Result order always matches input call order so the
+  model sees aligned results.
+- `ExAthena.Tool.parallel_safe?/0` — optional behaviour callback. Defaults to
+  `false`.
 - Read-only builtins (`Read`, `Glob`, `Grep`, `WebFetch`) declare
   `parallel_safe?: true`. Mutating builtins default to `false`.
 
 #### Changed — event shape (**breaking change**)
 
-v0.2's `%ExAthena.Streaming.Event{type:, data:, index:}` struct is
-replaced by flat pattern-matchable tuples modelled on `ash_ai`'s
-`ToolLoop.stream/2`:
+v0.2's `%ExAthena.Streaming.Event{type:, data:, index:}` struct is replaced by
+flat pattern-matchable tuples modelled on `ash_ai`'s `ToolLoop.stream/2`:
 
-    {:content, text}
-    {:tool_call, ToolCall.t()}
-    {:tool_result, ToolResult.t()}
-    {:iteration, integer()}
-    {:usage, usage_map}
-    {:error, term()}
-    {:done, Result.t()}
+    {:content, text} {:tool_call, ToolCall.t()} {:tool_result, ToolResult.t()}
+    {:iteration, integer()} {:usage, usage_map} {:error, term()} {:done,
+    Result.t()}
 
-Consumers subscribing via `:on_event` need to update their handlers.
-OTel span emission in PR 4 consumes the same tuples.
+Consumers subscribing via `:on_event` need to update their handlers. OTel span
+emission in PR 4 consumes the same tuples.
 
 #### Changed — error handling
 
-Tool errors use the `is_error: true` tool-result convention (Cline
-pattern). The model sees its mistake and self-corrects; the mistake
-counter advances; a streak hits the cap.
+Tool errors use the `is_error: true` tool-result convention (Cline pattern). The
+model sees its mistake and self-corrects; the mistake counter advances; a streak
+hits the cap.
 
-Unknown tools + parse failures flow as error tool-results rather than
-halting the run. Hook-driven halts produce `:error_halted`. Provider
-errors produce `:error_during_execution`.
+Unknown tools + parse failures flow as error tool-results rather than halting
+the run. Hook-driven halts produce `:error_halted`. Provider errors produce
+`:error_during_execution`.
 
 #### Tests
 
@@ -2539,50 +2488,49 @@ parallel tool ordering, flat event tuples, Mode resolve/1.
 
 ### PR 1 — Foundation (already landed, unchanged)
 PR 1 lays the foundation: canonical types, typed terminations, budget
-accounting, and a single req_llm-backed provider adapter that replaces the
-three hand-written provider modules.
+accounting, and a single req_llm-backed provider adapter that replaces the three
+hand-written provider modules.
 
 ### Added — Result, Terminations, Budget
 
 - `ExAthena.Result` — canonical run outcome struct. Every run (success or
   error) returns a `%Result{}` carrying final text, message history,
-  finish_reason, iterations, tool_calls_made, aggregated usage, cost in
-  USD, duration, model, provider, and telemetry metadata. Replaces the
-  loose map v0.2 returned.
-- `ExAthena.Loop.Terminations` — typed finish_reason subtypes inspired by
-  the Claude Agent SDK. Each run ends with exactly one of:
-  `:stop`, `:error_max_turns`, `:error_max_budget_usd`,
-  `:error_during_execution`, `:error_max_structured_output_retries`,
-  `:error_consecutive_mistakes`, `:error_halted`, `:error_compaction_failed`.
-  `Terminations.category/1` classifies each as `:success | :retryable |
-  :capacity | :fatal` for retry-decision logic.
-- `ExAthena.Budget` — usage + cost accumulator. Aggregates token usage
-  across iterations, computes cost from provider metadata (req_llm +
-  models.dev), and supports `:max_budget_usd` caps.
+  finish_reason, iterations, tool_calls_made, aggregated usage, cost in USD,
+  duration, model, provider, and telemetry metadata. Replaces the loose map v0.2
+  returned.
+- `ExAthena.Loop.Terminations` — typed finish_reason subtypes inspired by the
+  Claude Agent SDK. Each run ends with exactly one of: `:stop`,
+  `:error_max_turns`, `:error_max_budget_usd`, `:error_during_execution`,
+  `:error_max_structured_output_retries`, `:error_consecutive_mistakes`,
+  `:error_halted`, `:error_compaction_failed`. `Terminations.category/1`
+  classifies each as `:success | :retryable | :capacity | :fatal` for
+  retry-decision logic.
+- `ExAthena.Budget` — usage + cost accumulator. Aggregates token usage across
+  iterations, computes cost from provider metadata (req_llm + models.dev), and
+  supports `:max_budget_usd` caps.
 
 ### Added — req_llm provider adapter
 
-- `ExAthena.Providers.ReqLLM` — single adapter that delegates to
-  `req_llm`'s 18+ providers (OpenAI, Anthropic, Ollama, OpenRouter, Groq,
-  Together, DeepInfra, Vercel, LM Studio, vLLM, llama.cpp, Mistral, Gemini,
-  Cohere, Bedrock, …). Model names resolve through the `models.dev`
-  registry for cost + context-window metadata.
-- `ExAthena.Config.pop_provider!/1` now threads a `req_llm_provider_tag`
-  key through opts so bare `model: "llama3.1"` + `provider: :ollama`
-  auto-expands to the full `"ollama:llama3.1"` spec req_llm expects.
-- `Config.req_llm_provider_tag/1` — translate an ExAthena provider atom
-  into the req_llm `"tag:model-id"` prefix.
+- `ExAthena.Providers.ReqLLM` — single adapter that delegates to `req_llm`'s
+  18+ providers (OpenAI, Anthropic, Ollama, OpenRouter, Groq, Together,
+  DeepInfra, Vercel, LM Studio, vLLM, llama.cpp, Mistral, Gemini, Cohere,
+  Bedrock, …). Model names resolve through the `models.dev` registry for cost
+  + context-window metadata.
+- `ExAthena.Config.pop_provider!/1` now threads a `req_llm_provider_tag` key
+  through opts so bare `model: "llama3.1"` + `provider: :ollama` auto-expands to
+  the full `"ollama:llama3.1"` spec req_llm expects.
+- `Config.req_llm_provider_tag/1` — translate an ExAthena provider atom into
+  the req_llm `"tag:model-id"` prefix.
 
 ### Removed — hand-written provider modules
 
 - `ExAthena.Providers.Ollama`
 - `ExAthena.Providers.OpenAICompatible`
-- `ExAthena.Providers.Claude`
-  All three were direct HTTP clients (Ollama + OpenAICompatible) or SDK
-  wrappers (Claude). req_llm does this work across more providers and
-  maintains the catalogs. The provider atoms `:ollama`, `:openai`,
-  `:openai_compatible`, `:llamacpp`, `:claude`, `:anthropic` continue to
-  work — they now all resolve to `ExAthena.Providers.ReqLLM`.
+- `ExAthena.Providers.Claude` All three were direct HTTP clients (Ollama +
+  OpenAICompatible) or SDK wrappers (Claude). req_llm does this work across more
+  providers and maintains the catalogs. The provider atoms `:ollama`, `:openai`,
+  `:openai_compatible`, `:llamacpp`, `:claude`, `:anthropic` continue to work
+  — they now all resolve to `ExAthena.Providers.ReqLLM`.
 
 ### Added — dep
 
@@ -2592,16 +2540,16 @@ three hand-written provider modules.
 
 Consumer-visible API unchanged in this PR. Every existing call
 (`ExAthena.query/2`, `ExAthena.stream/3`, `ExAthena.Loop.run/2`,
-`ExAthena.Session.start_link/1`) works identically. The provider-module
-change is internal.
+`ExAthena.Session.start_link/1`) works identically. The provider-module change
+is internal.
 
-Breaking API changes land in PR 2 (Kernel) alongside the new Mode
-behaviour and the new stream event shape.
+Breaking API changes land in PR 2 (Kernel) alongside the new Mode behaviour and
+the new stream event shape.
 
 ### Tests
 
-- 116 tests passing (up from 91 baseline). 25 new covering Terminations,
-  Result, Budget, and the req_llm adapter routing.
+- 116 tests passing (up from 91 baseline). 25 new covering Terminations, Result,
+  Budget, and the req_llm adapter routing.
 
 ## v0.2.0 — unreleased
 
@@ -2610,12 +2558,12 @@ multi-turn tool-using work. Drop-in replacement for the Claude Code SDK.
 
 ### Added — Agent loop
 
-- `ExAthena.Loop` — multi-turn loop. Infer → parse tool calls → permissions →
-  PreToolUse hooks → execute → PostToolUse hooks → replay → repeat. Bounded
-  by `:max_iterations` (default 25). Auto-falls-back between native and
-  text-tagged tool-call protocols via `ExAthena.ToolCalls.extract/2`.
-- `ExAthena.Session` — GenServer owning multi-turn conversation state.
-  Appends to message history on every turn, resumable, supervised.
+- `ExAthena.Loop` — multi-turn loop. Infer → parse tool calls →
+  permissions → PreToolUse hooks → execute → PostToolUse hooks → replay
+  → repeat. Bounded by `:max_iterations` (default 25). Auto-falls-back between
+  native and text-tagged tool-call protocols via `ExAthena.ToolCalls.extract/2`.
+- `ExAthena.Session` — GenServer owning multi-turn conversation state. Appends
+  to message history on every turn, resumable, supervised.
 - `ExAthena.run/2` + `ExAthena.extract_structured/2` on the facade.
 
 ### Added — Tool behaviour + builtins
@@ -2642,41 +2590,41 @@ multi-turn tool-using work. Drop-in replacement for the Claude Code SDK.
 - `ExAthena.Permissions` with three modes (`:plan`, `:default`,
   `:bypass_permissions`), `allowed_tools`/`disallowed_tools` lists, and a
   `can_use_tool` callback for interactive approval.
-- `:plan` mode blocks mutation tools (`write`, `edit`, `bash`, `todo_write`)
-  by default; read-only tools always permitted.
+- `:plan` mode blocks mutation tools (`write`, `edit`, `bash`, `todo_write`) by
+  default; read-only tools always permitted.
 
 ### Added — Hooks
 
 - `ExAthena.Hooks` lifecycle matching Claude Code's shape: `PreToolUse`,
   `PostToolUse`, `Stop`, `Notification`, `PreCompact`, `SessionStart`,
-  `SessionEnd`. Matcher groups (regex or string) select which tools fire.
-  Hook crashes are caught and become `:halt` returns.
+  `SessionEnd`. Matcher groups (regex or string) select which tools fire. Hook
+  crashes are caught and become `:halt` returns.
 
 ### Added — Structured extraction
 
 - `ExAthena.Structured.extract/2` — one-shot JSON extraction with schema
   validation. Uses JSON mode when the provider supports it; falls back to a
-  fenced `~~~json` block for providers that don't. `:validator` opt for
-  custom validation.
+  fenced `~~~json` block for providers that don't. `:validator` opt for custom
+  validation.
 
 ### Test surface
 
-- 95 tests (up from 43 in Phase 1). Coverage per tool, permission modes,
-  hook lifecycle, loop end-to-end driven by the Mock provider, structured
-  extraction both JSON-mode and fenced.
+- 95 tests (up from 43 in Phase 1). Coverage per tool, permission modes, hook
+  lifecycle, loop end-to-end driven by the Mock provider, structured extraction
+  both JSON-mode and fenced.
 
 ### Phase 3 roadmap (next PR)
 
-Start migrating `udin_code` off direct `claude_code` calls. Route ticket
-work (`SdkRunner`, `GenericRunner`, `Orchestrator`) through `ExAthena.Session`
-so picking `:ollama` in the `ModelProvider` UI begins actually running tasks
-on Ollama.
+Start migrating `udin_code` off direct `claude_code` calls. Route ticket work
+(`SdkRunner`, `GenericRunner`, `Orchestrator`) through `ExAthena.Session` so
+picking `:ollama` in the `ModelProvider` UI begins actually running tasks on
+Ollama.
 
 ## v0.1.0 — unreleased
 
-Initial public release. Phase 1 of the agent-loop roadmap: pure inference
-across any provider, with the canonical message/request/response shapes and
-tool-call parsing infrastructure in place for Phase 2's agent loop.
+Initial public release. Phase 1 of the agent-loop roadmap: pure inference across
+any provider, with the canonical message/request/response shapes and tool-call
+parsing infrastructure in place for Phase 2's agent loop.
 
 ### Added — Core API
 
@@ -2692,15 +2640,16 @@ tool-call parsing infrastructure in place for Phase 2's agent loop.
 
 ### Added — Canonical shapes
 
-- `ExAthena.Request` — normalised inference request consumed by every provider.
+- `ExAthena.Request` — normalised inference request consumed by every
+  provider.
 - `ExAthena.Response` — normalised response with `:text`, `:tool_calls`,
   `:finish_reason`, `:usage`, `:model`, `:provider`, `:raw`.
 - `ExAthena.Messages.Message` / `.ToolCall` / `.ToolResult` — conversation
-  primitives. `Messages.from_map/1` tolerates both atom and string keys for
-  easy interop with provider JSON.
-- `ExAthena.Streaming.Event` — canonical streaming events
-  (`:start`, `:text_delta`, `:tool_call_start`, `:tool_call_delta`,
-  `:tool_call_end`, `:usage`, `:stop`, `:error`).
+  primitives. `Messages.from_map/1` tolerates both atom and string keys for easy
+  interop with provider JSON.
+- `ExAthena.Streaming.Event` — canonical streaming events (`:start`,
+  `:text_delta`, `:tool_call_start`, `:tool_call_delta`, `:tool_call_end`,
+  `:usage`, `:stop`, `:error`).
 
 ### Added — Provider contract
 
@@ -2710,14 +2659,14 @@ tool-call parsing infrastructure in place for Phase 2's agent loop.
 
 ### Added — Providers
 
-- `ExAthena.Providers.Ollama` — local Ollama via `/api/chat` (native tool-calls
-  on supported models, SSE-style newline-delimited streaming).
+- `ExAthena.Providers.Ollama` — local Ollama via `/api/chat` (native
+  tool-calls on supported models, SSE-style newline-delimited streaming).
 - `ExAthena.Providers.OpenAICompatible` — `/v1/chat/completions` for OpenAI,
   OpenRouter, LM Studio, vLLM, llama.cpp server, Together, Groq, etc. SSE
   streaming.
-- `ExAthena.Providers.Claude` — wraps the `claude_code` SDK. `claude_code`
-  is declared optional so consumers that don't use Claude aren't forced to
-  install it. (Streaming via this provider lands in Phase 2 with sessions.)
+- `ExAthena.Providers.Claude` — wraps the `claude_code` SDK. `claude_code` is
+  declared optional so consumers that don't use Claude aren't forced to install
+  it. (Streaming via this provider lands in Phase 2 with sessions.)
 - `ExAthena.Providers.Mock` — in-memory test double with scripted responses
   and event lists.
 
@@ -2725,8 +2674,8 @@ tool-call parsing infrastructure in place for Phase 2's agent loop.
 
 - `ExAthena.ToolCalls.Native` — parses OpenAI-style `tool_calls` and Claude
   `tool_use` blocks. Tolerant of atom/string keys and JSON-string arguments.
-- `ExAthena.ToolCalls.TextTagged` — parses `~~~tool_call` fenced blocks out
-  of assistant prose for models without native tool-call support.
+- `ExAthena.ToolCalls.TextTagged` — parses `~~~tool_call` fenced blocks out of
+  assistant prose for models without native tool-call support.
 - `ExAthena.ToolCalls.extract/2` — dispatch-and-fallback between the two
   protocols based on provider capabilities.
 - `ExAthena.ToolCalls.augment_system_prompt/2` — appends text-tagged
@@ -2735,20 +2684,21 @@ tool-call parsing infrastructure in place for Phase 2's agent loop.
 ### Added — Igniter installer
 
 - `mix ex_athena.install` — writes sensible `config :ex_athena` defaults,
-  idempotent. Picks Ollama as the default provider. Requires the `igniter`
-  dep (declared optional).
+  idempotent. Picks Ollama as the default provider. Requires the `igniter` dep
+  (declared optional).
 
 ### Phase 2 roadmap
 
 Still to land: `ExAthena.Tool` behaviour + builtins (Read, Glob, Grep, Write,
 Edit, Bash, WebFetch, TodoWrite, PlanMode, SpawnAgent), `ExAthena.Loop`
 (multi-turn agent loop), `ExAthena.Session` GenServer, `ExAthena.Hooks`
-(PreToolUse/PostToolUse/Stop lifecycle), `ExAthena.Permissions`
-(`:plan` / `:default` / `:bypass` + `can_use_tool` callback), and
+(PreToolUse/PostToolUse/Stop lifecycle), `ExAthena.Permissions` (`:plan` /
+`:default` / `:bypass` + `can_use_tool` callback), and
 `ExAthena.extract_structured/2` (JSON-schema-validated output).
 
 ### Phase 3+ roadmap
 
 Migrate `udin_code` off the `claude_code` direct dep: route every call through
-`ExAthena.*`, delete `UdinCode.Claude.GenericRunner`, make picking `:ollama`
-in the ModelProvider UI actually run the whole task lifecycle on Ollama.
+`ExAthena.*`, delete `UdinCode.Claude.GenericRunner`, make picking `:ollama` in
+the ModelProvider UI actually run the whole task lifecycle on Ollama.
+
