@@ -200,6 +200,86 @@ defmodule ExAthena.Tools.SpawnAgentReportTest do
     end
   end
 
+  # Issue 263. The sidechain stored `text` and not `deliverable`, so worker
+  # `subagent_B-g8CXaN` left 21 characters on disk ("Fetched successfully.")
+  # while the issue it had fetched — its entire output — was stored nowhere.
+  describe "a finish deliverable is persisted" do
+    @deliverable "## Issue #476\n\nTitle: let a client open their own app. State: OPEN."
+    @prose "Fetched successfully."
+
+    defp run_finishing_worker(parent, worker) do
+      worker_responder = fn request ->
+        if Enum.any?(request.messages, &(&1.role == :tool)) do
+          %Response{text: "", finish_reason: :stop, provider: :mock}
+        else
+          %Response{
+            text: @prose,
+            tool_calls: [
+              %ToolCall{
+                id: "f1",
+                name: "finish",
+                arguments: %{"deliverable" => @deliverable}
+              }
+            ],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+        end
+      end
+
+      {:ok, _} =
+        Loop.run("fetch the issue",
+          provider: :mock,
+          mock: [responder: parent_responder(%{"prompt" => "fetch it"})],
+          tools: [ExAthena.Tools.SpawnAgent],
+          cwd: parent,
+          memory: false,
+          session_id: "parent-session",
+          assigns: %{
+            spawn_agent_opts: [
+              cwd: worker,
+              provider: :mock,
+              mock: [responder: worker_responder],
+              memory: false
+            ]
+          },
+          max_iterations: 5
+        )
+
+      [file] = File.ls!(sidechain_dir(parent, "parent-session"))
+
+      {Path.basename(file, ".jsonl"),
+       sidechain_dir(parent, "parent-session")
+       |> Path.join(file)
+       |> File.read!()
+       |> String.split("\n", trim: true)
+       |> List.last()
+       |> Jason.decode!()}
+    end
+
+    test "the sidechain holds the deliverable and the argument it came from",
+         %{parent: parent, worker: worker} do
+      {_id, record} = run_finishing_worker(parent, worker)
+
+      assert get_in(record, ["result", "deliverable"]) == @deliverable
+      assert get_in(record, ["result", "deliverable_source"]) == "deliverable"
+      # Whole, not clipped: the file exists to be read back after the parent's
+      # own cap cut something.
+      assert get_in(record, ["result", "text"]) == @prose
+    end
+
+    test "read_worker_report returns the deliverable, not the prose around it",
+         %{parent: parent, worker: worker} do
+      {id, _record} = run_finishing_worker(parent, worker)
+      ctx = ExAthena.ToolContext.new(cwd: parent, session_id: "parent-session")
+
+      assert {:ok, text} =
+               ExAthena.Tools.ReadWorkerReport.execute(%{"subagent_id" => id}, ctx)
+
+      assert text =~ @deliverable
+    end
+  end
+
   # read_worker_report answers "what did MY worker say". A leaf worker has no
   # workers, so the tool is schema noise there — it is granted exactly when
   # spawn_agent is, and never inherited from an agent definition's ceiling.

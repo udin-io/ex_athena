@@ -31,24 +31,33 @@ defmodule ExAthena.Tools.FinishTest do
     end
   end
 
+  # The third element is the ARGUMENT the payload came from, and it decides
+  # whether the parent reads the payload verbatim (issue 263). `deliverable` is
+  # "the primary output"; `summary` is "a brief description of what was
+  # accomplished", which is the shape issue 251 was about.
   describe "execute/2" do
-    test "returns {:halt, {:submitted, deliverable}} with deliverable from args" do
-      assert {:halt, {:submitted, "my plan"}} =
+    test "tags a deliverable argument as :deliverable" do
+      assert {:halt, {:submitted, "my plan", :deliverable}} =
                Finish.execute(%{"deliverable" => "my plan"}, %{})
     end
 
-    test "accepts summary as alias for deliverable" do
-      assert {:halt, {:submitted, "task done"}} =
+    test "accepts summary as the payload, tagged :summary" do
+      assert {:halt, {:submitted, "task done", :summary}} =
                Finish.execute(%{"summary" => "task done"}, %{})
     end
 
     test "prefers deliverable over summary when both present" do
-      assert {:halt, {:submitted, "the deliverable"}} =
+      assert {:halt, {:submitted, "the deliverable", :deliverable}} =
                Finish.execute(%{"deliverable" => "the deliverable", "summary" => "ignored"}, %{})
     end
 
-    test "returns {:halt, {:submitted, nil}} when no args given" do
-      assert {:halt, {:submitted, nil}} = Finish.execute(%{}, %{})
+    test "a blank deliverable falls through to summary" do
+      assert {:halt, {:submitted, "task done", :summary}} =
+               Finish.execute(%{"deliverable" => "   ", "summary" => "task done"}, %{})
+    end
+
+    test "returns no payload and no source when no args given" do
+      assert {:halt, {:submitted, nil, :none}} = Finish.execute(%{}, %{})
     end
   end
 end

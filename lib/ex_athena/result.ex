@@ -39,6 +39,12 @@ defmodule ExAthena.Result do
       `finish_reason` is `:submitted`; `nil` for all other terminations.
       Carries the model's declared output (summary, plan text, or any
       value the `finish` tool received).
+    * `:deliverable_source` — which `finish` argument the deliverable came
+      from: `:deliverable` (the task's primary output), `:summary` (a brief
+      account of what was done) or `:none` (neither was supplied). `nil` for
+      every termination other than `:submitted`. `ExAthena.Tools.SpawnAgent`
+      reads it to decide whether a worker's payload is its report or just its
+      sign-off (issue 263).
     * `:session_id` — the provider-side conversation identifier when the
       provider maintains its own session state (e.g. the Claude Code CLI).
       Hosts pass it back as `resume:` on the next `run/2` to continue that
@@ -72,6 +78,7 @@ defmodule ExAthena.Result do
             halted_reason: nil,
             error_diagnostic: nil,
             deliverable: nil,
+            deliverable_source: nil,
             iterations: 0,
             tool_calls_made: 0,
             usage: nil,
@@ -97,6 +104,7 @@ defmodule ExAthena.Result do
           halted_reason: term() | nil,
           error_diagnostic: error_diagnostic() | nil,
           deliverable: term() | nil,
+          deliverable_source: :deliverable | :summary | :none | nil,
           iterations: non_neg_integer(),
           tool_calls_made: non_neg_integer(),
           usage: usage() | nil,

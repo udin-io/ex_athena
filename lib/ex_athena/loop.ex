@@ -622,10 +622,13 @@ defmodule ExAthena.Loop do
   defp to_result(%State{} = state, started_at) do
     raw_finish_reason = state.meta[:finish_reason] || :stop
 
-    {finish_reason, deliverable, halted_reason} =
+    # `finish` names the argument its payload came from; a `{:submitted, d}`
+    # halt raised anywhere else carries no such claim, so it is left unsourced.
+    {finish_reason, deliverable, deliverable_source, halted_reason} =
       case {raw_finish_reason, state.halted_reason} do
-        {:error_halted, {:submitted, d}} -> {:submitted, d, nil}
-        {reason, hr} -> {reason, nil, hr}
+        {:error_halted, {:submitted, d, source}} -> {:submitted, d, source, nil}
+        {:error_halted, {:submitted, d}} -> {:submitted, d, nil, nil}
+        {reason, hr} -> {reason, nil, nil, hr}
       end
 
     final_text = extract_final_text(state)
@@ -639,6 +642,7 @@ defmodule ExAthena.Loop do
       halted_reason: halted_reason,
       error_diagnostic: state.meta[:error_diagnostic],
       deliverable: deliverable,
+      deliverable_source: deliverable_source,
       iterations: state.iterations,
       tool_calls_made: state.tool_calls_made,
       usage: state.budget && state.budget.usage,

@@ -16,6 +16,7 @@ defmodule ExAthena.Tools.SpawnAgentSummaryTest do
   @map "ROUTES live in lib/ex_athena/web/router.ex. There is no QR library anywhere."
   @signoff "The report above is the complete deliverable, delivered in the previous turn."
   @summary "REPORT BUILT FROM THE TRANSCRIPT: routes in router.ex, no QR library."
+  @deliverable "## Issue #476\n\nTitle: let a client open their own app. State: OPEN."
 
   setup do
     base = Path.join(System.tmp_dir!(), "spawn_sum_#{System.unique_integer([:positive])}")
@@ -53,17 +54,26 @@ defmodule ExAthena.Tools.SpawnAgentSummaryTest do
   # One responder serves both the worker and the summariser, because the
   # summariser runs on the worker's provider by design. They are told apart by
   # the summariser's fixed system prompt — it is the only caller with one.
-  defp responder(summariser_reply) do
+  #
+  # `:finish` makes the worker end with a `finish` call carrying those
+  # arguments instead of a plain final message; `:summariser_calls` counts the
+  # summariser runs one spawn caused.
+  defp responder(summariser_reply, opts \\ []) do
     fn request ->
       cond do
         summariser?(request) ->
+          case opts[:summariser_calls] do
+            nil -> :ok
+            counter -> :counters.add(counter, 1, 1)
+          end
+
           case summariser_reply.() do
             {:ok, text} -> %Response{text: text, finish_reason: :stop, provider: :mock}
             {:error, reason} -> raise reason
           end
 
         Enum.any?(request.messages, &(&1.role == :tool)) ->
-          %Response{text: @signoff, finish_reason: :stop, provider: :mock}
+          last_turn(opts[:finish])
 
         true ->
           %Response{
@@ -80,6 +90,19 @@ defmodule ExAthena.Tools.SpawnAgentSummaryTest do
           }
       end
     end
+  end
+
+  defp last_turn(nil), do: %Response{text: @signoff, finish_reason: :stop, provider: :mock}
+
+  # The sign-off rides along with the `finish` call: a deliverable has to beat
+  # the worker's own last words, not merely fill in for them.
+  defp last_turn(finish_args) do
+    %Response{
+      text: @signoff,
+      tool_calls: [%ToolCall{id: "f1", name: "finish", arguments: finish_args}],
+      finish_reason: :tool_calls,
+      provider: :mock
+    }
   end
 
   defp summariser?(%{system_prompt: prompt}) when is_binary(prompt),
@@ -168,6 +191,51 @@ defmodule ExAthena.Tools.SpawnAgentSummaryTest do
     assert report =~ @signoff
     refute report =~ @summary
     refute report =~ "summariser"
+  end
+
+  # Issue 263. Worker `subagent_B-g8CXaN` fetched issue #476, said "Fetched
+  # successfully." and put the whole issue in its `finish` deliverable. The
+  # parent was handed the summariser's honest account of a two-word transcript.
+  test "a finish deliverable reaches the parent verbatim, with the summariser on",
+       %{parent: parent, worker: worker} do
+    calls = :counters.new(1, [:atomics])
+
+    assert {:ok, result} =
+             run(
+               parent,
+               worker,
+               responder(fn -> {:ok, @summary} end,
+                 finish: %{"deliverable" => @deliverable},
+                 summariser_calls: calls
+               )
+             )
+
+    report = spawn_result(result)
+
+    assert report =~ @deliverable
+    # Not summarised, and not replaced by the worker's own sign-off either.
+    refute report =~ @summary
+    refute report =~ @signoff
+    # The deliverable is the report, so the summariser never ran.
+    assert :counters.get(calls, 1) == 0
+  end
+
+  # The other half: `summary` is by its own schema "a brief description of what
+  # was accomplished", which is the 251 pathology in a tool call. It stays the
+  # summariser's input, never the report.
+  test "a finish summary is still summarised from the transcript",
+       %{parent: parent, worker: worker} do
+    assert {:ok, result} =
+             run(
+               parent,
+               worker,
+               responder(fn -> {:ok, @summary} end, finish: %{"summary" => @signoff})
+             )
+
+    report = spawn_result(result)
+
+    assert report =~ @summary
+    refute report =~ @signoff
   end
 
   # config/test.exs switches the summariser off so unrelated tests keep their

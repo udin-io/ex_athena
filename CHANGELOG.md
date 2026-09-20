@@ -164,6 +164,44 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **A worker's `finish` deliverable reaches its parent, instead of being
+  replaced by a summary of the prose around it.**
+  ([#263](https://github.com/udin-io/ex_athena/issues/263)) Since #251 a
+  worker's report is built by `ExAthena.Agents.Summariser` from its
+  transcript, and the transcript holds assistant prose only. A worker that did
+  its talking inside the `finish` call therefore handed the parent nothing. In
+  web session `6bdad16e3028` worker `subagent_B-g8CXaN` fetched GitHub issue
+  #476, said "Fetched successfully." and put the whole issue in its
+  deliverable; the parent received "A fetch operation was performed and
+  completed successfully. The transcript does not specify what was fetched,
+  from where, or by what command." The orchestrator read the report, read the
+  transcript, and re-spawned the todo. `ExAthena.Tools.SpawnAgent` now uses a
+  `finish` deliverable as the report, verbatim, with no summariser run at all —
+  the provenance footer already carries the checkable account of what the
+  worker did, and the transcript stays on disk for `read_worker_report`.
+
+  The bypass is exactly one shape: the `deliverable` argument of `finish`.
+  `Result.text` never qualifies, at any length, and neither does `finish`'s
+  `summary` argument, whose own schema calls it "a brief human-readable
+  description of what was accomplished" — the shape #251 was about, where a
+  545-character self-summary replaced the codebase map it referred to. Both
+  still go through the summariser. `finish` now halts with
+  `{:submitted, payload, source}` and `ExAthena.Result` carries the new
+  `deliverable_source` field so the two arguments can be told apart; a
+  `{:submitted, payload}` halt raised anywhere else still works and is left
+  unsourced.
+
+  Two places the same deliverable was being lost are fixed with it.
+  `Agents.Sidechain` stored `text` and not `deliverable`, so that worker left
+  21 characters on disk and `read_worker_report source: "report"` had nothing
+  to return; the deliverable and its source are now in the record, whole, and
+  the default `source: "report"` returns them. `Agents.Journal` digested every
+  tool call's arguments to `agents.journal_line_chars` (400), which ended that
+  worker's journal line mid-sentence at `precisely so "a`; a `finish` call now
+  gets the cap the transcript gives one turn (`agents.transcript_line_chars`,
+  20,000) instead, so a model dumping binary into `finish` still cannot fill
+  the file in one line.
+
 - **Five orchestrate defects from one 3h27m run that claimed a green suite
   over four failing tests.**
   ([#228](https://github.com/udin-io/ex_athena/issues/228)) Session

@@ -89,7 +89,15 @@ defmodule ExAthena.Agents.Sidechain do
       # post-mortem'd (conclusion quality, what it learned) — without these
       # a blank-text worker's sidechain is opaque.
       conclusions: Map.get(r, :conclusions, []),
-      todos: Map.get(r, :todos, [])
+      todos: Map.get(r, :todos, []),
+      # A worker that does its talking inside `finish` has its whole output
+      # here and almost nothing in `text` — `subagent_B-g8CXaN` left 21
+      # characters of prose and an entire GitHub issue in its deliverable
+      # (issue 263). Stored WHOLE, like `text` and `conclusions`: nothing in
+      # this file is clipped, because the file exists to be read back when the
+      # parent's own cap cut something.
+      deliverable: serializable_deliverable(Map.get(r, :deliverable)),
+      deliverable_source: Map.get(r, :deliverable_source)
     }
   end
 
@@ -98,4 +106,11 @@ defmodule ExAthena.Agents.Sidechain do
   end
 
   defp serializable_result(other), do: %{ok: false, raw: inspect(other)}
+
+  # The schema asks for a string, but the payload comes from a model through a
+  # provider, and one bad term would fail `Jason.encode!/1` and take the whole
+  # record with it — the rescue above writes nothing at all.
+  defp serializable_deliverable(nil), do: nil
+  defp serializable_deliverable(d) when is_binary(d), do: d
+  defp serializable_deliverable(d), do: inspect(d)
 end

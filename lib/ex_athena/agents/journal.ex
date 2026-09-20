@@ -62,6 +62,16 @@ defmodule ExAthena.Agents.Journal do
   # rows. One number, two places.
   @default_line_chars 400
 
+  # `finish`'s arguments are not a call's parameters — they are the worker's
+  # report, and 400 characters cut `subagent_B-g8CXaN`'s off mid-sentence at
+  # `precisely so "a` (issue 263). It gets the cap `ExAthena.Agents.Transcript`
+  # gives one TURN of prose, for the same reason and with the same number:
+  # long enough for a whole codebase map written in one message, short enough
+  # that a model dumping binary into the channel cannot fill the file in one
+  # line. Uncapped it would not be: this writer opens, writes and closes per
+  # line, so one enormous line is one enormous write.
+  @default_finish_chars 20_000
+
   # Tools whose `path` argument names a file they wrote. `apply_patch` is
   # absent on purpose: its targets live inside the diff, not in an argument, so
   # a journal record cannot name them and claiming one would be a guess.
@@ -94,6 +104,9 @@ defmodule ExAthena.Agents.Journal do
       Defaults to `config :ex_athena, :agents, journal_bytes`.
     * `:line_chars` — cap on the digested arguments in one line. Defaults to
       `config :ex_athena, :agents, journal_line_chars`.
+    * `:finish_chars` — cap on a `finish` call's arguments, which are the
+      worker's report rather than a call's parameters. Defaults to
+      `config :ex_athena, :agents, transcript_line_chars`.
   """
   @spec compose((term() -> term()) | nil, String.t(), keyword()) :: (term() -> :ok)
   def compose(inner, path, opts \\ []) do
@@ -275,7 +288,7 @@ defmodule ExAthena.Agents.Journal do
       id: call.id,
       name: call.name,
       path: declared_path(call.arguments),
-      args: digest(call.arguments, opts)
+      args: digest(call.arguments, arg_chars(call.name, opts))
     }
   end
 
@@ -368,13 +381,21 @@ defmodule ExAthena.Agents.Journal do
 
   # `printable_limit` bounds each string DURING formatting, so a write call
   # carrying an 85 KB body never builds an 85 KB digest only to slice it away.
-  defp digest(args, opts) do
-    max = line_chars(opts)
-
+  defp digest(args, max) do
     args
     |> inspect(limit: 20, printable_limit: max)
     |> String.slice(0, max)
   end
+
+  # A grep's arguments deserve the digest cap. A `finish` call's arguments are
+  # the report the parent may have to read back after a re-spawn was the only
+  # alternative — see `@default_finish_chars`.
+  defp arg_chars("finish", opts) do
+    Keyword.get(opts, :finish_chars) ||
+      Tuning.get(:agents, :transcript_line_chars, @default_finish_chars)
+  end
+
+  defp arg_chars(_name, opts), do: line_chars(opts)
 
   defp cap_chars(text, opts) when is_binary(text), do: String.slice(text, 0, line_chars(opts))
   defp cap_chars(text, _opts), do: text

@@ -339,7 +339,9 @@ defmodule ExAthena.Web.Settings do
           min: 1,
           help:
             "Cap on the digested tool arguments in one journal line. The journal records " <>
-              "what a worker did, never a second copy of its transcript."
+              "what a worker did, never a second copy of its transcript. A finish call is " <>
+              "the exception: its arguments are the worker's report, so they get the " <>
+              "transcript's per-turn cap instead."
         },
         %{
           key: :transcript_bytes,
