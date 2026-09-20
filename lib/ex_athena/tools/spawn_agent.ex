@@ -636,7 +636,14 @@ defmodule ExAthena.Tools.SpawnAgent do
           # not caught from whatever it said last (issue 251). `own_text` is
           # the fallback, and `fallback_reason` is nil when the summariser
           # produced the report.
-          {text, fallback_reason} = summarised_report(own_text, ctx, sub_id, sub_opts)
+          #
+          # A `finish` deliverable is the exception, and the only one (issue
+          # 263): see `finish_deliverable/1`.
+          {text, fallback_reason} =
+            case finish_deliverable(sub_result) do
+              nil -> summarised_report(own_text, ctx, sub_id, sub_opts)
+              deliverable -> {deliverable, nil}
+            end
 
           # Appended AFTER truncation: the report is the worker's account of
           # its work, and a verbose worker must never be able to push the facts
@@ -1294,6 +1301,40 @@ defmodule ExAthena.Tools.SpawnAgent do
 
   defp deliverable_text(%ExAthena.Result{deliverable: d}) when is_binary(d) and d != "", do: d
   defp deliverable_text(_), do: nil
+
+  # The worker's report when it called `finish` with a `deliverable` — handed
+  # to the parent as written, with no summariser pass (issue 263).
+  #
+  # Worker `subagent_B-g8CXaN` fetched an issue, said "Fetched successfully."
+  # and put the issue itself in its deliverable. The parent received the
+  # summariser's honest account of a two-word transcript, read the transcript,
+  # and re-spawned the same todo.
+  #
+  # The line is drawn at the `deliverable` ARGUMENT, not at "the worker said
+  # something". Issue 251 is the reason: a worker's last words are a
+  # conversation's tail, and a 545-character self-summary claiming a report it
+  # never wrote passes any "substantial enough" test one could write. What is
+  # different here is not the length but the shape — a payload the worker
+  # packaged for its caller through a tool whose schema calls it "the primary
+  # output". `Result.text` never qualifies, at any length, and neither does
+  # `finish`'s `summary` argument, which its own schema calls "a brief
+  # human-readable description of what was accomplished".
+  #
+  # No summariser pass is added on top either. The provenance footer below
+  # already carries the checkable "what it did along the way" — the files it
+  # changed and the commands it ran — and the transcript is on disk for
+  # `read_worker_report`. A model run per spawn to narrate that would buy
+  # prose, not facts.
+  defp finish_deliverable(
+         %ExAthena.Result{finish_reason: :submitted, deliverable_source: :deliverable} = result
+       ) do
+    case deliverable_text(result) do
+      nil -> nil
+      text -> if blank?(text), do: nil, else: text
+    end
+  end
+
+  defp finish_deliverable(_result), do: nil
 
   defp append_cwd_line(brief, cwd) when is_binary(cwd) and cwd != "" do
     line =
