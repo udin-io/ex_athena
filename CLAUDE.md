@@ -75,10 +75,10 @@ Three files per worker, all under
     <parent cwd>/.exathena/sessions/<parent_session_id>/
 
 * `sidechains/<id>.jsonl` — `ExAthena.Agents.Sidechain`. The worker's
-  **Result**: its final text, the run's counters, its conclusions and todos.
-  Written before either result branch runs, on success and failure alike. It
-  is NOT the worker's full prose — `Result.text` is only the last non-blank
-  assistant message.
+  **Result**: its final text, its `finish` deliverable, the run's counters, its
+  conclusions and todos. Written before either result branch runs, on success
+  and failure alike. It is NOT the worker's full prose — `Result.text` is only
+  the last non-blank assistant message.
 * `transcript/<id>.ndjson` — `ExAthena.Agents.Transcript`. What the worker
   **said**: one line per conversational turn, written as the turn happens.
   This is the full prose, and the only copy of it — see below.
@@ -102,6 +102,13 @@ Since issue 251 the report the parent receives is written by
 final message. `agents.summarise_reports` turns it off (it is ON in
 production and OFF in `config/test.exs`, because it adds one model call per
 spawn and every mock responder would have to answer it).
+
+One shape skips the summariser, and only one: a worker that called `finish`
+with a `deliverable` has that deliverable handed up verbatim (issue 263).
+`Result.deliverable_source` says which `finish` argument it came from, because
+the other one — `summary` — is by its own schema a brief account of what was
+done, which is the 251 pathology in a tool call. `Result.text` never skips the
+summariser either, at any length: 251's failure was 545 characters long.
 
 Do **not** try to recover a worker's prose from `Result.messages`. Compaction
 replaces the middle of history while the worker is still running
