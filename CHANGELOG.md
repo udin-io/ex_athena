@@ -164,6 +164,25 @@ and ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
+- **A worker's report no longer renders — or gets stored — twice.**
+  ([#264](https://github.com/udin-io/ex_athena/issues/264)) `SpawnAgent`
+  emits a worker's report twice from one call: once as the `subagent_result`
+  boundary event the Coordinator uses to build the agent panel, and once as
+  the ordinary `tool_result` of the `spawn_agent` call itself, 132 characters
+  longer for the `[runtime] worker N of M …` footer appended after the
+  boundary event already fired. `ChatLive` stored both in `details_stream` —
+  persisted verbatim to the session file and replayed on reattach — and
+  rendered both in the Activity log. In web session `6bdad16e3028` this meant
+  a dozen 8 KB reports appeared, and cost disk, twice each. `apply_event/2`
+  now reduces a `subagent_result` entry to an id and a length before it
+  reaches the stream; `detail_entry/1` skips rendering it, leaving the
+  `tool_result` — the one with the runtime footer — as the single copy in
+  the log. The message pane's compact "subagent" line shows the length
+  instead of re-summarizing a report that entry no longer carries. The
+  Coordinator is unaffected: it reads the boundary event straight off
+  `Loop`'s tee, not off `details_stream`, so the agent panel still gets the
+  worker's full result.
+
 - **A worker's `finish` deliverable reaches its parent, instead of being
   replaced by a summary of the prose around it.**
   ([#263](https://github.com/udin-io/ex_athena/issues/263)) Since #251 a
