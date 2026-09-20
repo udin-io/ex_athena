@@ -224,6 +224,28 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
       assert replayed.assigns.stream_events == live.assigns.stream_events
     end
 
+    # A worker's report is already stored once, in full, as the spawn_agent
+    # call's ordinary :tool_result. The :subagent_result boundary event fires
+    # from the same emission site with the same text (issue #264) — storing
+    # it again here doubled every worker's footprint in the session file
+    # (persisted verbatim via session_payload/1). Keep only what the
+    # message-pane one-liner and coordinator-side consumers need to render:
+    # an id and a length, never the report text itself.
+    test "subagent_result sheds its report text before it reaches the stream" do
+      report = String.duplicate("x", 500)
+      result = ChatLive.apply_event(socket(), {:subagent_result, %{id: "sub_a", text: report}})
+
+      assert [detail] = result.assigns.details_stream
+      assert detail.type == :subagent_result
+      assert detail.payload == %{id: "sub_a", len: 500}
+    end
+
+    test "subagent_result with no text at all still yields a zero length" do
+      result = ChatLive.apply_event(socket(), {:subagent_result, %{id: "sub_a"}})
+
+      assert [%{payload: %{id: "sub_a", len: 0}}] = result.assigns.details_stream
+    end
+
     test "an unknown event is ignored rather than crashing the view" do
       result = ChatLive.apply_event(socket(), {:something_new, %{}})
       assert result.assigns.details_stream == []

@@ -2341,7 +2341,7 @@ defmodule ExAthena.Web.Live.ChatLive do
         <%= if @result do %>
           <span class="tool-result-inline">
             <span class="tool-arrow">←</span>
-            <span class="tool-result-content">{summarize(Map.get(@result.payload, :text, ""))}</span>
+            <span class="tool-result-content">{Map.get(@result.payload, :len, 0)} chars</span>
           </span>
         <% end %>
       </button>
@@ -2549,16 +2549,13 @@ defmodule ExAthena.Web.Live.ChatLive do
     """
   end
 
-  defp detail_entry(%{entry: %{type: :subagent_result} = e} = assigns) do
-    assigns = assign(assigns, :e, e)
-
-    ~H"""
-    <div class="detail-entry detail-entry--subagent" id={"detail-#{@e.id}"}>
-      <div class="detail-label">subagent result · {inspect(Map.get(@e.payload, :id))}</div>
-      <pre class="detail-pre">{Map.get(@e.payload, :text, "")}</pre>
-    </div>
-    """
-  end
+  # The spawn_agent call this boundary event pairs with already rendered its
+  # report in full, above, as an ordinary :tool_result — with the runtime
+  # footer (worker id, quota remaining) this event never carries. Drawing
+  # both showed every worker's report twice, back to back, in the Activity
+  # log (issue #264). apply_event/2 already reduced this entry's payload to
+  # an id and a length, so there is nothing left here worth a second block.
+  defp detail_entry(%{entry: %{type: :subagent_result}} = assigns), do: ~H""
 
   defp detail_entry(%{entry: %{type: :structured_retry} = e} = assigns) do
     assigns = assign(assigns, :e, e)
@@ -2966,7 +2963,13 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   def apply_event(socket, {:subagent_result, data}) do
-    detail = new_detail(:subagent_result, socket.assigns.pending_assistant_msg_id, data)
+    detail =
+      new_detail(
+        :subagent_result,
+        socket.assigns.pending_assistant_msg_id,
+        subagent_result_payload(data)
+      )
+
     update(socket, :details_stream, &[detail | &1])
   end
 
@@ -3485,6 +3488,17 @@ defmodule ExAthena.Web.Live.ChatLive do
       message_id: message_id,
       payload: payload
     }
+  end
+
+  # The boundary event's :text is a worker's full report, already rendered
+  # once as the spawn_agent call's ordinary :tool_result (which also carries
+  # the runtime footer — worker id, quota remaining — that this event never
+  # has). Storing the same report a second time here doubled every worker's
+  # footprint in the session file, since details_stream is persisted verbatim
+  # by session_payload/1 (issue #264). Keep only what a reader still needs
+  # from this event: the id message_items/2 pairs it by, and a length.
+  defp subagent_result_payload(%{id: id} = data) do
+    %{id: id, len: data |> Map.get(:text, "") |> to_string() |> byte_size()}
   end
 
   # Stream is stored newest-first. If the head matches the same type and
