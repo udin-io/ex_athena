@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Getting the file out of the browser — issue 269</title>
+<style>
+:root{
+  --bg:#f7f7f5; --panel:#fff; --ink:#1c1c1a; --muted:#6b6b66; --line:#d8d8d2;
+  --bad:#a32b2b; --bad-bg:#fbeeee;
+  --good:#1f6b3a; --good-bg:#edf6f0;
+  --accent:#2a4c86; --accent-bg:#eef2f9;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+.wrap{max-width:1400px;margin:0 auto;padding:40px 24px 80px}
+h1{font-size:26px;line-height:1.25;margin:0 0 12px;letter-spacing:-.01em}
+.sub{color:var(--muted);max-width:62ch;margin:0 0 28px}
+h2{font-size:17px;margin:44px 0 12px;letter-spacing:-.01em}
+h2:first-of-type{margin-top:0}
+h3{font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--muted);margin:22px 0 8px;font-weight:600}
+p{margin:0 0 12px;max-width:62ch}
+ul{margin:0 0 12px;padding-left:20px;max-width:62ch}
+li{margin:0 0 6px}
+code{font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+  background:#efefea;padding:1px 5px;border-radius:3px}
+
+.cols{display:grid;grid-template-columns:minmax(0,1fr) 560px;gap:32px;align-items:start}
+.diagram-col{position:sticky;top:24px}
+@media (max-width:1100px){
+  .cols{grid-template-columns:minmax(0,1fr)}
+  .diagram-col{position:static}
+}
+
+.plain{background:var(--accent-bg);border:1px solid #c9d5ea;border-radius:8px;
+  padding:18px 20px;margin:0 0 28px;max-width:74ch}
+.plain h3{margin-top:0;color:var(--accent)}
+.plain p{max-width:none;margin-bottom:0}
+
+.note{border-left:3px solid var(--accent);background:var(--accent-bg);
+  padding:12px 16px;margin:0 0 14px;border-radius:0 6px 6px 0;max-width:62ch}
+.note.warn{border-color:var(--bad);background:var(--bad-bg)}
+.note.ok{border-color:var(--good);background:var(--good-bg)}
+.note p:last-child{margin-bottom:0}
+
+.tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;
+  border-radius:10px;vertical-align:1px}
+.t-bad{background:var(--bad-bg);color:var(--bad)}
+.t-good{background:var(--good-bg);color:var(--good)}
+.t-acc{background:var(--accent-bg);color:var(--accent)}
+
+table{border-collapse:collapse;width:100%;font-size:14px;margin:0 0 12px}
+th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.06em;
+  color:var(--muted);font-weight:600;padding:0 12px 7px 0;
+  border-bottom:1px solid var(--line)}
+td{padding:9px 12px 9px 0;border-bottom:1px solid var(--line);vertical-align:top}
+
+.dia{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+  overflow:hidden}
+.dia-bar{display:flex;align-items:center;gap:6px;padding:8px 10px;
+  border-bottom:1px solid var(--line);background:#fcfcfa}
+.dia-bar .title{font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--muted);font-weight:600;margin-right:auto}
+.dia-bar button{font:inherit;font-size:12px;line-height:1;padding:5px 9px;
+  border:1px solid var(--line);background:#fff;border-radius:5px;cursor:pointer;
+  color:var(--ink)}
+.dia-bar button:hover{background:#f0f0ec}
+.dia-bar button.on{background:var(--accent-bg);border-color:#c9d5ea;color:var(--accent);font-weight:600}
+.viewport{height:58vh;min-height:380px;overflow:hidden;cursor:grab;
+  background:#fdfdfb;position:relative}
+.viewport.grabbing{cursor:grabbing}
+.stage{transform-origin:0 0;will-change:transform}
+.hint{position:absolute;right:10px;bottom:8px;font-size:11px;color:var(--muted);
+  background:#fdfdfbcc;padding:2px 7px;border-radius:4px;pointer-events:none}
+
+.index{padding:10px 12px;border-top:1px solid var(--line);background:#fcfcfa}
+.index h3{margin:0 0 7px}
+.index button{display:block;width:100%;text-align:left;font:inherit;font-size:13px;
+  padding:5px 8px;border:0;background:none;border-radius:5px;cursor:pointer;
+  color:var(--ink)}
+.index button:hover{background:#efefea}
+.index button.on{background:var(--accent-bg);color:var(--accent);font-weight:600}
+g.node.lit rect,g.node.lit polygon{stroke:#2a4c86!important;stroke-width:3px!important}
+
+.legend{display:flex;flex-wrap:wrap;gap:14px;font-size:12.5px;color:var(--muted);
+  padding:10px 12px;border-top:1px solid var(--line)}
+.legend span{display:flex;align-items:center;gap:6px}
+.sw{width:11px;height:11px;border-radius:3px;display:inline-block}
+
+pre:not(.mermaid){background:#1c1c1a;color:#e8e8e2;padding:14px 16px;border-radius:8px;
+  overflow:auto;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace}
+pre.mermaid{background:var(--panel);color:var(--ink);margin:0;padding:12px}
+details{margin:0 0 12px}
+summary{cursor:pointer;font-size:13px;color:var(--muted)}
+
+/* ── UI mock: approximates priv/web/static/app.css (dark theme tokens) ───── */
+.mockwrap{margin-top:52px}
+.mock{--m-bg:#0e0e12;--m-border:#22223a;--m-text:#dde1f0;--m-muted:#5a6080;
+  --m-accent:#34d399;--m-accent-dim:#1a4a3a;--m-user:#60a5fa;
+  --m-err:#f87171;--m-err-bg:#2a1414;
+  --m-mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  background:var(--m-bg);color:var(--m-text);border:1px solid var(--m-border);
+  border-radius:8px;padding:0;overflow:hidden}
+.mock-grid{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:0}
+@media (max-width:900px){.mock-grid{grid-template-columns:minmax(0,1fr)}}
+.mock-pane{padding:14px 16px;min-width:0}
+.mock-pane+.mock-pane{border-left:1px solid var(--m-border)}
+@media (max-width:900px){.mock-pane+.mock-pane{border-left:0;border-top:1px solid var(--m-border)}}
+.mock-label{font:600 10px/1 var(--m-mono);letter-spacing:.09em;text-transform:uppercase;
+  color:var(--m-muted);margin:0 0 10px}
+.msg-role{font:600 11px/1 var(--m-mono);color:var(--m-accent);margin:0 0 8px}
+.msg-body{font:13px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  color:var(--m-text);margin:0 0 14px;max-width:none}
+.path-link{color:var(--m-user);text-decoration:none;border-bottom:1px dotted var(--m-user);
+  font-family:var(--m-mono);font-size:12px;cursor:pointer}
+.path-dl{color:var(--m-muted);text-decoration:none;font-size:11px;padding-left:3px}
+.path-dl:hover{color:var(--m-accent)}
+.plainpath{font-family:var(--m-mono);font-size:12px;color:var(--m-text)}
+.files-toolbar{display:flex;align-items:center;gap:6px;padding:6px 10px;
+  border:1px solid var(--m-border);border-bottom:0;background:rgba(0,0,0,.25)}
+.files-path{flex:1 1 auto;font:11px/1 var(--m-mono);color:var(--m-muted);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.files-path--selected{color:var(--m-accent)}
+.files-nav-btn{background:transparent;border:1px solid var(--m-border);border-radius:6px;
+  color:var(--m-muted);font:12px/1 var(--m-mono);padding:3px 7px;cursor:pointer}
+.files-nav-btn:hover{color:var(--m-accent);border-color:var(--m-accent)}
+.files-nav-btn.on{color:var(--m-accent);border-color:var(--m-accent);background:var(--m-accent-dim)}
+.file-content{border:1px solid var(--m-border);background:rgba(0,0,0,.18);margin:0;
+  padding:10px 12px;font:11.5px/1.5 var(--m-mono);color:var(--m-text);
+  max-height:150px;overflow:auto;border-radius:0}
+.files-preview{border:1px solid var(--m-border);background:#fff;height:170px;width:100%;
+  display:block}
+.files-notice{padding:6px 2px;color:var(--m-muted);font:italic 11px/1.5 var(--m-mono)}
+.files-error{padding:8px 12px;border:1px solid var(--m-border);border-left:2px solid var(--m-err);
+  border-radius:6px;background:var(--m-err-bg);color:var(--m-err);font:12px/1.5 var(--m-mono)}
+.mock-cap{color:var(--muted);font-size:12.5px;margin:8px 0 0;max-width:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Getting the file out of the browser</h1>
+
+<p class="sub">A run ends by naming a file it wants reviewed &mdash; a brief, a
+report, a mock. The web UI prints that path as text, renders HTML as source in
+a <code>&lt;pre&gt;</code>, and serves no bytes, so approving a mock means
+opening a shell on the host. This page is the gate for issue 269. Approving it
+settles where the root comes from, what the preview may do, and when a path
+becomes a link.</p>
+
+<div class="plain">
+<h3>In plain words</h3>
+<p>When the assistant names a file that really exists in the folder you opened,
+the name becomes clickable: one click shows it, another saves it, and a web
+page shows as a page instead of as code. Anything that only looks like a file
+name, or sits outside that folder, stays ordinary text. The page is written by
+the model, so it is shown in a locked box that cannot reach your session.</p>
+</div>
+
+<div class="cols">
+<div class="prose">
+
+<h2>1. What is missing</h2>
+
+<table>
+<tr><th>Where</th><th>Today</th><th>Result</th></tr>
+<tr><td><code>chat_live.ex:2098</code></td><td>content in a <code>&lt;pre&gt;</code></td>
+  <td><span class="tag t-bad">mock reads as source</span></td></tr>
+<tr><td><code>files_panel/1</code></td><td>binary &rarr; placeholder</td>
+  <td><span class="tag t-bad">no bytes, ever</span></td></tr>
+<tr><td><code>web/router.ex</code></td><td>two <code>live</code> routes</td>
+  <td><span class="tag t-bad">nothing serves a file</span></td></tr>
+<tr><td><code>web/markdown.ex</code></td><td>escapes text leaves</td>
+  <td><span class="tag t-acc">paths stay text</span></td></tr>
+<tr><td><code>web/files.ex</code></td><td><code>resolve/2</code> private</td>
+  <td><span class="tag t-good">the resolver to reuse</span></td></tr>
+</table>
+
+<h2>2. What this ticket adds</h2>
+
+<ul>
+<li><code>Web.FileController.download/2</code> and <code>preview/2</code>, in the
+  <code>:browser</code> pipeline so <code>ExAthena.Web.Auth</code> gates both.
+  Download sends <code>attachment</code> for any file, binary included.</li>
+<li><code>Web.FileLinks</code> &mdash; the root travels as a
+  <code>Phoenix.Token</code>, signed with the endpoint secret, minted only
+  inside the authenticated LiveView. A client-supplied root would make the
+  confinement check meaningless.</li>
+<li><code>Web.Files.resolve/2</code> goes public and every request goes through
+  it. It already calls <code>ToolContext.within_roots?/2</code>. No second path
+  check is written.</li>
+<li><code>Web.PathLinks.linkify/2</code>, threaded into
+  <code>Markdown.render/2</code> at its text and inline-code leaves.</li>
+</ul>
+
+<div class="note warn">
+<p><strong>The previewed HTML is model-authored.</strong> The response carries
+<code>Content-Security-Policy: sandbox allow-scripts</code>; the iframe carries
+<code>sandbox="allow-scripts"</code> and no <code>allow-same-origin</code>. The
+document lands in an opaque origin: no cookies, no <code>localStorage</code>, no
+parent DOM, no forms, no top-level navigation. <code>allow-scripts</code> keeps
+a mock with tabs working, and is only dangerous paired with the token that is
+absent. Preview also sends <code>nosniff</code>, <code>no-referrer</code> and
+<code>no-store</code>, and serves <code>.html</code> and <code>.htm</code>
+only.</p>
+</div>
+
+<div class="note ok">
+<p><strong>Three tests make a link</strong>: the conservative shape,
+<code>File.regular?/1</code>, and <code>resolve/2</code> landing inside the
+root. Failing any one renders plain text.
+<code>Fudu.Accounts.TenantClaim</code> fails the shape on extension length, and
+existence too.</p>
+</div>
+
+<h2>3. Not in scope</h2>
+<ul>
+<li>Directory download, archives, upload.</li>
+<li>The viewer's 2&nbsp;MB read cap.</li>
+<li>Previewing Markdown, SVG or images &mdash; they download.</li>
+</ul>
+
+<details><summary>Definitions</summary>
+<table>
+<tr><th>Term</th><th>Here it means</th></tr>
+<tr><td>root</td><td>The session <code>cwd</code>. The only directory either
+  route serves from.</td></tr>
+<tr><td>opaque origin</td><td>What a sandboxed document gets instead of the
+  server's origin. Same-origin checks against the app fail.</td></tr>
+<tr><td>conservative shape</td><td>Contains <code>/</code>, or is a dotted name
+  with a 1&ndash;8 character alphanumeric extension.</td></tr>
+</table>
+</details>
+
+<details><summary>Mermaid source &mdash; modules</summary>
+<pre id="src-mod">flowchart TD
+  MD["report text through Web.Markdown.render/2&lt;br/&gt;((CHANGED)) takes :links opts"]
+  PL["Web.PathLinks.linkify/2&lt;br/&gt;((NEW)) shape, File.regular?, inside the root&lt;br/&gt;else plain text"]
+  TOK["Web.FileLinks&lt;br/&gt;((NEW)) Phoenix.Token signs the root&lt;br/&gt;the client never supplies it"]
+  CL["ChatLive&lt;br/&gt;((CHANGED)) path links, download,&lt;br/&gt;sandboxed preview iframe"]
+  PRE["&amp;lt;pre&amp;gt; viewer&lt;br/&gt;HTML reads as source"]
+  GAP["no route serves bytes&lt;br/&gt;((REMOVED BY THIS TICKET))"]
+  RT["Router :browser pipeline&lt;br/&gt;ExAthena.Web.Auth gates both routes"]
+  FC["Web.FileController ((NEW))&lt;br/&gt;download/2 attachment&lt;br/&gt;preview/2 CSP sandbox allow-scripts"]
+  WF["Web.Files.resolve/2 ((NOW PUBLIC))&lt;br/&gt;ToolContext.within_roots?/2&lt;br/&gt;canonicalises every symlink"]
+  FS[("files under the session cwd")]
+
+  MD --&gt; PL
+  PL -- "one url per surviving path" --&gt; TOK
+  PL --&gt; CL
+  TOK --&gt; CL
+  CL -.-&gt; PRE
+  CL -.-&gt; GAP
+  CL -- "browser GET, href or iframe src" --&gt; RT
+  RT --&gt; FC
+  FC -- "verify signed root" --&gt; TOK
+  FC --&gt; WF
+  WF --&gt; FS
+  classDef bad fill:#fbeeee,stroke:#a32b2b,stroke-width:2px,color:#1c1c1a
+  classDef del fill:#fff,stroke:#a32b2b,stroke-width:1px,stroke-dasharray:5 4,color:#a32b2b
+  classDef good fill:#edf6f0,stroke:#1f6b3a,stroke-width:2px,color:#1c1c1a
+  classDef ok fill:#fff,stroke:#c9c9c2,stroke-width:1px,color:#1c1c1a
+  class PRE bad
+  class GAP del
+  class MD,PL,CL,FC,TOK,WF good
+  class RT,FS ok</pre>
+</details>
+
+<details><summary>Mermaid source &mdash; timing</summary>
+<pre id="src-seq">sequenceDiagram
+  autonumber
+  actor U as User
+  participant LV as ChatLive
+  participant PL as PathLinks
+  participant B as Browser
+  participant R as Router + Web.Auth
+  participant FC as FileController
+  participant WF as Web.Files + ToolContext
+
+  Note over LV: run ends, report names docs/design/x.html
+  LV-&gt;&gt;PL: linkify text with root and signed token
+  PL-&gt;&gt;PL: shape, File.regular?, within_roots?
+  PL--&gt;&gt;LV: a link, or plain text if any test fails
+  LV--&gt;&gt;U: report showing the path as a link
+  U-&gt;&gt;LV: click the path, phx-click files_open
+  LV-&gt;&gt;WF: read_file root, path
+  WF--&gt;&gt;LV: content, size, binary flag
+  LV--&gt;&gt;U: Files tab opens on that file
+  U-&gt;&gt;LV: click Preview, .html only
+  LV--&gt;&gt;B: iframe sandbox allow-scripts, no allow-same-origin
+  B-&gt;&gt;R: GET /files/preview with signed root and path
+  R-&gt;&gt;R: Web.Auth, session token or 403
+  R-&gt;&gt;FC: preview/2
+  FC-&gt;&gt;WF: resolve root, path
+  WF--&gt;&gt;FC: absolute path inside the root, else outside_root
+  FC--&gt;&gt;B: 200 text/html, CSP sandbox allow-scripts
+  Note over B: opaque origin, no cookies, no storage, no parent DOM
+  U-&gt;&gt;B: click Download
+  B-&gt;&gt;R: GET /files/download with signed root and path
+  R-&gt;&gt;FC: download/2
+  FC--&gt;&gt;B: 200 attachment, filename x.html</pre>
+</details>
+
+</div><!-- /prose -->
+
+<div class="diagram-col">
+  <div class="dia">
+    <div class="dia-bar">
+      <span class="title" id="dtitle">Modules</span>
+      <button id="tab-mod" class="on">Modules</button>
+      <button id="tab-seq">Timing</button>
+      <button id="zo">&minus;</button>
+      <button id="zi">+</button>
+      <button id="fit">Fit</button>
+    </div>
+    <div class="viewport" id="vp">
+      <div class="stage" id="stage"><pre class="mermaid" id="m"></pre></div>
+      <div class="hint">drag to pan &middot; scroll to zoom</div>
+    </div>
+    <div class="index" id="idx">
+      <h3>Jump to</h3>
+      <button data-k="MD">1 &middot; A report names a file</button>
+      <button data-k="PL">2 &middot; Three tests, or plain text</button>
+      <button data-k="GAP">3 &middot; Today nothing serves bytes</button>
+      <button data-k="RT">4 &middot; Both routes behind Web.Auth</button>
+      <button data-k="FC">5 &middot; Download, and the sandboxed preview</button>
+      <button data-k="WF">6 &middot; The one resolver, symlinks included</button>
+    </div>
+    <div class="legend" id="lgd">
+      <span><i class="sw" style="background:var(--bad)"></i> wrong for this job today</span>
+      <span><i class="sw" style="background:#fff;border:1px dashed var(--bad)"></i> gap this ticket closes</span>
+      <span><i class="sw" style="background:var(--good)"></i> added or changed</span>
+      <span><i class="sw" style="background:#fff;border:1px solid var(--line)"></i> unchanged</span>
+    </div>
+  </div>
+</div>
+
+</div><!-- /cols -->
+
+<div class="mockwrap">
+<h2>4. UI mock</h2>
+<p>Real content from this repo. Desktop only &mdash; the Files pane is a fixed
+right pane that already stacks below 900&nbsp;px.</p>
+
+<div class="mock">
+<div class="mock-grid">
+
+  <div class="mock-pane">
+    <p class="mock-label">Chat &mdash; auto-linked paths</p>
+    <div class="msg-role">assistant</div>
+    <div class="msg-body">
+      The brief is at
+      <a class="path-link">docs/design/issue-237-handback-window.html</a><a class="path-dl" title="Download">&#8595;</a>,
+      and the counter lives in
+      <a class="path-link">lib/ex_athena/modes/re_act.ex</a><a class="path-dl" title="Download">&#8595;</a>.
+      Nothing changed in <span class="plainpath">ExAthena.Loop.Terminations</span>.
+    </div>
+    <div class="msg-body">
+      I also wrote <span class="plainpath">tmp/summary-269.html</span> and
+      <span class="plainpath">/etc/hosts</span>.
+    </div>
+    <p class="mock-cap">Linked: exists, inside the root. Plain text: a module
+    name, a file that does not exist, a real file outside the root.</p>
+
+    <p class="mock-label" style="margin-top:22px">Binary file</p>
+    <div class="files-toolbar">
+      <span class="files-path files-path--selected">priv/web/static/exathena-logo.png</span>
+      <button class="files-nav-btn">&#8595; download</button>
+    </div>
+    <div class="files-notice" style="border:1px solid var(--m-border);border-top:0;padding-left:12px">binary file &mdash; content not shown</div>
+
+    <p class="mock-label" style="margin-top:22px">Outside the root</p>
+    <div class="files-error">That path is outside the open folder.</div>
+  </div>
+
+  <div class="mock-pane">
+    <p class="mock-label">Files tab &mdash; source</p>
+    <div class="files-toolbar">
+      <span class="files-path files-path--selected">docs/design/issue-237-handback-window.html</span>
+      <span class="files-path" style="flex:0 0 auto">18.4 KB</span>
+      <button class="files-nav-btn">preview</button>
+      <button class="files-nav-btn">&#8595;</button>
+      <button class="files-nav-btn">&times;</button>
+    </div>
+    <pre class="file-content">&lt;!doctype html&gt;
+&lt;html lang="en"&gt;
+&lt;head&gt;
+&lt;meta charset="utf-8"&gt;
+&lt;title&gt;The handback window &mdash; issue 237&lt;/title&gt;
+&lt;style&gt;
+:root{--bg:#f7f7f5;--panel:#fff;--ink:#1c1c1a}</pre>
+
+    <p class="mock-label" style="margin-top:22px">Files tab &mdash; preview on</p>
+    <div class="files-toolbar">
+      <span class="files-path files-path--selected">docs/design/issue-237-handback-window.html</span>
+      <span class="files-path" style="flex:0 0 auto">18.4 KB</span>
+      <button class="files-nav-btn on">preview</button>
+      <button class="files-nav-btn">&#8595;</button>
+      <button class="files-nav-btn">&times;</button>
+    </div>
+    <iframe class="files-preview" sandbox="allow-scripts" title="sandboxed preview"
+      srcdoc="&lt;body style='margin:0;font:13px/1.5 -apple-system,sans-serif;color:#1c1c1a;background:#f7f7f5;padding:14px'&gt;&lt;h1 style='font-size:17px;margin:0 0 8px'&gt;The handback window&lt;/h1&gt;&lt;p style='color:#6b6b66;margin:0 0 10px;font-size:12px'&gt;A worker that ran out of wall-clock time was brutal-killed, so its Result died with the process.&lt;/p&gt;&lt;div style='background:#fff;border:1px solid #d8d8d2;border-radius:6px;padding:10px;font-size:12px'&gt;83% of credited working time &amp;rarr; one handback turn, no tool schemas.&lt;/div&gt;&lt;/body&gt;"></iframe>
+    <div class="files-notice">sandboxed preview &mdash; opaque origin, no access to this session</div>
+    <p class="mock-cap">The iframe above is live and really carries
+    <code>sandbox="allow-scripts"</code>.</p>
+  </div>
+
+</div>
+</div>
+</div>
+
+</div><!-- /wrap -->
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<script>
+const SRC={mod:document.getElementById('src-mod').textContent,
+           seq:document.getElementById('src-seq').textContent};
+const m=document.getElementById('m');
+mermaid.initialize({startOnLoad:false, theme:'neutral', securityLevel:'loose'});
+
+const vp=document.getElementById('vp'), stage=document.getElementById('stage');
+let s=1,x=0,y=0,drag=false,px=0,py=0;
+const apply=()=>stage.style.transform=`translate(${x}px,${y}px) scale(${s})`;
+
+vp.addEventListener('wheel',e=>{
+  e.preventDefault();
+  const r=vp.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top;
+  const ns=Math.min(4,Math.max(.2,s*(e.deltaY<0?1.12:1/1.12)));
+  x=mx-(mx-x)*(ns/s); y=my-(my-y)*(ns/s); s=ns; apply();
+},{passive:false});
+
+vp.addEventListener('mousedown',e=>{drag=true;px=e.clientX;py=e.clientY;vp.classList.add('grabbing')});
+addEventListener('mousemove',e=>{if(!drag)return;x+=e.clientX-px;y+=e.clientY-py;px=e.clientX;py=e.clientY;apply()});
+addEventListener('mouseup',()=>{drag=false;vp.classList.remove('grabbing')});
+
+// Mermaid ships an svg whose CSS size is smaller than its own user units, so
+// scaling straight off getBBox() shrinks the diagram twice. Pin width/height/
+// viewBox to the bbox first: one user unit is then one CSS pixel.
+function fit(){
+  const svg=stage.querySelector('svg'); if(!svg)return;
+  const b=svg.getBBox(); if(!b.width||!b.height)return;
+  svg.setAttribute('viewBox',b.x+' '+b.y+' '+b.width+' '+b.height);
+  svg.setAttribute('width',b.width); svg.setAttribute('height',b.height);
+  svg.style.maxWidth='none';
+  const r=vp.getBoundingClientRect();
+  s=Math.min((r.width-32)/b.width,(r.height-32)/b.height);
+  x=(r.width-b.width*s)/2; y=(r.height-b.height*s)/2; apply();
+}
+document.getElementById('fit').onclick=fit;
+document.getElementById('zi').onclick=()=>{s=Math.min(4,s*1.25);apply()};
+document.getElementById('zo').onclick=()=>{s=Math.max(.2,s/1.25);apply()};
+
+async function draw(kind){
+  m.removeAttribute('data-processed');
+  m.innerHTML='';
+  const {svg}=await mermaid.render('g'+kind+Date.now(), SRC[kind]);
+  m.innerHTML=svg;
+  document.getElementById('dtitle').textContent = kind==='mod' ? 'Modules' : 'Timing';
+  document.getElementById('idx').style.display = kind==='mod' ? '' : 'none';
+  document.getElementById('lgd').style.display = kind==='mod' ? '' : 'none';
+  s=1;x=0;y=0;apply();
+  requestAnimationFrame(fit);
+  setTimeout(fit,250);
+  setTimeout(fit,800);
+}
+document.getElementById('tab-mod').onclick=e=>{
+  document.getElementById('tab-seq').classList.remove('on');
+  e.target.classList.add('on'); draw('mod');
+};
+document.getElementById('tab-seq').onclick=e=>{
+  document.getElementById('tab-mod').classList.remove('on');
+  e.target.classList.add('on'); draw('seq');
+};
+
+document.querySelectorAll('.index button').forEach(b=>{
+  b.onclick=()=>{
+    document.querySelectorAll('.index button').forEach(o=>o.classList.remove('on'));
+    document.querySelectorAll('g.node').forEach(n=>n.classList.remove('lit'));
+    b.classList.add('on');
+    const n=[...document.querySelectorAll('g.node')]
+      .find(n=>(n.id||'').includes('-'+b.dataset.k+'-'));
+    if(!n)return;
+    n.classList.add('lit');
+    const bb=n.getBBox(), r=vp.getBoundingClientRect();
+    x=r.width/2-(bb.x+bb.width/2)*s; y=r.height/2-(bb.y+bb.height/2)*s; apply();
+  };
+});
+draw('mod');
+</script>
+</body>
+</html>
