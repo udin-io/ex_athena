@@ -10,6 +10,7 @@ defmodule ExAthena.Web.Live.ChatLiveFilesUITest do
   import Phoenix.ConnTest
 
   alias ExAthena.Web.Endpoint
+  alias ExAthena.Web.Sessions
   @endpoint Endpoint
 
   @moduletag :tmp_dir
@@ -123,5 +124,112 @@ defmodule ExAthena.Web.Live.ChatLiveFilesUITest do
     # …then close it.
     view |> element("button.files-view-close") |> render_click()
     refute has_element?(view, ".files-view")
+  end
+
+  # ── Download, preview and auto-linked paths (issue #269) ─────────────────
+
+  describe "getting the bytes out of the browser" do
+    test "opening a file offers a download link for it", %{conn: conn, root: root} do
+      {:ok, view, _html} = live(conn, "/")
+      view = open_folder(view, root)
+      view |> element("button[phx-value-tab=\"files\"]") |> render_click()
+      view |> element("button.files-tree-file") |> render_click()
+
+      assert has_element?(view, ~s(a.files-view-download[href^="/files/download?"]))
+    end
+
+    test "an HTML file previews in an iframe that cannot reach this origin", %{
+      conn: conn,
+      root: root
+    } do
+      File.write!(Path.join(root, "mock.html"), "<h1>a mock</h1>")
+
+      {:ok, view, _html} = live(conn, "/")
+      view = open_folder(view, root)
+      view |> element("button[phx-value-tab=\"files\"]") |> render_click()
+      view |> element("button.files-tree-file", "mock.html") |> render_click()
+
+      # Source first; the preview is opt-in.
+      assert has_element?(view, "pre.files-view-content")
+      refute has_element?(view, "iframe.files-preview")
+
+      html = view |> element("button.files-view-preview") |> render_click()
+
+      assert has_element?(view, ~s(iframe.files-preview[src^="/files/preview?"]))
+      assert has_element?(view, ~s(iframe.files-preview[sandbox="allow-scripts"]))
+      # The whole point: scripts may run, but never on this app's origin.
+      refute html =~ "allow-same-origin"
+      refute has_element?(view, "pre.files-view-content")
+    end
+
+    test "a file that is not HTML offers no preview", %{conn: conn, root: root} do
+      {:ok, view, _html} = live(conn, "/")
+      view = open_folder(view, root)
+      view |> element("button[phx-value-tab=\"files\"]") |> render_click()
+      view |> element("button.files-tree-file", "a.txt") |> render_click()
+
+      assert has_element?(view, ".files-view")
+      refute has_element?(view, "button.files-view-preview")
+    end
+
+    test "a binary file can still be downloaded", %{conn: conn, root: root} do
+      File.write!(Path.join(root, "logo.png"), <<0x89, ?P, ?N, ?G, 0, 1, 2>>)
+
+      {:ok, view, _html} = live(conn, "/")
+      view = open_folder(view, root)
+      view |> element("button[phx-value-tab=\"files\"]") |> render_click()
+      view |> element("button.files-tree-file", "logo.png") |> render_click()
+
+      assert has_element?(view, ".files-notice", "binary file")
+      assert has_element?(view, ~s(a.files-view-download[href^="/files/download?"]))
+    end
+
+    test "a path an assistant message names is a link, an invented one is not", %{
+      conn: conn,
+      root: root
+    } do
+      id = "issue269-#{System.unique_integer([:positive])}"
+      on_exit(fn -> Sessions.delete(id) end)
+
+      Sessions.save(%{
+        id: id,
+        title: "paths",
+        cwd: root,
+        provider: "anthropic",
+        model: "claude",
+        mode: "react",
+        created_at: DateTime.utc_now(),
+        updated_at: DateTime.utc_now(),
+        display_messages: [
+          %{
+            id: "m1",
+            role: :assistant,
+            text: "Wrote a.txt, but not tmp/invented.html.",
+            tool_events: [],
+            status: nil
+          }
+        ],
+        ex_messages: [],
+        provider_session_id: nil,
+        tool_uis: %{},
+        details_stream: [],
+        orchestrator: nil
+      })
+
+      Sessions.touch_recent(root)
+
+      {:ok, view, _html} = live(conn, "/")
+      view |> element(~s(button.recent-open[phx-value-cwd="#{root}"])) |> render_click()
+      view |> element(~s(button.session-load[phx-value-id="#{id}"])) |> render_click()
+
+      assert has_element?(
+               view,
+               ~s(a.path-link[phx-value-path="#{Path.join(root, "a.txt")}"])
+             )
+
+      html = render(view)
+      assert html =~ "tmp/invented.html"
+      refute html =~ ~s(>tmp/invented.html</a>)
+    end
   end
 end
