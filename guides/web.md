@@ -47,6 +47,16 @@ banner prints a tokened URL (`http://…/?token=…`); open it once per browser 
 the token is then stored in the session cookie, and every page load and
 websocket mount without it is rejected.
 
+The file routes behind the Files tab (`/files/download`, `/files/preview`) sit
+in the same pipeline, so the same token gates them. They serve only the folder
+opened in the session: the root travels as a signed token minted by the
+LiveView, and each path is resolved through the guard that canonicalizes
+symlinks, so `..`, an absolute path elsewhere and a symlink pointing out of
+the folder are all refused. A previewed page is served under
+`Content-Security-Policy: sandbox allow-scripts` and framed with
+`sandbox="allow-scripts"` and no `allow-same-origin` — the HTML was written by
+a model, so it renders in an opaque origin with no access to your session.
+
 ## Layout
 
 ```
@@ -213,7 +223,8 @@ session is untouched.
 | **Bash output** | Bash tool calls show exit code, runtime, and stdout in a collapsible block. |
 | **Markdown** | Completed responses render headings, fenced code blocks (with language label), inline code, bold/italic, lists, links, and horizontal rules — no CDN needed. |
 | **Git panel** | The ± button opens a live `git diff HEAD` panel, refreshed after each tool result. |
-| **Files panel** | The **Files** tab in the right pane browses the open folder (artifact dirs like `deps/` and `node_modules/` hidden). Click a file to view it inline — binary files are flagged, and files over 2 MB are truncated with a notice. |
+| **Files panel** | The **Files** tab in the right pane browses the open folder (artifact dirs like `deps/` and `node_modules/` hidden). Click a file to view it inline — binary files are flagged, and files over 2 MB are truncated with a notice. Every open file has a **↓** download link, and `.html` files add a **preview** toggle that renders the page in a sandboxed iframe. |
+| **File links** | A path a response names becomes a link when that file really exists inside the open folder — one click opens it in the Files tab, the **↓** beside it downloads it. Anything that only looks like a path (`Fudu.Accounts.TenantClaim`, a file that was never written, a path outside the folder) stays plain text. |
 | **Fork** | Snapshot any assistant message and branch the conversation from that point. |
 | **Session recall** | Reload any past session; the full conversation and tool-call details restore instantly. |
 
