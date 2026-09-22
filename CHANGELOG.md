@@ -9,6 +9,53 @@ ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **The files a run asks you to review can now be opened and downloaded from
+  the browser.**
+  ([#269](https://github.com/udin-io/ex_athena/issues/269)) A run ends by
+  naming what it wrote — `docs/design/issue-237-handback-window.html`, a
+  report, a mock — and the web UI printed that path as text. The Files tab
+  could show the contents in a `<pre>`, which turns an HTML mock into source,
+  said "binary file — content not shown" for anything else, and served no bytes
+  at all: the only routes were `live "/"` and `live "/c/:session_id"`.
+  Approving a mock meant opening a shell on the host, and session
+  `519da3192124` and the four before it each ended at an approval gate naming a
+  file the user could not see. Three things change. `GET /files/download`
+  sends any file under the session's working directory as an attachment,
+  binaries included. `GET /files/preview` renders `.html` and `.htm` as a page
+  inside a sandboxed iframe. And a path a report names is now a link: one click
+  opens it in the Files tab, a second saves it. Both routes sit in the
+  `:browser` pipeline, so `ExAthena.Web.Auth` gates them exactly as it gates
+  the chat — which matters, because the app binds `0.0.0.0` under
+  `mix athena.web --host`. Brief: `docs/design/issue-269-file-links.html`.
+
+- **A previewed page runs in an opaque origin, never on the app's own.**
+  ([#269](https://github.com/udin-io/ex_athena/issues/269)) The HTML a preview
+  renders was written by a model, so showing it on the app's origin would hand
+  model-authored script the user's session cookie, the chat's DOM and every
+  LiveView event. The preview response carries
+  `Content-Security-Policy: sandbox allow-scripts` and the iframe carries
+  `sandbox="allow-scripts"`; neither grants `allow-same-origin`, and a test
+  asserts it appears on no header of the response. Scripts run — a brief that
+  draws its own diagrams is the point — but with no cookies, no
+  `localStorage`, no access to the parent document, no form submission and no
+  top-level navigation. The response also sends `nosniff`,
+  `Referrer-Policy: no-referrer` and `Cache-Control: no-store`.
+
+- **A path only becomes a link when it is really a file inside the open
+  folder.**
+  ([#269](https://github.com/udin-io/ex_athena/issues/269)) Reports are dense
+  with dotted identifiers that look like filenames — `Fudu.Accounts.TenantClaim`,
+  `ExAthena.Loop.Terminations` — so a matcher that guessed would litter every
+  paragraph with false links. `ExAthena.Web.PathLinks` requires three things of
+  each whitespace-separated token, and escapes it as ordinary text if any one
+  fails: a shape (it contains a `/`, or is a dotted name whose extension is 1–8
+  alphanumeric characters), `File.regular?/1`, and
+  `ExAthena.Web.Files.resolve/2` landing it inside the open root. A path that
+  was never written, a directory, an absolute path elsewhere and a symlink
+  pointing out of the root all stay text. Wrapping brackets and trailing
+  punctuation are peeled off first, so "wrote `docs/brief.html`, then stopped"
+  links the path and not the comma.
+
 - **A worker's budget now ends with a handback turn instead of a kill.**
   ([#237](https://github.com/udin-io/ex_athena/issues/237)) A worker that ran
   out of wall-clock time was brutal-killed by `SpawnAgent.await_worker/3`, so

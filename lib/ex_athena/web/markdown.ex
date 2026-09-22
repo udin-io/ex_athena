@@ -8,6 +8,7 @@ defmodule ExAthena.Web.Markdown do
   and same-origin relative destinations.
   """
 
+  alias ExAthena.Web.PathLinks
   alias Phoenix.HTML.Safe
 
   # Link captures stop at any new link delimiter. Allowing either capture to
@@ -33,20 +34,22 @@ defmodule ExAthena.Web.Markdown do
   through level three, ordered and unordered lists, horizontal rules, fenced
   and inline code, emphasis, and links.
   """
-  @spec render(String.t() | nil) :: Phoenix.HTML.safe()
-  def render(nil), do: {:safe, []}
+  @spec render(String.t() | nil, keyword()) :: Phoenix.HTML.safe()
+  def render(markdown, opts \\ [])
 
-  def render(markdown) when is_binary(markdown) do
+  def render(nil, _opts), do: {:safe, []}
+
+  def render(markdown, opts) when is_binary(markdown) do
     state =
       markdown
       |> String.split("\n")
-      |> Enum.reduce(initial_state(), &render_line/2)
+      |> Enum.reduce(initial_state(opts[:links]), &render_line/2)
       |> finish()
 
     {:safe, Enum.reverse(state.parts)}
   end
 
-  defp initial_state, do: %{parts: [], list_kind: nil, fence: nil}
+  defp initial_state(links), do: %{parts: [], list_kind: nil, fence: nil, links: links}
 
   defp render_line(line, %{fence: nil} = state) do
     case Regex.run(@fence_pattern, line, capture: :all_but_first) do
@@ -84,7 +87,7 @@ defmodule ExAthena.Web.Markdown do
           " class=\"md-h",
           Integer.to_string(level),
           "\">",
-          render_inline(text),
+          render_inline(text, state.links),
           "</h",
           Integer.to_string(level),
           ">"
@@ -95,14 +98,14 @@ defmodule ExAthena.Web.Markdown do
 
         state
         |> open_list(:ul)
-        |> emit(["<li>", render_inline(text), "</li>"])
+        |> emit(["<li>", render_inline(text, state.links), "</li>"])
 
       item = Regex.run(~r/^\d+\. (.+)$/, line, capture: :all_but_first) ->
         [text] = item
 
         state
         |> open_list(:ol)
-        |> emit(["<li>", render_inline(text), "</li>"])
+        |> emit(["<li>", render_inline(text, state.links), "</li>"])
 
       Regex.match?(~r/^---+$/, String.trim(line)) ->
         state
@@ -115,17 +118,17 @@ defmodule ExAthena.Web.Markdown do
         |> emit("<br>")
 
       state.list_kind != nil ->
-        emit(state, ["<li>", render_inline(line), "</li>"])
+        emit(state, ["<li>", render_inline(line, state.links), "</li>"])
 
       true ->
-        emit(state, ["<span>", render_inline(line), "</span><br>"])
+        emit(state, ["<span>", render_inline(line, state.links), "</span><br>"])
     end
   end
 
-  defp render_inline(text, allow_links \\ true) do
+  defp render_inline(text, links, allow_links \\ true) do
     case Regex.run(@inline_pattern, text, return: :index) do
       nil ->
-        escape(text)
+        PathLinks.linkify(text, links)
 
       captures ->
         [
@@ -143,7 +146,7 @@ defmodule ExAthena.Web.Markdown do
         suffix = binary_part(text, suffix_start, byte_size(text) - suffix_start)
 
         [
-          escape(prefix),
+          PathLinks.linkify(prefix, links),
           render_inline_match(
             text,
             code_index,
@@ -152,9 +155,10 @@ defmodule ExAthena.Web.Markdown do
             bold_italic_index,
             bold_index,
             italic_index,
+            links,
             allow_links
           ),
-          render_inline(suffix, allow_links)
+          render_inline(suffix, links, allow_links)
         ]
     end
   end
@@ -167,17 +171,18 @@ defmodule ExAthena.Web.Markdown do
          bold_italic_index,
          bold_index,
          italic_index,
+         links,
          allow_links
        ) do
     cond do
       present?(code_index) ->
-        ["<code class=\"md-code\">", escape(slice(text, code_index)), "</code>"]
+        ["<code class=\"md-code\">", PathLinks.linkify(slice(text, code_index), links), "</code>"]
 
       present?(label_index) and allow_links ->
         render_link(slice(text, label_index), slice(text, href_index))
 
       present?(label_index) ->
-        render_inline(slice(text, label_index), false)
+        render_inline(slice(text, label_index), links, false)
 
       present?(bold_italic_index) ->
         ["<strong><em>", escape(slice(text, bold_italic_index)), "</em></strong>"]
@@ -197,12 +202,12 @@ defmodule ExAthena.Web.Markdown do
           "<a class=\"md-link\" href=\"",
           escape(safe_href),
           "\" target=\"_blank\" rel=\"noopener noreferrer\">",
-          render_inline(label, false),
+          render_inline(label, nil, false),
           "</a>"
         ]
 
       :error ->
-        render_inline(label, false)
+        render_inline(label, nil, false)
     end
   end
 

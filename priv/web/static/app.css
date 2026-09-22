@@ -1291,6 +1291,28 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 
 .md-link:hover { text-decoration: underline; }
 
+/* Paths a run named in its prose, linked when the file really exists inside
+   the open folder (issue #269). Monospaced so they read as paths, dotted
+   underline so they never look like an outbound link. */
+.path-link {
+  color: var(--user-accent);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  text-decoration: none;
+  border-bottom: 1px dotted var(--user-accent);
+}
+.path-link:hover { border-bottom-style: solid; }
+
+.path-dl {
+  color: var(--muted);
+  font-size: 0.85em;
+  padding-left: 3px;
+  text-decoration: none;
+  transition: color 0.15s;
+}
+.path-dl:hover { color: var(--accent); }
+
 /* ── Modal overlay ───────────────────────────────────────────────────────── */
 
 .modal-overlay {
@@ -1830,6 +1852,27 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .files-view-size { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
 .files-view-close { flex: 0 0 auto; padding: 2px 6px; }
 .files-view-content { max-height: 300px; }
+
+/* Download and preview sit beside the close button; keep them from being
+   squeezed out by a long filename. */
+.files-view-download,
+.files-view-preview { flex: 0 0 auto; text-decoration: none; }
+.files-nav-btn--on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+/* The sandboxed preview. White regardless of theme: the document inside is a
+   page of its own, not part of this UI, and most mocks assume a light page. */
+.files-preview {
+  display: block;
+  width: 100%;
+  height: 340px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  background: #fff;
+}
 
 .details-list {
   display: flex;

@@ -1092,7 +1092,15 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
   # exercise the tab's event handlers, tree state, and the rendered HTML.
   describe "Files tab (handle_event) — lazy tree + file viewer" do
     defp default_files,
-      do: %{root: nil, tree: %{}, expanded: MapSet.new(), selected: nil, content: nil, error: nil}
+      do: %{
+        root: nil,
+        tree: %{},
+        expanded: MapSet.new(),
+        selected: nil,
+        content: nil,
+        preview: false,
+        error: nil
+      }
 
     defp files_socket(overrides) do
       assigns =
@@ -1243,18 +1251,17 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
         files_socket(
           cwd: root,
           files: %{
-            root: root,
-            tree: %{},
-            expanded: MapSet.new(),
-            error: :no_such_file,
-            selected: "a.txt",
-            content: %{
-              path: Path.join(root, "a.txt"),
-              content: "hello a",
-              size: 7,
-              truncated: false,
-              binary: false
-            }
+            default_files()
+            | root: root,
+              error: :no_such_file,
+              selected: "a.txt",
+              content: %{
+                path: Path.join(root, "a.txt"),
+                content: "hello a",
+                size: 7,
+                truncated: false,
+                binary: false
+              }
           }
         )
 

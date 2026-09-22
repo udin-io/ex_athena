@@ -3,6 +3,7 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   alias ExAthena.Messages
   alias ExAthena.Messages.ContentPart
+  alias ExAthena.Web.FileLinks
   alias ExAthena.Web.Markdown
   alias ExAthena.Web.Sessions
   alias Phoenix.LiveView.JS
@@ -129,8 +130,13 @@ defmodule ExAthena.Web.Live.ChatLive do
           expanded: MapSet.new(),
           selected: nil,
           content: nil,
+          preview: false,
           error: nil
         },
+        # Signed root for the /files/* routes (issue #269). Minted here, from
+        # the cwd the user opened, so the browser never names its own root.
+        # nil until a folder is open, which is also when nothing is linkable.
+        file_links: nil,
         # Live orchestration snapshot (ExAthena.Orchestrator.Coordinator) for
         # the Overview tab. One coordinator per run; orchestrator_sid scopes
         # incoming updates to the current run.
@@ -656,8 +662,8 @@ defmodule ExAthena.Web.Live.ChatLive do
 
       {:noreply,
        socket
+       |> assign_cwd(path)
        |> assign(
-         cwd: path,
          session_id: unique_id(),
          session_title: nil,
          session_created_at: DateTime.utc_now(),
@@ -689,8 +695,8 @@ defmodule ExAthena.Web.Live.ChatLive do
 
       {:noreply,
        socket
+       |> assign_cwd(cwd)
        |> assign(
-         cwd: cwd,
          session_id: unique_id(),
          session_title: nil,
          session_created_at: DateTime.utc_now(),
@@ -1047,8 +1053,12 @@ defmodule ExAthena.Web.Live.ChatLive do
     end
   end
 
+  # Also reached from a path link inside a report (issue #269), where the
+  # Files tab is not already open — so this shows it rather than updating a
+  # pane the user cannot see.
   def handle_event("files_open", %{"path" => path}, socket) do
     cwd = socket.assigns.cwd
+    socket = assign(socket, details_tab: :files, show_details: true)
 
     case ExAthena.Web.Files.read_file(cwd, path) do
       {:ok, content} ->
@@ -1056,17 +1066,37 @@ defmodule ExAthena.Web.Live.ChatLive do
         selected = Path.expand(path, cwd)
 
         {:noreply,
-         assign(socket, files: %{files | selected: selected, content: content, error: nil})}
+         assign(socket,
+           files: %{
+             files
+             | selected: selected,
+               content: content,
+               preview: false,
+               error: nil
+           }
+         )}
 
       {:error, reason} ->
         files = socket.assigns.files
-        {:noreply, assign(socket, files: %{files | selected: nil, content: nil, error: reason})}
+
+        {:noreply,
+         assign(socket,
+           files: %{files | selected: nil, content: nil, preview: false, error: reason}
+         )}
     end
+  end
+
+  # Swap the open file between its source and a rendered, sandboxed preview.
+  def handle_event("files_toggle_preview", _params, socket) do
+    files = socket.assigns.files
+    {:noreply, assign(socket, files: %{files | preview: not files.preview})}
   end
 
   def handle_event("files_close", _params, socket) do
     files = socket.assigns.files
-    {:noreply, assign(socket, files: %{files | selected: nil, content: nil, error: nil})}
+
+    {:noreply,
+     assign(socket, files: %{files | selected: nil, content: nil, preview: false, error: nil})}
   end
 
   # Collapse every expanded directory. Pure state — the cached listings in
@@ -1721,6 +1751,7 @@ defmodule ExAthena.Web.Live.ChatLive do
             msg={msg}
             details_stream={@details_stream}
             chat_expanded={@chat_expanded}
+            file_links={@file_links}
           />
 
           <%= if @streaming do %>
@@ -1730,6 +1761,7 @@ defmodule ExAthena.Web.Live.ChatLive do
               current_action={@current_action}
               worker_action={active_worker_action(@orchestrator)}
               chat_expanded={@chat_expanded}
+              file_links={@file_links}
             />
           <% end %>
 
@@ -1832,6 +1864,7 @@ defmodule ExAthena.Web.Live.ChatLive do
                   <.files_panel
                     cwd={@cwd}
                     files={@files}
+                    file_links={@file_links}
                   />
                 </div>
               <% _ -> %>
@@ -2097,15 +2130,49 @@ defmodule ExAthena.Web.Live.ChatLive do
             <div class="file-header files-view-header">
               <span class="files-view-name">{Path.basename(@files.content.path)}</span>
               <span class="files-view-size">{files_size(@files.content.size)}</span>
+              <button
+                :if={FileLinks.previewable?(@files.content.path)}
+                class={["files-nav-btn files-view-preview", @files.preview && "files-nav-btn--on"]}
+                phx-click="files_toggle_preview"
+                title="Render this file as a page, sandboxed"
+              >
+                preview
+              </button>
+              <%!-- A plain <a>, not a phx-click: the bytes come from
+                    /files/download over HTTP, never over the websocket. --%>
+              <a
+                :if={@file_links}
+                class="files-nav-btn files-view-download"
+                href={FileLinks.download_url(@file_links.token, @files.content.path)}
+                title="Download this file"
+              >
+                ↓
+              </a>
               <button class="files-nav-btn files-view-close" phx-click="files_close" title="Close file">×</button>
             </div>
-            <%= if @files.content.binary do %>
-              <div class="files-notice">binary file — content not shown</div>
-            <% else %>
-              <pre class="file-content files-view-content">{@files.content.content}</pre>
-              <%= if @files.content.truncated do %>
-                <div class="files-notice">showing first 2 MB of {files_size(@files.content.size)}</div>
-              <% end %>
+            <%!-- The preview renders model-authored HTML, so the iframe is
+                  sandboxed WITHOUT allow-same-origin: scripts may run, but in
+                  an opaque origin with no cookies, no storage and no access to
+                  this document. The response repeats it as a CSP header — see
+                  ExAthena.Web.FileController. --%>
+            <%= cond do %>
+              <% @files.preview and @file_links != nil -> %>
+                <iframe
+                  class="files-preview"
+                  src={FileLinks.preview_url(@file_links.token, @files.content.path)}
+                  sandbox="allow-scripts"
+                  referrerpolicy="no-referrer"
+                  title={"Sandboxed preview of " <> Path.basename(@files.content.path)}
+                >
+                </iframe>
+                <div class="files-notice">sandboxed preview — no access to this session</div>
+              <% @files.content.binary -> %>
+                <div class="files-notice">binary file — content not shown</div>
+              <% true -> %>
+                <pre class="file-content files-view-content">{@files.content.content}</pre>
+                <%= if @files.content.truncated do %>
+                  <div class="files-notice">showing first 2 MB of {files_size(@files.content.size)}</div>
+                <% end %>
             <% end %>
           </div>
         <% end %>
@@ -2202,7 +2269,7 @@ defmodule ExAthena.Web.Live.ChatLive do
         </button>
       </div>
       <%= if @items == [] do %>
-        <div class="msg-body md" id={"md-#{@msg.id}"}>{Markdown.render(@msg.text)}</div>
+        <div class="msg-body md" id={"md-#{@msg.id}"}>{Markdown.render(@msg.text, links: @file_links)}</div>
       <% else %>
         <.assistant_item
           :for={item <- @items}
@@ -2210,6 +2277,7 @@ defmodule ExAthena.Web.Live.ChatLive do
           streaming={false}
           live={false}
           chat_expanded={@chat_expanded}
+          file_links={@file_links}
         />
       <% end %>
       <%= if @msg.status do %>
@@ -2249,6 +2317,7 @@ defmodule ExAthena.Web.Live.ChatLive do
         streaming={true}
         live={idx == @last_idx}
         chat_expanded={@chat_expanded}
+        file_links={@file_links}
       />
       <div class="msg-body" style="white-space: pre-wrap"><span class="cursor">▋</span></div>
     </div>
@@ -2293,7 +2362,7 @@ defmodule ExAthena.Web.Live.ChatLive do
     assigns = assign(assigns, :e, e)
 
     ~H"""
-    <div class="msg-body md" id={"md-#{@e.id}"}>{Markdown.render(@e.payload.text)}</div>
+    <div class="msg-body md" id={"md-#{@e.id}"}>{Markdown.render(@e.payload.text, links: @file_links)}</div>
     """
   end
 
@@ -3155,6 +3224,16 @@ defmodule ExAthena.Web.Live.ChatLive do
      |> update(:details_stream, &[detail | &1])}
   end
 
+  # Open folder and the signed root that /files/download and /files/preview
+  # accept for it (issue #269). One function, so a future caller that sets the
+  # cwd cannot leave the links pointing at the previous project.
+  defp assign_cwd(socket, cwd) do
+    assign(socket, cwd: cwd, file_links: file_links(cwd))
+  end
+
+  defp file_links(nil), do: nil
+  defp file_links(cwd), do: %{root: cwd, token: FileLinks.sign_root(cwd)}
+
   # Assign a loaded session's data onto the socket. Shared by the load_session
   # event and the connected-mount restore path so both stay in lockstep.
   defp assign_session_data(socket, data) do
@@ -3177,7 +3256,6 @@ defmodule ExAthena.Web.Live.ChatLive do
       session_id: data.id,
       session_title: data.title,
       session_created_at: Map.get(data, :created_at, DateTime.utc_now()),
-      cwd: Map.get(data, :cwd, socket.assigns.cwd),
       provider: data.provider,
       model: data.model,
       model_query: "",
@@ -3198,6 +3276,7 @@ defmodule ExAthena.Web.Live.ChatLive do
       # authoritative while the run is still going.
       orchestrator: stored_orchestrator(data)
     )
+    |> assign_cwd(Map.get(data, :cwd, socket.assigns.cwd))
     # The cwd is only known once the session is loaded, so the sidebar list is
     # built here — otherwise opening a session by URL shows an empty sidebar.
     |> assign_session_list(session_lister())

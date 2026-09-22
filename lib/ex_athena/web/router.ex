@@ -14,6 +14,17 @@ defmodule ExAthena.Web.Router do
     plug ExAthena.Web.Auth
   end
 
+  # File bytes for the Files tab and for the paths auto-linked in a report
+  # (issue #269). Same `:browser` pipeline, so `ExAthena.Web.Auth` gates these
+  # exactly as it gates the chat. The root they serve from arrives as a token
+  # this server signed, never as a caller-supplied directory.
+  scope "/files", ExAthena.Web do
+    pipe_through :browser
+
+    get "/download", FileController, :download
+    get "/preview", FileController, :preview
+  end
+
   scope "/", ExAthena.Web.Live do
     pipe_through :browser
 

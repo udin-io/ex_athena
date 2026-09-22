@@ -2,8 +2,8 @@ defmodule ExAthena.Web.Files do
   @moduledoc """
   Pure filesystem helpers for the web UI file browser.
 
-  Both functions take an absolute `root` directory and a path that is
-  either absolute or relative to it, and refuse to touch anything outside
+  Every function takes an absolute `root` directory and a path that is
+  either absolute or relative to it, and refuses to touch anything outside
   the root:
 
     * `list_dir/2` — directory listing with artifact dirs (`_build/`,
@@ -13,6 +13,11 @@ defmodule ExAthena.Web.Files do
     * `read_file/2` — file contents capped at 2MB (the same
       context-protection budget as `ExAthena.Tools.Read`); files containing
       NUL bytes are reported as binary with empty content.
+    * `regular_file/2` — the confined path only, for callers that serve the
+      bytes themselves (`ExAthena.Web.FileController`).
+    * `resolve/2` — the confinement itself, delegating to
+      `ExAthena.ToolContext.within_roots?/2`. Every path the web UI touches
+      goes through it, and nothing re-implements it.
 
   No state, no processes — safe to call from LiveView events.
   """
@@ -52,16 +57,27 @@ defmodule ExAthena.Web.Files do
            }}
           | {:error, :no_root | :outside_root | :no_such_file | :not_a_file}
   def read_file(root, file_path) do
+    with {:ok, path} <- regular_file(root, file_path) do
+      read_content(path)
+    end
+  end
+
+  @doc """
+  Resolve `file_path` inside `root` and confirm it is a regular file.
+
+  `read_file/2` without the read: the HTTP routes serve the bytes themselves
+  and only need the confined path. Same guard, same error set.
+  """
+  @spec regular_file(String.t() | nil, String.t()) ::
+          {:ok, Path.t()}
+          | {:error, :no_root | :outside_root | :no_such_file | :not_a_file}
+  def regular_file(root, file_path) do
     with {:ok, path} <- resolve(root, file_path) do
       case File.stat(path) do
-        {:error, :enoent} ->
-          {:error, :no_such_file}
-
-        {:ok, %File.Stat{type: :regular}} ->
-          read_content(path)
-
-        {:ok, _other} ->
-          {:error, :not_a_file}
+        {:error, :enoent} -> {:error, :no_such_file}
+        {:ok, %File.Stat{type: :regular}} -> {:ok, path}
+        {:ok, _other} -> {:error, :not_a_file}
+        {:error, _reason} -> {:error, :no_such_file}
       end
     end
   end
@@ -140,21 +156,30 @@ defmodule ExAthena.Web.Files do
     end
   end
 
-  # Normalize `dir_path` against `root` and verify the result stays inside it.
-  # `root == nil` -> `:no_root`; escape attempts -> `:outside_root`.
-  #
-  # Confinement goes through `ExAthena.ToolContext.within_roots?/2` — the same
-  # guard the file tools use — rather than a string prefix test. A prefix test
-  # only rejects lexical `../` traversal: it compares the path as written, so a
-  # symlink INSIDE the root pointing out of it (`root/link -> /etc`) reads as
-  # inside, and `File.stat`/`File.open` then follow it. `within_roots?/2`
-  # canonicalizes every symlink component before comparing, and compares on
-  # path segments, so an escaping link is refused while links that stay inside
-  # (and a root that is itself a symlink, e.g. macOS `/tmp` -> `/private/tmp`)
-  # keep working.
-  defp resolve(nil, _dir_path), do: {:error, :no_root}
+  @doc """
+  Normalize `dir_path` against `root` and verify the result stays inside it.
 
-  defp resolve(root, dir_path) when is_binary(root) and is_binary(dir_path) do
+  `root == nil` -> `:no_root`; escape attempts -> `:outside_root`.
+
+  Confinement goes through `ExAthena.ToolContext.within_roots?/2` — the same
+  guard the file tools use — rather than a string prefix test. A prefix test
+  only rejects lexical `../` traversal: it compares the path as written, so a
+  symlink INSIDE the root pointing out of it (`root/link -> /etc`) reads as
+  inside, and `File.stat`/`File.open` then follow it. `within_roots?/2`
+  canonicalizes every symlink component before comparing, and compares on
+  path segments, so an escaping link is refused while links that stay inside
+  (and a root that is itself a symlink, e.g. macOS `/tmp` -> `/private/tmp`)
+  keep working.
+
+  Public because `ExAthena.Web.FileController` and `ExAthena.Web.PathLinks`
+  must confine through this exact function. A second copy of the rule is how
+  a file browser becomes a file-disclosure bug.
+  """
+  @spec resolve(String.t() | nil, String.t()) ::
+          {:ok, Path.t()} | {:error, :no_root | :outside_root}
+  def resolve(nil, _dir_path), do: {:error, :no_root}
+
+  def resolve(root, dir_path) when is_binary(root) and is_binary(dir_path) do
     # A NUL byte would raise ArgumentError out of the :file calls below rather
     # than returning an error tuple, crashing the LiveView. Paths arrive
     # straight from client `phx-value-path`, so reject it here.
@@ -171,5 +196,5 @@ defmodule ExAthena.Web.Files do
     end
   end
 
-  defp resolve(_root, _dir_path), do: {:error, :no_root}
+  def resolve(_root, _dir_path), do: {:error, :no_root}
 end
