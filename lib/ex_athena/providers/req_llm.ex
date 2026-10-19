@@ -977,12 +977,14 @@ defmodule ExAthena.Providers.ReqLLM do
         err
 
       {:ok, final} ->
-        ExAthena.Streaming.stop(callback, final.finish_reason || :stop)
-
         tool_calls = patch_tool_call_args(final.tool_calls, final.tool_call_args_buffer)
 
         text = final.text |> Enum.reverse() |> IO.iodata_to_binary()
         thinking = final.thinking |> Enum.reverse() |> IO.iodata_to_binary()
+
+        finish_reason = normalize_finish_reason(final.finish_reason)
+
+        ExAthena.Streaming.stop(callback, finish_reason || :stop)
 
         # Log the resolved tool calls. Warn when args are still empty after patching
         # (means neither fragments nor raw_arguments provided usable JSON).
@@ -1014,7 +1016,7 @@ defmodule ExAthena.Providers.ReqLLM do
            text: text,
            thinking: if(thinking == "", do: nil, else: thinking),
            tool_calls: tool_calls,
-           finish_reason: final.finish_reason || :stop,
+           finish_reason: finish_reason || :stop,
            model: final.model,
            provider: :req_llm,
            usage: final.usage,
@@ -1025,13 +1027,28 @@ defmodule ExAthena.Providers.ReqLLM do
              detect_starvation(
                text,
                tool_calls,
-               final.finish_reason,
+               finish_reason,
                final.usage,
                completion_cap(request)
              )
          }}
     end
   end
+
+  # req_llm's Google stream decoder hands finish reasons over as strings
+  # ("stop", "content_filter"); every other path, and `Response`, uses atoms.
+  @finish_reasons %{
+    "stop" => :stop,
+    "length" => :length,
+    "tool_calls" => :tool_calls,
+    "content_filter" => :content_filter,
+    "error" => :error
+  }
+
+  defp normalize_finish_reason(reason) when is_binary(reason),
+    do: Map.get(@finish_reasons, reason, :error)
+
+  defp normalize_finish_reason(reason), do: reason
 
   # Merge accumulated argument fragments back into each tool call.
   # Handles two llama.cpp streaming quirks:
@@ -1294,6 +1311,12 @@ defmodule ExAthena.Providers.ReqLLM do
   # Public (@doc false) so the classification contract is directly testable,
   # mirroring `context_overflow?/1` below.
   @doc false
+  # A stream that the server refused with an HTTP status carries that status
+  # on its cause; classify it like the same refusal on a query.
+  def to_error(%ReqLLM.Error.API.Stream{cause: %{status: status} = cause})
+      when is_integer(status),
+      do: to_error(cause)
+
   def to_error(%{status: status} = raw) when is_integer(status) do
     kind =
       if context_overflow?(raw), do: :context_length_exceeded, else: Error.from_status(status)
