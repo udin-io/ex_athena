@@ -6,6 +6,12 @@ defmodule FakeLspServer do
 
   No external dependencies required — uses only OTP stdlib.
 
+  Command-line flags (after the script path):
+    * `--strict-init` — drop every notification that arrives before the
+      client's `initialized` notification, as the LSP spec lets a server do.
+    * `--init-delay-ms N` — wait N ms before answering `initialize`, to stand
+      in for a server that is slow to start.
+
   State flags:
     * `:suppress_next_diag` — if true, the next textDocument/didOpen will NOT
       emit publishDiagnostics (flag resets after use).
@@ -59,12 +65,23 @@ defmodule FakeLspServer do
   def run do
     port = Port.open({:fd, 0, 1}, [:binary, :eof])
     fail_init = System.get_env("FAKE_LSP_FAIL_INITIALIZE") == "1"
+    argv = System.argv()
 
     loop(port, "", %{
       suppress_next_diag: false,
       fail_next_request: false,
-      fail_initialize: fail_init
+      fail_initialize: fail_init,
+      strict_init: "--strict-init" in argv,
+      init_delay_ms: init_delay_ms(argv),
+      initialized: false
     })
+  end
+
+  defp init_delay_ms(argv) do
+    case Enum.drop_while(argv, &(&1 != "--init-delay-ms")) do
+      ["--init-delay-ms", ms | _] -> String.to_integer(ms)
+      _ -> 0
+    end
   end
 
   defp loop(port, buffer, state) do
@@ -156,7 +173,23 @@ defmodule FakeLspServer do
 
   # --- message handlers (each returns new state) ---
 
+  # A strict server ignores notifications sent before the handshake completes.
+  defp handle(
+         %{"method" => method} = msg,
+         _port,
+         %{strict_init: true, initialized: false} = state
+       )
+       when method not in ["initialized", "exit"] and not is_map_key(msg, "id") do
+    state
+  end
+
+  defp handle(%{"method" => "initialized"}, _port, state) do
+    %{state | initialized: true}
+  end
+
   defp handle(%{"method" => "initialize", "id" => id}, port, state) do
+    if state.init_delay_ms > 0, do: Process.sleep(state.init_delay_ms)
+
     if state.fail_initialize do
       error_reply(port, id, -32602, "InvalidParams")
     else

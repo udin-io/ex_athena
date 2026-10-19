@@ -107,6 +107,36 @@ defmodule ExAthena.Lsp.ClientTest do
       # The diagnostics state is updated when handle_info processes the notification.
       assert_diagnostics(pid, "file:///test/foo.ex", 500)
     end
+
+    # The LSP spec forbids notifications before the initialize reply, and a
+    # strict server drops them. The fake server answers a didOpen with
+    # diagnostics, so diagnostics arrive only if the didOpen reached it.
+    test "a notification sent before the handshake still reaches a strict server" do
+      pid = start_client(args: ["--erl", "-noinput", @fake_server_script, "--strict-init"])
+      uri = "file:///test/early.ex"
+
+      :ok =
+        Client.notify(pid, "textDocument/didOpen", %{
+          "textDocument" => %{
+            "uri" => uri,
+            "languageId" => "elixir",
+            "version" => 1,
+            "text" => ""
+          }
+        })
+
+      await_initialized(pid)
+      assert_diagnostics(pid, uri, 2_000)
+    end
+
+    test "a strict server gets a notification sent after the handshake (control)" do
+      pid = start_client(args: ["--erl", "-noinput", @fake_server_script, "--strict-init"])
+      await_initialized(pid)
+
+      # notif/trigger after the handshake is answered: diagnostics arrive.
+      :ok = Client.notify(pid, "notif/trigger", %{})
+      assert_diagnostics(pid, "file:///test/foo.ex", 2_000)
+    end
   end
 
   describe "diagnostics/2" do

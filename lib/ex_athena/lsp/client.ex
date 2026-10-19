@@ -6,8 +6,9 @@ defmodule ExAthena.Lsp.Client do
 
   1. `start_link/1` opens the OS process port and sends the LSP `initialize`
      request via `handle_continue/2`. The GenServer is immediately callable —
-     requests received before initialization completes are queued and replayed
-     once `initialized` is confirmed.
+     requests and notifications received before initialization completes are
+     queued and replayed in order once `initialized` is confirmed, because the
+     LSP spec forbids sending either before the `initialize` reply.
   2. `request/4` sends a JSON-RPC request and awaits the reply (default 30 s).
      Multiple concurrent callers are safe — replies are correlated by `id`.
   3. `notify/3` sends a one-way notification (no reply expected).
@@ -133,8 +134,9 @@ defmodule ExAthena.Lsp.Client do
       # id of the in-flight initialize request; nil after handshake
       init_request_id: nil,
       initialized: false,
-      # [{from, method, params, timeout}] collected before handshake
-      queued_requests: [],
+      # newest first, collected before the handshake:
+      # {:request, from, method, params, timeout} | {:notify, method, params}
+      queued: [],
       shutting_down: false
     }
 
@@ -179,8 +181,7 @@ defmodule ExAthena.Lsp.Client do
       state = dispatch_request(state, method, params, timeout, from)
       {:noreply, state}
     else
-      queued = [{from, method, params, timeout} | state.queued_requests]
-      {:noreply, %{state | queued_requests: queued}}
+      {:noreply, %{state | queued: [{:request, from, method, params, timeout} | state.queued]}}
     end
   end
 
@@ -200,8 +201,12 @@ defmodule ExAthena.Lsp.Client do
 
   @impl true
   def handle_cast({:notify, method, params}, state) do
-    send_notification(state.port, method, params)
-    {:noreply, state}
+    if state.initialized do
+      send_notification(state.port, method, params)
+      {:noreply, state}
+    else
+      {:noreply, %{state | queued: [{:notify, method, params} | state.queued]}}
+    end
   end
 
   @impl true
@@ -221,9 +226,7 @@ defmodule ExAthena.Lsp.Client do
       GenServer.reply(from, {:error, {:lsp_port_exit, status}})
     end
 
-    for {from, _method, _params, _timeout} <- state.queued_requests do
-      GenServer.reply(from, {:error, {:lsp_port_exit, status}})
-    end
+    reply_queued(state, {:error, {:lsp_port_exit, status}})
 
     {:stop, {:lsp_port_exit, status}, state}
   end
@@ -289,7 +292,7 @@ defmodule ExAthena.Lsp.Client do
     caps = (result || %{}) |> Map.get("capabilities", %{})
     state = %{state | capabilities: caps, init_request_id: nil, initialized: true}
     send_notification(state.port, "initialized", %{})
-    flush_queued_requests(state)
+    flush_queued(state)
   end
 
   # Initialize error response — fail every queued caller and stop the GenServer.
@@ -299,12 +302,9 @@ defmodule ExAthena.Lsp.Client do
        when not is_nil(id) do
     Logger.error("[ExAthena.Lsp.Client] LSP initialize failed: #{inspect(err)}")
 
-    for {from, _method, _params, _timeout} <- state.queued_requests do
-      GenServer.reply(from, {:error, {:lsp_init_failed, err}})
-    end
-
+    reply_queued(state, {:error, {:lsp_init_failed, err}})
     send(self(), {:lsp_init_failed, err})
-    %{state | queued_requests: [], init_request_id: nil}
+    %{state | queued: [], init_request_id: nil}
   end
 
   # Response to one of our requests.
@@ -386,13 +386,28 @@ defmodule ExAthena.Lsp.Client do
 
   defp cancel_deadline_timer(_), do: :ok
 
-  defp flush_queued_requests(state) do
-    queued = Enum.reverse(state.queued_requests)
-    state = %{state | queued_requests: []}
+  defp flush_queued(state) do
+    queued = Enum.reverse(state.queued)
+    state = %{state | queued: []}
 
-    Enum.reduce(queued, state, fn {from, method, params, timeout}, acc ->
-      dispatch_request(acc, method, params, timeout, from)
+    Enum.reduce(queued, state, fn
+      {:request, from, method, params, timeout}, acc ->
+        dispatch_request(acc, method, params, timeout, from)
+
+      {:notify, method, params}, acc ->
+        send_notification(acc.port, method, params)
+        acc
     end)
+  end
+
+  # Fail every caller still waiting on the handshake. Queued notifications
+  # have no caller and are dropped.
+  defp reply_queued(state, reply) do
+    for {:request, from, _method, _params, _timeout} <- state.queued do
+      GenServer.reply(from, reply)
+    end
+
+    :ok
   end
 
   # --- port helpers ---
