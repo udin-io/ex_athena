@@ -129,8 +129,10 @@ Per-call override:
 ExAthena.query("…", provider: :gemini, model: "gemini-2.5-pro")
 ```
 
-For the full walkthrough — API key setup, model table, tool-calling caveats,
-and rate-limit notes — see the **[Gemini setup guide](gemini.md)**.
+The key travels in the `x-goog-api-key` header, and a call with no key returns
+`:unauthorized` without reading any environment variable. For the full
+walkthrough — API key setup, structured output, safety blocks, logging,
+tool-calling caveats and rate limits — see the **[Gemini setup guide](gemini.md)**.
 
 ## OpenRouter (`:openrouter`)
 

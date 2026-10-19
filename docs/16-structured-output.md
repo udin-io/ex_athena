@@ -65,6 +65,8 @@ schema = %{
 - `:max_repairs` — repair budget. Default 2.
 - All other `Loop.run/2` options (`:provider`, `:model`, `:system_prompt`, `:messages`, …).
 
+`ExAthena.StructuredOutput.request/3` returns `{:error, :content_filter}` when the provider's safety filter blocked the prompt or the answer, rather than `:invalid_json`. On Gemini it sends the schema as `responseJsonSchema`; see [`guides/gemini.md`](../guides/gemini.md).
+
 When the response format is supported natively by the provider (capabilities `supports_response_format_json_schema: true`), the schema is also passed in the request's `response_format` — many providers will then refuse to emit invalid JSON, eliminating most repair cycles.
 
 ---

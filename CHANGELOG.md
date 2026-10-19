@@ -221,6 +221,35 @@ ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Gemini answers in a fixed JSON shape.**
+  ([#283](https://github.com/udin-io/ex_athena/issues/283)) `ExAthena.StructuredOutput.request/3` with `provider: :gemini` failed on
+  every call with `:server_error`, before any request left: req_llm 1.15's
+  Google chat path refuses the `response_format` option. ExAthena now builds
+  the request itself and sends the schema as Google's
+  `generationConfig.responseJsonSchema` with `responseMimeType:
+  "application/json"`. It does so for every model id, aliases such as
+  `gemini-flash-lite-latest` included; req_llm's own object path would send
+  those the older `responseSchema`, which drops `anyOf` with null. Plain JSON
+  mode (`"json"`) sends the MIME type alone. A Gemini stream that asks for a
+  JSON shape returns `:bad_request`, since the streaming path has nowhere to
+  put it.
+
+- **A Gemini safety block reads as a block, not an empty answer.**
+  ([#283](https://github.com/udin-io/ex_athena/issues/283)) A refused prompt (`promptFeedback.blockReason`) came back as
+  `{:ok, ""}` with no finish reason, and an empty answer stopped for SAFETY
+  came back as `:stop`. BLOCKLIST, PROHIBITED_CONTENT and SPII came back as
+  `:error`. All of these now report `finish_reason: :content_filter`, on a
+  query and on a stream, and `ExAthena.StructuredOutput.request/3` returns
+  `{:error, :content_filter}` for any provider's block instead of
+  `:invalid_json`.
+
+- **A streamed answer reports the same finish reason and error kind as a
+  query.** ([#283](https://github.com/udin-io/ex_athena/issues/283)) req_llm's Google stream decoder hands finish reasons over as
+  strings, so a streamed Gemini answer ended with `finish_reason: "stop"`
+  where a query returns `:stop`. A stream the server refused with a 400 came
+  back as `:server_error`, because the status sat on the stream error's cause;
+  it is now `:bad_request`, as on a query.
+
 - **A worker's report no longer renders — or gets stored — twice.**
   ([#264](https://github.com/udin-io/ex_athena/issues/264)) `SpawnAgent` emits a
   worker's report twice from one call: once as the `subagent_result` boundary
@@ -489,6 +518,30 @@ ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Runner without a `:base_url` for the adapter and app config to resolve.
 
 ### Security
+
+- **The Gemini API key stays out of URLs, and a missing key stays missing.**
+  ([#283](https://github.com/udin-io/ex_athena/issues/283)) req_llm sends Google's key as `?key=` on every non-streaming call, so
+  any logged or proxied URL carried it; its `google_auth_header` option moves
+  it only on streams. ExAthena now sends the key in Google's `x-goog-api-key`
+  header on queries, streams and embeddings, whatever that option says, and
+  does not follow a redirect, which would carry the header to another host. A
+  model written as `"<id>@google"` takes the same path. A call
+  with no key, or an empty one, used to raise out of `ExAthena.query/2` after
+  req_llm looked for `config :req_llm, google_api_key`, the `GOOGLE_API_KEY`
+  variable and a `.env` file the caller never named. It now returns
+  `{:error, %ExAthena.Error{kind: :unauthorized}}` and sends nothing. A reply
+  outside Google's documented shapes returns `:server_error` instead of
+  raising, and a batch embedding whose vectors don't match the inputs is an
+  error too.
+
+- **A caller can keep message text and error bodies out of the log.**
+  ([#283](https://github.com/udin-io/ex_athena/issues/283)) The req_llm adapter logs each message's text and the reply at debug,
+  and a failed call's full provider error body at warning. `log_bodies:
+  false`, per call or in a provider's config, turns all of that off on query,
+  stream and embeddings; an error then logs its kind and status only. The
+  default stays on. req_llm itself still logs a failed stream's body at
+  warning; `guides/gemini.md` shows the one-line `Logger.put_module_level/2`
+  call that drops it.
 
 - **The dev and test lock now holds bandit 1.13.1.**
   ([#278](https://github.com/udin-io/ex_athena/issues/278)) bandit 1.11.1

@@ -161,6 +161,17 @@ Per-call override always wins:
 ExAthena.run(prompt, provider: :claude, model: "claude-sonnet-4-6")
 ```
 
+Gemini calls go through one extra layer,
+[`ExAthena.Providers.ReqLLM.Gemini`](../lib/ex_athena/providers/req_llm/gemini.ex).
+It builds req_llm's Google request, then moves the key from the URL to the
+`x-goog-api-key` header, adds a JSON Schema to the body for
+`ExAthena.StructuredOutput`, and reports Google's safety blocks as
+`:content_filter`. A call with no key stops there with `:unauthorized`. The
+workarounds and the req_llm behaviour behind each are in the module's comment.
+
+Every req_llm-backed provider takes `log_bodies: false`, which keeps message
+text, replies and provider error bodies out of the adapter's log.
+
 ---
 
 ## Reasoning effort
