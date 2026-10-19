@@ -236,7 +236,10 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
   end
 
   defp do_poll(pid, uri, deadline) do
-    case Client.diagnostics(pid, uri) do
+    case current_diagnostics(pid, uri) do
+      :client_down ->
+        []
+
       [] ->
         remaining = deadline - System.monotonic_time(:millisecond)
 
@@ -250,6 +253,13 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
       diags ->
         diags
     end
+  end
+
+  # A server that dies mid-window must not crash the agent loop.
+  defp current_diagnostics(pid, uri) do
+    Client.diagnostics(pid, uri)
+  catch
+    :exit, _ -> :client_down
   end
 
   defp filter_severities(diags) do

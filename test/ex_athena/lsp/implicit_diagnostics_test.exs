@@ -222,6 +222,30 @@ defmodule ExAthena.Lsp.ImplicitDiagnosticsTest do
       assert :ok = ImplicitDiagnostics.post_tool_use_hook(payload, "c1")
     end
 
+    test "returns :ok when the server dies while the hook waits for diagnostics", %{dir: dir} do
+      path = write_elixir_file(dir)
+      {:ok, pid} = Manager.client_for_file(dir, path)
+      assert :ok = Client.await_initialized(pid, 10_000)
+      Client.notify(pid, "notif/suppress_next_diag", %{})
+
+      Application.put_env(:ex_athena, :lsp_implicit_diagnostics_timeout_ms, 3_000)
+      on_exit(fn -> Application.delete_env(:ex_athena, :lsp_implicit_diagnostics_timeout_ms) end)
+
+      payload = %{arguments: %{"path" => path}, cwd: dir, tool_name: "Edit"}
+      # The hook sends didOpen right before it starts polling. Wait for the
+      # client to receive it, then kill the client while the hook polls.
+      :erlang.trace(pid, true, [:receive])
+      task = Task.async(fn -> ImplicitDiagnostics.post_tool_use_hook(payload, "c1") end)
+
+      assert_receive {:trace, ^pid, :receive,
+                      {:"$gen_cast", {:notify, "textDocument/didOpen", _params}}},
+                     5_000
+
+      Process.exit(pid, :kill)
+
+      assert :ok = Task.await(task, 5_000)
+    end
+
     test "telemetry :stop event fires with count and had_errors measurements", %{dir: dir} do
       test_pid = self()
 
