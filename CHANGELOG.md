@@ -209,6 +209,16 @@ ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `serializable_result/1`, which is lossy; the transcript is the copy that
   survives in full.
 
+- **`erlexec` moves from the retired 2.3.4 to 2.5.0.**
+  ([#280](https://github.com/udin-io/ex_athena/issues/280)) Hex retired every
+  2.x release up to 2.3.4 as deprecated, but the package itself is maintained:
+  2.4.0, 2.4.1 and 2.5.0 are not retired. The web terminal (`ExAthena.Terminal.Server`)
+  needs a real pseudo-terminal, which a plain `Port` cannot open, so keeping
+  the library and moving to its current release is the closest option. No
+  caller changes: the terminal starts, echoes, resizes and interrupts as
+  before, and its tests pass unchanged. Apps that use the web terminal should
+  lock erlexec 2.5.0 or later.
+
 ### Fixed
 
 - **A worker's report no longer renders — or gets stored — twice.**
@@ -487,6 +497,22 @@ ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   trickle of HTTP/2 window updates holds a connection open). `mix hex.audit`
   lists no bandit advisory now. bandit stays an optional dependency; an app
   that serves `mix athena.web` keeps its own lock and upgrades bandit itself.
+
+- **The dev and test lock now holds fixed releases of the cowboy stack, phoenix,
+  phoenix_live_view and lazy_html.**
+  ([#280](https://github.com/udin-io/ex_athena/issues/280)) `mix hex.audit`
+  listed advisories in six locked packages. cowboy 2.14.2 (EEF-CVE-2026-8466,
+  EEF-CVE-2026-65624), plug_cowboy 2.8.0 (EEF-CVE-2026-32688) and cowlib 2.16.0
+  (EEF-CVE-2026-59248 and six more) carried the high ones. phoenix 1.8.7 let
+  one connection open unlimited channel joins (EEF-CVE-2026-56811).
+  phoenix_live_view 1.1.30 and lazy_html 0.1.12 each had a low one. The lock now
+  holds cowboy 2.20.0, cowlib 2.21.0, plug_cowboy 2.9.0, phoenix 1.8.15,
+  phoenix_live_view 1.2.12 and lazy_html 0.1.13. cowlib 2.21.0 is the newest
+  release and still lists EEF-CVE-2026-43966 (medium, response splitting in
+  `cow_http_struct_hd:escape_string/2`); no fixed release exists yet, so
+  `mix hex.audit` exits 1 on that one line. ex_athena declares these as
+  optional or transitive dependencies, so an app that serves `mix athena.web`
+  keeps its own lock and should move to the same versions or later.
 
 ## v0.20.0 — One instrumented inference path, configurable rails & a settings UI
 
