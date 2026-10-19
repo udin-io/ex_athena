@@ -239,8 +239,12 @@ single turn, without needing to call the `lsp` tool explicitly.
 | Key | Default | Description |
 |---|---|---|
 | `:lsp_implicit_diagnostics_enabled` | `true` | Set to `false` to disable the hook globally (e.g. in test.exs). |
-| `:lsp_implicit_diagnostics_timeout_ms` | `1500` | How long to poll for push-diagnostics before giving up. |
+| `:lsp_implicit_diagnostics_start_timeout_ms` | `5000` | How long to wait for a just-launched server to answer its handshake. A running server answers at once. |
+| `:lsp_implicit_diagnostics_timeout_ms` | `1500` | How long to poll for push-diagnostics before giving up. The window opens once the server has started. |
 | `:lsp_implicit_diagnostics_severities` | `[:error, :warning]` | Severity levels to include. Options: `:error`, `:warning`, `:information`, `:hint`. |
+
+Both timeouts take a whole number of milliseconds. Any other value logs a
+warning and the hook uses the default.
 
 Example — disable in tests:
 

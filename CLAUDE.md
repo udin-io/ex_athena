@@ -59,8 +59,10 @@ Measured 2026-09-13 on `main` (`5db70d8`). Do not chase these:
   under it fails, and the write never lands. Run that one-liner before
   believing any other explanation.
 * `ExAthena.Tools.AskUserTest` flakes intermittently.
-* The LSP / `ImplicitDiagnostics` family flakes in CI; re-run the job once
-  before treating a failure there as real.
+* The LSP / `ImplicitDiagnostics` family used to flake in CI: the 1.5 s
+  diagnostics window started when the test server launched, and a busy runner
+  spent it booting the server. Issue 282 moved the window to after the
+  handshake. A failure there now is real; read it before you re-run.
 
 ## Design documents go in `docs/design/`, not `tmp/`
 

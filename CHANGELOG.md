@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Fixed
+
+- **The first edit after a language server starts now gets its diagnostics.**
+  ([#282](https://github.com/udin-io/ex_athena/issues/282)) After an Edit or
+  Write, the implicit-diagnostics hook waits 1.5 s for the language server to
+  report on the file. That clock started when the server was launched, so a
+  server still booting spent the whole window starting up, and the edit came
+  back with no diagnostics. In CI's Elixir 1.18 image the test server took
+  333 to 602 ms to answer its handshake; a busy runner pushed that past 1.5 s,
+  and the LSP integration tests failed now and then on Elixir 1.18 and 1.20,
+  keeping `main` red. The hook now waits for the server to answer its
+  `initialize` handshake, for up to 5 s by default
+  (`:lsp_implicit_diagnostics_start_timeout_ms`), and then gives it the 1.5 s.
+  A server that is already running answers at once, so later edits wait no
+  longer than before.
+
+- **A notification sent while a language server starts now reaches it.**
+  ([#282](https://github.com/udin-io/ex_athena/issues/282)) The LSP client
+  queued requests made before the server answered `initialize`, but sent
+  notifications such as `textDocument/didOpen` at once. The LSP spec forbids
+  that, and a strict server drops them, so the file it was told to open was
+  never open. Requests and notifications now wait in one queue and go out in
+  order after the handshake.
+
+- **The diagnostics hook no longer crashes the run when the server fails.**
+  ([#282](https://github.com/udin-io/ex_athena/issues/282)) A server that
+  refused the handshake, or died while the hook waited for its diagnostics,
+  made the hook exit, and the agent run with it. Both now return the edit's
+  result with no diagnostics. A diagnostics timeout setting that is not a
+  whole number of milliseconds (a string, a negative number, `:infinity`)
+  used to raise inside the hook and halt every run that edited a file; it now
+  logs a warning naming the key and uses the default.
+
+- **A language server that never answers its handshake no longer piles up
+  work.** ([#282](https://github.com/udin-io/ex_athena/issues/282)) The LSP
+  client holds requests and notifications until the server answers
+  `initialize`. A server that never answered kept the client alive and the
+  queue growing, one full copy of the file per LSP tool call. The client now
+  gives the handshake 30 s, then fails what it holds with
+  `{:error, :init_timeout}` and stops; the next call starts a fresh server.
+
+- **A language server that just exited is no longer handed out again.**
+  ([#282](https://github.com/udin-io/ex_athena/issues/282)) For a moment
+  after a client exited, the LSP manager could still return it, so the next
+  edit got no diagnostics. It now starts a fresh client instead.
+
 ## v0.21.0 — File links, worker handbacks & Gemini for production callers
 
 ### Added
