@@ -41,6 +41,14 @@ defmodule ExAthena.Lsp.ImplicitDiagnosticsTest do
     {result, System.monotonic_time(:millisecond) - before_ms}
   end
 
+  # A raise in the hook halts the agent run, so it is a test failure in its
+  # own right, reported on this line rather than as a crash.
+  defp hook_or_flunk(payload) do
+    ImplicitDiagnostics.post_tool_use_hook(payload, "c1")
+  rescue
+    e -> flunk("the hook raised #{inspect(e.__struct__)}")
+  end
+
   defp enable_implicit_diagnostics do
     Application.put_env(:ex_athena, :lsp_implicit_diagnostics_enabled, true)
     on_exit(fn -> Application.put_env(:ex_athena, :lsp_implicit_diagnostics_enabled, false) end)
@@ -244,6 +252,23 @@ defmodule ExAthena.Lsp.ImplicitDiagnosticsTest do
       Process.exit(pid, :kill)
 
       assert :ok = Task.await(task, 5_000)
+    end
+
+    for key <- [:lsp_implicit_diagnostics_start_timeout_ms, :lsp_implicit_diagnostics_timeout_ms],
+        bad <- ["5000", -1, 1.5, :infinity] do
+      test "a #{key} of #{inspect(bad)} falls back to the default", %{dir: dir} do
+        Application.put_env(:ex_athena, unquote(key), unquote(Macro.escape(bad)))
+        on_exit(fn -> Application.delete_env(:ex_athena, unquote(key)) end)
+
+        path = write_elixir_file(dir)
+        payload = %{arguments: %{"path" => path}, cwd: dir, tool_name: "Edit"}
+
+        assert {{:augment, text}, log} =
+                 ExUnit.CaptureLog.with_log(fn -> hook_or_flunk(payload) end)
+
+        assert text =~ "[lsp diagnostics]"
+        assert log =~ "#{unquote(key)}"
+      end
     end
 
     test "telemetry :stop event fires with count and had_errors measurements", %{dir: dir} do

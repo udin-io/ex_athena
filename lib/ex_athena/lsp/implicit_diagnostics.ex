@@ -214,21 +214,28 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
 
   defp client_for_file(_, _), do: {:error, :no_cwd}
 
-  defp start_timeout_ms do
-    Application.get_env(
-      :ex_athena,
-      :lsp_implicit_diagnostics_start_timeout_ms,
-      @default_start_timeout_ms
-    )
+  defp start_timeout_ms,
+    do: ms_setting(:lsp_implicit_diagnostics_start_timeout_ms, @default_start_timeout_ms)
+
+  # A timeout that is not a whole number of milliseconds would raise inside
+  # the hook, and a raise there halts the agent run. Use the default instead.
+  defp ms_setting(key, default) do
+    case Application.get_env(:ex_athena, key, default) do
+      ms when is_integer(ms) and ms >= 0 ->
+        ms
+
+      other ->
+        Logger.warning(
+          "[ExAthena.Lsp.ImplicitDiagnostics] #{key} must be a whole number of " <>
+            "milliseconds, got #{inspect(other)}; using #{default}"
+        )
+
+        default
+    end
   end
 
   defp await_diagnostics(pid, abs_path) do
-    timeout_ms =
-      Application.get_env(
-        :ex_athena,
-        :lsp_implicit_diagnostics_timeout_ms,
-        @default_timeout_ms
-      )
+    timeout_ms = ms_setting(:lsp_implicit_diagnostics_timeout_ms, @default_timeout_ms)
 
     uri = "file://" <> abs_path
     deadline = System.monotonic_time(:millisecond) + timeout_ms
