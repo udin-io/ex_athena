@@ -255,7 +255,7 @@ defmodule ExAthena.Lsp.ImplicitDiagnosticsTest do
     end
 
     for key <- [:lsp_implicit_diagnostics_start_timeout_ms, :lsp_implicit_diagnostics_timeout_ms],
-        bad <- ["5000", -1, 1.5, :infinity] do
+        bad <- ["5000", -1, 1.5, :infinity, nil, 4_294_967_296] do
       test "a #{key} of #{inspect(bad)} falls back to the default", %{dir: dir} do
         Application.put_env(:ex_athena, unquote(key), unquote(Macro.escape(bad)))
         on_exit(fn -> Application.delete_env(:ex_athena, unquote(key)) end)
@@ -269,6 +269,21 @@ defmodule ExAthena.Lsp.ImplicitDiagnosticsTest do
         assert text =~ "[lsp diagnostics]"
         assert log =~ "#{unquote(key)}"
       end
+    end
+
+    test "a bad timeout setting is warned about once, not on every edit", %{dir: dir} do
+      bad = "warn-once-#{System.unique_integer([:positive])}"
+      Application.put_env(:ex_athena, :lsp_implicit_diagnostics_timeout_ms, bad)
+      on_exit(fn -> Application.delete_env(:ex_athena, :lsp_implicit_diagnostics_timeout_ms) end)
+
+      path = write_elixir_file(dir)
+      payload = %{arguments: %{"path" => path}, cwd: dir, tool_name: "Edit"}
+
+      {{:augment, _}, first} = ExUnit.CaptureLog.with_log(fn -> hook_or_flunk(payload) end)
+      {{:augment, _}, second} = ExUnit.CaptureLog.with_log(fn -> hook_or_flunk(payload) end)
+
+      assert first =~ bad
+      refute second =~ bad
     end
 
     test "telemetry :stop event fires with count and had_errors measurements", %{dir: dir} do

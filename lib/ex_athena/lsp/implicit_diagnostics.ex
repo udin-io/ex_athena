@@ -21,9 +21,10 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
 
   All failure paths (LSP disabled, unsupported file type, server crash, timeout)
   collapse to `:ok`. The hook runs inside the agent loop, so every wait in it
-  is bounded: with the defaults it blocks for at most the 5 s start timeout
-  plus the 1.5 s window, plus up to 5 s for each of the Manager lookup and the
-  last diagnostics poll when those processes are busy.
+  is bounded by a setting: it blocks for at most the start timeout plus the
+  diagnostics window (5 s and 1.5 s by default), plus up to 5 s for each of the
+  Manager lookup and the last diagnostics poll when those processes are busy.
+  A large setting makes a long wait; keep both in seconds, not minutes.
 
   ## Configuration keys
 
@@ -42,6 +43,8 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
 
   @default_timeout_ms 1_500
   @default_start_timeout_ms 5_000
+  # The largest timeout GenServer.call/3 and Process.send_after/3 accept.
+  @max_timeout_ms 4_294_967_295
   @default_severities [:error, :warning]
   @poll_interval_ms 50
 
@@ -217,20 +220,30 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
   defp start_timeout_ms,
     do: ms_setting(:lsp_implicit_diagnostics_start_timeout_ms, @default_start_timeout_ms)
 
-  # A timeout that is not a whole number of milliseconds would raise inside
-  # the hook, and a raise there halts the agent run. Use the default instead.
+  # A timeout that is not a whole number of milliseconds within the VM's timer
+  # limit would raise inside the hook, and a raise there halts the agent run.
+  # Use the default instead, and warn once per bad value, not once per edit.
   defp ms_setting(key, default) do
     case Application.get_env(:ex_athena, key, default) do
-      ms when is_integer(ms) and ms >= 0 ->
+      ms when is_integer(ms) and ms >= 0 and ms <= @max_timeout_ms ->
         ms
 
       other ->
-        Logger.warning(
-          "[ExAthena.Lsp.ImplicitDiagnostics] #{key} must be a whole number of " <>
-            "milliseconds, got #{inspect(other)}; using #{default}"
-        )
-
+        warn_once(key, other, default)
         default
+    end
+  end
+
+  defp warn_once(key, value, default) do
+    marker = {__MODULE__, :bad_setting, key, value}
+
+    unless :persistent_term.get(marker, false) do
+      :persistent_term.put(marker, true)
+
+      Logger.warning(
+        "[ExAthena.Lsp.ImplicitDiagnostics] #{key} must be a whole number of " <>
+          "milliseconds from 0 to #{@max_timeout_ms}, got #{inspect(value)}; using #{default}"
+      )
     end
   end
 
