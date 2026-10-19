@@ -3,8 +3,9 @@ defmodule ExAthena.Lsp.Manager do
   Manages one `ExAthena.Lsp.Client` per `{project_root, language}` pair.
 
   Clients are lazily spawned under `ExAthena.Lsp.ClientSupervisor` and
-  registered in `ExAthena.Lsp.Registry` — the registry is the source of
-  truth for "is this client running?", not Manager state.
+  registered in `ExAthena.Lsp.Registry`. The registry, not Manager state,
+  says whether a client runs, but it drops a dead client's entry a moment
+  late, so a lookup also checks the pid is alive.
 
   Manager state holds only a `%{monitor_ref => {root, language}}` map for
   crash telemetry; pids are always looked up from the Registry.
