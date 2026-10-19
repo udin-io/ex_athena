@@ -38,7 +38,9 @@ ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   result with no diagnostics. A diagnostics timeout setting that is not a
   whole number of milliseconds (a string, a negative number, `:infinity`)
   used to raise inside the hook and halt every run that edited a file; it now
-  logs a warning naming the key and uses the default.
+  logs a warning naming the key and uses the default. Malformed diagnostics
+  from the server, or a severities setting that is not a list, no longer
+  raise in the hook either: it keeps the entries it can read.
 
 - **A language server that never answers its handshake no longer piles up
   work.** ([#282](https://github.com/udin-io/ex_athena/issues/282)) The LSP
