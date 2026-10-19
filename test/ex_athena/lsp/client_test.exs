@@ -233,6 +233,34 @@ defmodule ExAthena.Lsp.ClientTest do
     end
   end
 
+  describe "handshake deadline" do
+    test "a server that never answers initialize fails the queue and stops the client" do
+      pid =
+        start_supervised!(
+          {Client,
+           [
+             binary: @elixir_bin,
+             args: ["--erl", "-noinput", @fake_server_script, "--init-delay-ms", "10000"],
+             root_uri: "file://#{@root}",
+             root: @root,
+             language: :test,
+             init_timeout: 300
+           ]},
+          restart: :temporary
+        )
+
+      ref = Process.monitor(pid)
+      caller = self()
+
+      spawn(fn ->
+        send(caller, {:result, Client.request(pid, "textDocument/echo", %{}, 20_000)})
+      end)
+
+      assert_receive {:result, {:error, :init_timeout}}, 5_000
+      assert_receive {:DOWN, ^ref, :process, ^pid, {:shutdown, :init_timeout}}, 5_000
+    end
+  end
+
   describe "initialize error response" do
     test "queued requests get {:lsp_init_failed, err} and GenServer stops" do
       System.put_env("FAKE_LSP_FAIL_INITIALIZE", "1")

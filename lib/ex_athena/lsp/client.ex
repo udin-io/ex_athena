@@ -44,6 +44,7 @@ defmodule ExAthena.Lsp.Client do
 
   @default_request_timeout 30_000
   @shutdown_wait_ms 1_000
+  @default_init_timeout 30_000
 
   # --- public API ---
 
@@ -57,6 +58,10 @@ defmodule ExAthena.Lsp.Client do
     * `:root` (required) — plain filesystem root path (for telemetry/registry).
     * `:language` (required) — language atom (for telemetry).
     * `:name` (optional) — GenServer name (via-tuple for Registry).
+    * `:init_timeout` (optional) — ms to wait for the `initialize` reply,
+      default 30 000. Past it, every queued caller gets
+      `{:error, :init_timeout}` and the client stops, so a server that never
+      answers cannot make the queue grow without end.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -131,6 +136,7 @@ defmodule ExAthena.Lsp.Client do
     root_uri = Keyword.fetch!(opts, :root_uri)
     root = Keyword.fetch!(opts, :root)
     language = Keyword.fetch!(opts, :language)
+    init_timeout = Keyword.get(opts, :init_timeout, @default_init_timeout)
 
     port = open_port(binary, args, root)
 
@@ -153,7 +159,8 @@ defmodule ExAthena.Lsp.Client do
       # {:request, from, method, params, timeout} | {:notify, method, params}
       # | {:waiter, from} (an await_initialized/2 caller)
       queued: [],
-      shutting_down: false
+      shutting_down: false,
+      init_timeout: init_timeout
     }
 
     Telemetry.event(
@@ -188,6 +195,7 @@ defmodule ExAthena.Lsp.Client do
     }
 
     send_request(state.port, id, "initialize", params)
+    Process.send_after(self(), :init_deadline, state.init_timeout)
     {:noreply, %{state | init_request_id: id}}
   end
 
@@ -264,6 +272,18 @@ defmodule ExAthena.Lsp.Client do
         GenServer.reply(from, {:error, :timeout})
         {:noreply, state}
     end
+  end
+
+  def handle_info(:init_deadline, %{initialized: true} = state), do: {:noreply, state}
+
+  def handle_info(:init_deadline, state) do
+    Logger.warning(
+      "[ExAthena.Lsp.Client] #{state.binary} did not answer initialize within " <>
+        "#{state.init_timeout} ms; stopping"
+    )
+
+    reply_queued(state, {:error, :init_timeout})
+    {:stop, {:shutdown, :init_timeout}, %{state | queued: []}}
   end
 
   def handle_info({:lsp_init_failed, err}, state) do
