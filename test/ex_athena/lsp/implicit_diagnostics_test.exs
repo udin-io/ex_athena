@@ -6,9 +6,12 @@ defmodule ExAthena.Lsp.ImplicitDiagnosticsTest do
   @fake_server_script Path.expand("../../support/fake_lsp_server.exs", __DIR__)
   @elixir_bin System.find_executable("elixir")
 
-  defp setup_lsp_override do
+  defp setup_lsp_override(server_flags \\ []) do
     Application.put_env(:ex_athena, :lsp_servers, %{
-      elixir: %{binary: @elixir_bin, args: ["--erl", "-noinput", @fake_server_script]}
+      elixir: %{
+        binary: @elixir_bin,
+        args: ["--erl", "-noinput", @fake_server_script | server_flags]
+      }
     })
 
     on_exit(fn -> Application.delete_env(:ex_athena, :lsp_servers) end)
@@ -22,6 +25,20 @@ defmodule ExAthena.Lsp.ImplicitDiagnosticsTest do
     )
 
     start_supervised!(Manager)
+  end
+
+  defp put_start_timeout(ms) do
+    Application.put_env(:ex_athena, :lsp_implicit_diagnostics_start_timeout_ms, ms)
+
+    on_exit(fn ->
+      Application.delete_env(:ex_athena, :lsp_implicit_diagnostics_start_timeout_ms)
+    end)
+  end
+
+  defp elapsed_ms(fun) do
+    before_ms = System.monotonic_time(:millisecond)
+    result = fun.()
+    {result, System.monotonic_time(:millisecond) - before_ms}
   end
 
   defp enable_implicit_diagnostics do
@@ -150,6 +167,9 @@ defmodule ExAthena.Lsp.ImplicitDiagnosticsTest do
 
       {:ok, pid} = Manager.client_for_file(dir, path)
       Client.notify(pid, "notif/suppress_next_diag", %{})
+      # The hook waits for the server to start before its window opens, so
+      # start it here: this test times the window, not the server's boot.
+      assert :ok = Client.await_initialized(pid, 10_000)
 
       Application.put_env(:ex_athena, :lsp_implicit_diagnostics_timeout_ms, 200)
       on_exit(fn -> Application.delete_env(:ex_athena, :lsp_implicit_diagnostics_timeout_ms) end)
@@ -161,6 +181,45 @@ defmodule ExAthena.Lsp.ImplicitDiagnosticsTest do
       elapsed = System.monotonic_time(:millisecond) - before_ms
 
       assert elapsed < 500, "Expected hook to complete within 500ms, took #{elapsed}ms"
+    end
+
+    # The diagnostics window opens once the server has started, not when it is
+    # launched, so a server slower to start than the window still reports.
+    test "reports diagnostics from a server that starts slower than the diagnostics window",
+         %{dir: dir} do
+      setup_lsp_override(["--init-delay-ms", "2000"])
+      put_start_timeout(20_000)
+      path = write_elixir_file(dir)
+      payload = %{arguments: %{"path" => path}, cwd: dir, tool_name: "Edit"}
+
+      assert {:augment, text} = ImplicitDiagnostics.post_tool_use_hook(payload, "c1")
+      assert text =~ "error: undefined function foo/0"
+    end
+
+    test "gives up on a server that has not started within the start timeout", %{dir: dir} do
+      setup_lsp_override(["--init-delay-ms", "10000"])
+      put_start_timeout(300)
+      # A 4 s diagnostics window: a hook that waited on the window instead of
+      # the start timeout would take about 4 s, well past the 2.5 s bound.
+      Application.put_env(:ex_athena, :lsp_implicit_diagnostics_timeout_ms, 4_000)
+      on_exit(fn -> Application.delete_env(:ex_athena, :lsp_implicit_diagnostics_timeout_ms) end)
+      path = write_elixir_file(dir)
+      payload = %{arguments: %{"path" => path}, cwd: dir, tool_name: "Edit"}
+
+      {result, elapsed} =
+        elapsed_ms(fn -> ImplicitDiagnostics.post_tool_use_hook(payload, "c1") end)
+
+      assert result == :ok
+      assert elapsed < 2_500, "expected the hook to give up near 300 ms, took #{elapsed} ms"
+    end
+
+    test "returns :ok when the server refuses the handshake", %{dir: dir} do
+      System.put_env("FAKE_LSP_FAIL_INITIALIZE", "1")
+      on_exit(fn -> System.delete_env("FAKE_LSP_FAIL_INITIALIZE") end)
+      path = write_elixir_file(dir)
+      payload = %{arguments: %{"path" => path}, cwd: dir, tool_name: "Edit"}
+
+      assert :ok = ImplicitDiagnostics.post_tool_use_hook(payload, "c1")
     end
 
     test "telemetry :stop event fires with count and had_errors measurements", %{dir: dir} do

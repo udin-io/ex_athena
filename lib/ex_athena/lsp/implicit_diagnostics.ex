@@ -7,19 +7,29 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
 
     1. Resolves the file path from the tool call's `arguments["path"]`.
     2. Looks up (or spawns) the language server for the file's extension.
-    3. Sends `textDocument/didOpen` with the current file contents.
-    4. Polls `publishDiagnostics` push-notifications for up to
-       `:lsp_implicit_diagnostics_timeout_ms` (default 1500 ms).
-    5. Filters to `:lsp_implicit_diagnostics_severities` (default `[:error, :warning]`).
-    6. Returns `{:augment, text}` with a `[lsp diagnostics]` block, or
+    3. Waits up to `:lsp_implicit_diagnostics_start_timeout_ms` (default
+       5000 ms) for the server to answer its `initialize` handshake. A server
+       just launched spends this time booting; one already running answers at
+       once.
+    4. Sends `textDocument/didOpen` with the current file contents.
+    5. Polls `publishDiagnostics` push-notifications for up to
+       `:lsp_implicit_diagnostics_timeout_ms` (default 1500 ms). The window
+       opens after the handshake, so a slow boot does not eat it.
+    6. Filters to `:lsp_implicit_diagnostics_severities` (default `[:error, :warning]`).
+    7. Returns `{:augment, text}` with a `[lsp diagnostics]` block, or
        `:ok` if there is nothing to report.
 
   All failure paths (LSP disabled, unsupported file type, server crash, timeout)
-  collapse to `:ok` — the hook must never stall the agent loop.
+  collapse to `:ok`. The hook runs inside the agent loop, so every wait in it
+  is bounded: with the defaults it blocks for at most the 5 s start timeout
+  plus the 1.5 s window, plus up to 5 s for each of the Manager lookup and the
+  last diagnostics poll when those processes are busy.
 
   ## Configuration keys
 
     * `:lsp_implicit_diagnostics_enabled` — boolean, default `true`
+    * `:lsp_implicit_diagnostics_start_timeout_ms` — how long to wait for a
+      server to finish starting, in ms, default `5000`
     * `:lsp_implicit_diagnostics_timeout_ms` — poll deadline in ms, default `1500`
     * `:lsp_implicit_diagnostics_severities` — list of `:error | :warning |
       :information | :hint`, default `[:error, :warning]`
@@ -31,6 +41,7 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
   alias ExAthena.Tools.Lsp, as: LspTool
 
   @default_timeout_ms 1_500
+  @default_start_timeout_ms 5_000
   @default_severities [:error, :warning]
   @poll_interval_ms 50
 
@@ -103,6 +114,9 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
          {:ok, abs_path} <- file_from_payload(payload) |> log_step(:no_path),
          :ok <- has_language?(abs_path) |> log_step(:unsupported_language, abs_path),
          {:ok, pid} <- client_for_file(payload, abs_path) |> log_step(:no_client, abs_path),
+         :ok <-
+           Client.await_initialized(pid, start_timeout_ms())
+           |> log_step(:server_not_started, abs_path),
          :ok <- LspTool.ensure_did_open(pid, abs_path) |> log_step(:did_open_failed, abs_path),
          diags when diags != [] <-
            await_diagnostics(pid, abs_path) |> log_no_diags(abs_path),
@@ -199,6 +213,14 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
   end
 
   defp client_for_file(_, _), do: {:error, :no_cwd}
+
+  defp start_timeout_ms do
+    Application.get_env(
+      :ex_athena,
+      :lsp_implicit_diagnostics_start_timeout_ms,
+      @default_start_timeout_ms
+    )
+  end
 
   defp await_diagnostics(pid, abs_path) do
     timeout_ms =

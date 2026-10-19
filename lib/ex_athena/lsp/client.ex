@@ -91,6 +91,21 @@ defmodule ExAthena.Lsp.Client do
     GenServer.cast(pid, {:notify, method, params})
   end
 
+  @doc """
+  Wait up to `timeout` ms for the server to answer the `initialize` request.
+
+  Returns `:ok` once the handshake is done, `{:error, :timeout}` when it is
+  not done in time, or `{:error, reason}` when the handshake fails or the
+  server exits first.
+  """
+  @spec await_initialized(pid(), timeout()) :: :ok | {:error, term()}
+  def await_initialized(pid, timeout) do
+    GenServer.call(pid, :await_initialized, timeout)
+  catch
+    :exit, {:timeout, _} -> {:error, :timeout}
+    :exit, reason -> {:error, {:client_exit, reason}}
+  end
+
   @doc "Return cached diagnostics for the given `uri`."
   @spec diagnostics(pid(), String.t()) :: [map()]
   def diagnostics(pid, uri) do
@@ -136,6 +151,7 @@ defmodule ExAthena.Lsp.Client do
       initialized: false,
       # newest first, collected before the handshake:
       # {:request, from, method, params, timeout} | {:notify, method, params}
+      # | {:waiter, from} (an await_initialized/2 caller)
       queued: [],
       shutting_down: false
     }
@@ -182,6 +198,14 @@ defmodule ExAthena.Lsp.Client do
       {:noreply, state}
     else
       {:noreply, %{state | queued: [{:request, from, method, params, timeout} | state.queued]}}
+    end
+  end
+
+  def handle_call(:await_initialized, from, state) do
+    if state.initialized do
+      {:reply, :ok, state}
+    else
+      {:noreply, %{state | queued: [{:waiter, from} | state.queued]}}
     end
   end
 
@@ -397,17 +421,21 @@ defmodule ExAthena.Lsp.Client do
       {:notify, method, params}, acc ->
         send_notification(acc.port, method, params)
         acc
+
+      {:waiter, from}, acc ->
+        GenServer.reply(from, :ok)
+        acc
     end)
   end
 
   # Fail every caller still waiting on the handshake. Queued notifications
   # have no caller and are dropped.
   defp reply_queued(state, reply) do
-    for {:request, from, _method, _params, _timeout} <- state.queued do
-      GenServer.reply(from, reply)
-    end
-
-    :ok
+    Enum.each(state.queued, fn
+      {:request, from, _method, _params, _timeout} -> GenServer.reply(from, reply)
+      {:waiter, from} -> GenServer.reply(from, reply)
+      {:notify, _method, _params} -> :ok
+    end)
   end
 
   # --- port helpers ---

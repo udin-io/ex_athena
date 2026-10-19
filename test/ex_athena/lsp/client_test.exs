@@ -195,6 +195,44 @@ defmodule ExAthena.Lsp.ClientTest do
     end
   end
 
+  describe "await_initialized/2" do
+    test "returns :ok once the server answers the handshake" do
+      pid = start_client()
+      assert :ok = Client.await_initialized(pid, 10_000)
+      # A second call after the handshake answers at once.
+      assert :ok = Client.await_initialized(pid, 100)
+    end
+
+    test "returns {:error, :timeout} while a slow server is still starting" do
+      pid =
+        start_client(args: ["--erl", "-noinput", @fake_server_script, "--init-delay-ms", "3000"])
+
+      assert {:error, :timeout} = Client.await_initialized(pid, 200)
+      assert Process.alive?(pid)
+    end
+
+    test "returns an error when the server refuses the handshake" do
+      System.put_env("FAKE_LSP_FAIL_INITIALIZE", "1")
+      on_exit(fn -> System.delete_env("FAKE_LSP_FAIL_INITIALIZE") end)
+
+      pid =
+        start_supervised!(
+          {Client,
+           [
+             binary: @elixir_bin,
+             args: ["--erl", "-noinput", @fake_server_script],
+             root_uri: "file://#{@root}",
+             root: @root,
+             language: :test
+           ]},
+          restart: :temporary
+        )
+
+      assert {:error, {:lsp_init_failed, %{"message" => "InvalidParams"}}} =
+               Client.await_initialized(pid, 10_000)
+    end
+  end
+
   describe "initialize error response" do
     test "queued requests get {:lsp_init_failed, err} and GenServer stops" do
       System.put_env("FAKE_LSP_FAIL_INITIALIZE", "1")
