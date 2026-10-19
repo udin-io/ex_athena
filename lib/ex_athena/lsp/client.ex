@@ -78,7 +78,8 @@ defmodule ExAthena.Lsp.Client do
   Send a JSON-RPC request and await the response.
 
   Returns `{:ok, result}` or `{:error, reason}`. On timeout returns
-  `{:error, :timeout}`.
+  `{:error, :timeout}`; when the client has stopped, `{:error, {:client_exit,
+  reason}}`.
   """
   @spec request(pid(), String.t(), map(), non_neg_integer()) ::
           {:ok, term()} | {:error, term()}
@@ -87,6 +88,9 @@ defmodule ExAthena.Lsp.Client do
       GenServer.call(pid, {:request, method, params, timeout}, timeout + 5_000)
     catch
       :exit, {:timeout, _} -> {:error, :timeout}
+      # The client stopped, or stops before it replies. Tools rescue raises
+      # but not exits, so an exit here would end the agent run.
+      :exit, reason -> {:error, {:client_exit, reason}}
     end
   end
 
@@ -274,7 +278,8 @@ defmodule ExAthena.Lsp.Client do
     end
   end
 
-  def handle_info(:init_deadline, %{initialized: true} = state), do: {:noreply, state}
+  # The handshake has finished, or failed and is already stopping the client.
+  def handle_info(:init_deadline, %{init_request_id: nil} = state), do: {:noreply, state}
 
   def handle_info(:init_deadline, state) do
     Logger.warning(
@@ -504,6 +509,10 @@ defmodule ExAthena.Lsp.Client do
 
   defp next_id(%{next_id: id} = state), do: {id, %{state | next_id: id + 1}}
 
+  # The LSP spec forbids `shutdown` before the handshake, and a server stuck
+  # before it reads nothing, so close it and kill its process at once.
+  defp run_shutdown(%{initialized: false} = state), do: close_and_kill(state.port)
+
   defp run_shutdown(state) do
     {id, _state} = next_id(state)
     send_request(state.port, id, "shutdown", %{})
@@ -520,12 +529,36 @@ defmodule ExAthena.Lsp.Client do
     receive do
       {port, {:exit_status, _}} when port == state.port -> :ok
     after
-      @shutdown_wait_ms ->
-        try do
-          Port.close(state.port)
-        rescue
-          ArgumentError -> :ok
-        end
+      @shutdown_wait_ms -> close_and_kill(state.port)
     end
+  end
+
+  # Closing the port only closes the server's pipes; a server that ignores
+  # end-of-input keeps running. Kill its OS process too. The port has sent no
+  # exit status, so the process has not been reaped and its pid is still ours.
+  defp close_and_kill(port) do
+    os_pid =
+      case Port.info(port, :os_pid) do
+        {:os_pid, os_pid} -> os_pid
+        nil -> nil
+      end
+
+    try do
+      Port.close(port)
+    rescue
+      ArgumentError -> :ok
+    end
+
+    if os_pid, do: kill_os_process(os_pid)
+    :ok
+  end
+
+  defp kill_os_process(os_pid) do
+    case System.find_executable("kill") do
+      nil -> :ok
+      kill -> System.cmd(kill, ["-KILL", Integer.to_string(os_pid)], stderr_to_stdout: true)
+    end
+
+    :ok
   end
 end

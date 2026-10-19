@@ -147,6 +147,26 @@ defmodule ExAthena.Lsp.Manager do
     {:via, Registry, {ExAthena.Lsp.Registry, {root, language}}}
   end
 
+  @default_init_timeout_ms 30_000
+  # The largest timeout Process.send_after/3 accepts.
+  @max_timeout_ms 4_294_967_295
+
+  defp init_timeout_ms do
+    case Application.get_env(:ex_athena, :lsp_init_timeout_ms, @default_init_timeout_ms) do
+      ms when is_integer(ms) and ms >= 0 and ms <= @max_timeout_ms ->
+        ms
+
+      other ->
+        Logger.warning(
+          "[ExAthena.Lsp.Manager] lsp_init_timeout_ms must be a whole number of " <>
+            "milliseconds from 0 to #{@max_timeout_ms}, got #{inspect(other)}; " <>
+            "using #{@default_init_timeout_ms}"
+        )
+
+        @default_init_timeout_ms
+    end
+  end
+
   defp do_start(root, language) do
     case ServerRegistry.spawn_spec(language) do
       {:error, :unsupported} ->
@@ -164,7 +184,8 @@ defmodule ExAthena.Lsp.Manager do
                  root_uri: "file://#{root}",
                  root: root,
                  language: language,
-                 name: via(root, language)
+                 name: via(root, language),
+                 init_timeout: init_timeout_ms()
                ]
              ]},
           restart: :transient

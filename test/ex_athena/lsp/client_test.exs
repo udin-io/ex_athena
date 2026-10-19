@@ -8,7 +8,11 @@ defmodule ExAthena.Lsp.ClientTest do
   @root System.tmp_dir!()
 
   defp start_client(opts \\ []) do
-    default = [
+    start_supervised!({Client, Keyword.merge(default_opts(), opts)})
+  end
+
+  defp default_opts do
+    [
       binary: @elixir_bin,
       # --erl "-noinput" prevents the Erlang :user group leader from competing
       # with our Port.open({:fd, 0, 1}) reads in the fake server's VM.
@@ -17,8 +21,16 @@ defmodule ExAthena.Lsp.ClientTest do
       root: @root,
       language: :test
     ]
+  end
 
-    start_supervised!({Client, Keyword.merge(default, opts)})
+  defp os_process_gone?(os_pid, wait_ms) do
+    {_, code} = System.cmd("kill", ["-0", os_pid], stderr_to_stdout: true)
+
+    cond do
+      code != 0 -> true
+      wait_ms <= 0 -> false
+      true -> Process.sleep(100) && os_process_gone?(os_pid, wait_ms - 100)
+    end
   end
 
   # Waits until the client completes initialization by making a simple
@@ -244,7 +256,7 @@ defmodule ExAthena.Lsp.ClientTest do
              root_uri: "file://#{@root}",
              root: @root,
              language: :test,
-             init_timeout: 300
+             init_timeout: 1_500
            ]},
           restart: :temporary
         )
@@ -258,6 +270,52 @@ defmodule ExAthena.Lsp.ClientTest do
 
       assert_receive {:result, {:error, :init_timeout}}, 5_000
       assert_receive {:DOWN, ^ref, :process, ^pid, {:shutdown, :init_timeout}}, 5_000
+    end
+
+    # A server stuck before its handshake reads nothing, so closing its pipes
+    # does not end it. The client must not leave it running.
+    test "the stuck server's OS process is gone once the client stops" do
+      pid_file = Path.join(System.tmp_dir!(), "fake_lsp_#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm(pid_file) end)
+
+      pid =
+        start_supervised!(
+          {Client,
+           [
+             binary: @elixir_bin,
+             args: [
+               "--erl",
+               "-noinput",
+               @fake_server_script,
+               "--init-delay-ms",
+               "120000",
+               "--pid-file",
+               pid_file
+             ],
+             root_uri: "file://#{@root}",
+             root: @root,
+             language: :test,
+             init_timeout: 1_500
+           ]},
+          restart: :temporary
+        )
+
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, {:shutdown, :init_timeout}}, 5_000
+
+      os_pid = File.read!(pid_file)
+      assert os_process_gone?(os_pid, 3_000), "fake server #{os_pid} still running"
+    end
+  end
+
+  describe "request/4 on a client that has stopped" do
+    test "returns an error instead of exiting the caller" do
+      pid = start_supervised!({Client, default_opts()}, restart: :temporary)
+      await_initialized(pid)
+      :ok = Client.stop(pid)
+      refute Process.alive?(pid)
+
+      assert {:error, _reason} = Client.request(pid, "textDocument/echo", %{}, 1_000)
     end
   end
 

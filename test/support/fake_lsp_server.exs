@@ -11,6 +11,8 @@ defmodule FakeLspServer do
       client's `initialized` notification, as the LSP spec lets a server do.
     * `--init-delay-ms N` — wait N ms before answering `initialize`, to stand
       in for a server that is slow to start.
+    * `--pid-file PATH` — write this server's OS pid to PATH at startup, so a
+      test can check whether the process outlived its client.
 
   State flags:
     * `:suppress_next_diag` — if true, the next textDocument/didOpen will NOT
@@ -66,6 +68,11 @@ defmodule FakeLspServer do
     port = Port.open({:fd, 0, 1}, [:binary, :eof])
     fail_init = System.get_env("FAKE_LSP_FAIL_INITIALIZE") == "1"
     argv = System.argv()
+
+    case Enum.drop_while(argv, &(&1 != "--pid-file")) do
+      ["--pid-file", path | _] -> File.write!(path, System.pid())
+      _ -> :ok
+    end
 
     loop(port, "", %{
       suppress_next_diag: false,
