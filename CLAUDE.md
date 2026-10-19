@@ -139,3 +139,12 @@ Two edits, and the second is easy to forget:
 If the tool is orchestrator-scoped, also add it to the reject list AND a
 `maybe_grant/3` line in `SpawnAgent.resolve_tools/3` — otherwise every worker
 inherits it from the default ceiling and carries it as dead schema.
+
+## Gemini does not go straight through req_llm
+
+`ExAthena.Providers.ReqLLM.Gemini` builds req_llm's own Google request, then
+edits it: the key moves to the `x-goog-api-key` header, a JSON Schema goes into
+`generationConfig`, and safety blocks become `:content_filter` (issue 283). It
+hooks in next to req_llm's `llm_encode_body` and `llm_decode_response` steps.
+When you bump req_llm, run `test/ex_athena/providers/req_llm_gemini_test.exs`
+and re-read the module's comment: drop each workaround req_llm has fixed.

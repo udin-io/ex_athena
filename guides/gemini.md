@@ -15,29 +15,28 @@ what it includes. Paid usage requires a Google Cloud billing account.
 
 ## Configure
 
-Export the key as an environment variable. ExAthena's Gemini provider routes
-through `req_llm`'s Google adapter, which reads `GOOGLE_API_KEY` by default —
-match that convention so the same key works whether you configure it in
-ExAthena or let `req_llm` pick it up directly:
+ExAthena uses only the key you hand it. It reads no environment variable and
+no `.env` file on its own, so you name the variable. Google's docs call it
+`GEMINI_API_KEY`:
 
 ```bash
-export GOOGLE_API_KEY="AIza..."
+export GEMINI_API_KEY="AIza..."
 ```
 
-> Google's own docs sometimes name the variable `GEMINI_API_KEY`. If you
-> already export that one, either rename it to `GOOGLE_API_KEY` or read it
-> explicitly in your config via `System.get_env("GEMINI_API_KEY")`.
-
-Then configure ExAthena to use it:
-
 ```elixir
-# config/config.exs  (or config/runtime.exs for production)
+# config/runtime.exs
 config :ex_athena, default_provider: :gemini
 
 config :ex_athena, :gemini,
-  api_key: System.get_env("GOOGLE_API_KEY"),
+  api_key: System.get_env("GEMINI_API_KEY"),
   model: "gemini-2.5-flash"
 ```
+
+A call with no key, or an empty one, returns
+`{:error, %ExAthena.Error{kind: :unauthorized}}` and sends nothing. ExAthena
+sends the key in the `x-goog-api-key` header, never in the URL, so a logged URL
+carries no key. A redirect from the server is not followed, so the header never
+reaches another host.
 
 ## First call
 
@@ -81,8 +80,78 @@ Pass `google_thinking_budget: 0` to disable thinking for a call.
 |---|---|
 | Native tool calls | ✅ (v1beta API, the default) |
 | Streaming | ✅ SSE |
-| JSON mode / structured output | ✅ via `response_format` |
+| JSON mode / structured output | ✅ via `ExAthena.StructuredOutput.request/3`, on a query (not a stream) |
 | Resume | ❌ |
+
+## Structured output
+
+`ExAthena.StructuredOutput.request/3` sends your JSON Schema to Gemini as
+`responseJsonSchema`, with `responseMimeType: "application/json"`, for every
+model id, aliases such as `gemini-flash-lite-latest` included:
+
+```elixir
+schema = %{
+  "type" => "object",
+  "properties" => %{
+    "pick" => %{"type" => "string", "enum" => ["tea", "coffee"]},
+    "note" => %{"anyOf" => [%{"type" => "string"}, %{"type" => "null"}]}
+  },
+  "required" => ["pick", "note"]
+}
+
+ExAthena.StructuredOutput.request("Tea or coffee?", schema, provider: :gemini)
+# => {:ok, %{"pick" => "tea", "note" => nil}}
+```
+
+Pass `"json"` instead of a schema for plain JSON mode. Google accepts a subset
+of JSON Schema; its [API reference](https://ai.google.dev/api/generate-content)
+lists the keywords. A stream that asks for a JSON shape returns `:bad_request`.
+
+## Safety blocks
+
+Gemini's filter can refuse a prompt or stop an answer. ExAthena reports both as
+`finish_reason: :content_filter`, so a block never reads as an empty answer:
+
+- a refused prompt (Google returns no answer at all);
+- an answer stopped for safety, recitation, a blocklist term, prohibited
+  content or personal data.
+
+`ExAthena.StructuredOutput.request/3` returns `{:error, :content_filter}` for
+either.
+
+On a stream, req_llm reports a blocklist term, prohibited content or personal
+data as a plain `:error`, because its stream decoder drops Google's reason; only
+safety and recitation reach `:content_filter` there. Use a query when the reason
+matters.
+
+## Logging
+
+By default the adapter's debug log shows message previews and replies, and a
+failed call logs Google's error body at warning. To keep user text out of your
+logs, turn that off:
+
+```elixir
+config :ex_athena, :gemini, log_bodies: false
+# or per call: ExAthena.query(prompt, provider: :gemini, log_bodies: false)
+```
+
+Errors then log their kind and status only. One line stays outside
+ExAthena's reach: req_llm itself logs a failed stream's body at warning.
+Raise that module's level in your app to drop it:
+
+```elixir
+Logger.put_module_level(ReqLLM.Streaming, :error)
+```
+
+Two more places can still carry text you'd rather keep out of logs:
+
+- The error ExAthena returns keeps req_llm's original error in its `raw` field,
+  and that holds the request body, prompt included. Log `kind` and `status`,
+  not the whole struct.
+- If Google's stream sends an event req_llm cannot read, req_llm's stream
+  process crashes, takes the calling process with it, and the crash report
+  prints that process's state, key and prompt included. A fix belongs in
+  req_llm.
 
 ## Tool-calling caveats
 
@@ -124,6 +193,7 @@ exponential delay.
 
 | Error | Likely cause | Fix |
 |---|---|---|
-| HTTP `401` | Invalid or missing API key | Confirm `GOOGLE_API_KEY` is set and the key is active in AI Studio. |
+| `:unauthorized` before any request | No key was passed | Set `api_key:` in `config :ex_athena, :gemini` or per call. |
+| HTTP `401` / `403` | Invalid key | Confirm the key is active in AI Studio. |
 | HTTP `429` | Rate limit exceeded | Back off and retry. Check the [rate limits page](https://ai.google.dev/gemini-api/docs/rate-limits). |
 | HTTP `400 INVALID_ARGUMENT` on tool call | Empty or non-conformant tool schema | See [Tool-calling caveats](#tool-calling-caveats). Ensure `properties` is non-empty and arrays declare `items.type`. |

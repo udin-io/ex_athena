@@ -8,13 +8,16 @@ defmodule ExAthena.StructuredOutput do
   natively enforce a JSON schema (e.g. Ollama via req_llm's OpenAI adapter).
 
   Returns `{:error, :no_structured_output}` when the provider (or a per-request
-  `:capabilities` override) does not advertise `structured_output: true`.
+  `:capabilities` override) does not advertise `structured_output: true`, and
+  `{:error, :content_filter}` when the provider's safety filter blocked the
+  prompt or the answer.
   """
 
   alias ExAthena.{Config, Request, Response}
 
   @spec request(String.t(), String.t() | atom() | map(), keyword()) ::
-          {:ok, map()} | {:error, :no_structured_output | :invalid_json | term()}
+          {:ok, map()}
+          | {:error, :no_structured_output | :invalid_json | :content_filter | term()}
   def request(prompt, schema, opts \\ []) do
     {provider_mod, opts} = Config.pop_provider!(opts)
     caps = Map.merge(provider_mod.capabilities(), opts[:capabilities] || %{})
@@ -26,6 +29,7 @@ defmodule ExAthena.StructuredOutput do
       provider_opts = Config.provider_opts(provider_mod, opts)
 
       case provider_mod.query(req, provider_opts) do
+        {:ok, %Response{finish_reason: :content_filter}} -> {:error, :content_filter}
         {:ok, %Response{text: text}} -> decode(text)
         {:error, _} = err -> err
       end
