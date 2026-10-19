@@ -7,6 +7,10 @@ defmodule ExAthena.Providers.ReqLLMGeminiTest do
   """
   use ExUnit.Case, async: false
 
+  import ExUnit.CaptureLog
+
+  require Logger
+
   alias ExAthena.{Error, StructuredOutput}
 
   @model "gemini-flash-lite-latest"
@@ -418,6 +422,145 @@ defmodule ExAthena.Providers.ReqLLMGeminiTest do
 
       assert {:ok, %ExAthena.Response{finish_reason: :content_filter, text: ""}} =
                ExAthena.stream("hi", fn _ -> :ok end, opts(ctx))
+    end
+  end
+
+  describe "body logging" do
+    @user_sentinel "USER-TEXT-SENTINEL-283"
+    @body_sentinel "GOOGLE-BODY-SENTINEL-283"
+
+    defp error_body,
+      do: ~s({"error":{"code":400,"message":"#{@body_sentinel}","status":"INVALID_ARGUMENT"}})
+
+    test "with log_bodies: false a failed query logs no body and no user text", ctx do
+      stub_generate(ctx.bypass, @model, error_body(), 400)
+
+      log =
+        capture_log([level: :debug], fn ->
+          assert {:error, %Error{kind: :bad_request}} =
+                   ExAthena.query(@user_sentinel, opts(ctx, log_bodies: false))
+        end)
+
+      assert log =~ "←error"
+      refute log =~ @body_sentinel
+      refute log =~ @user_sentinel
+    end
+
+    # req_llm's stream module logs the failed body itself, outside ex_athena;
+    # guides/gemini.md tells hosts to raise that module's level, as here.
+    test "with log_bodies: false and req_llm's stream log raised, a failed stream logs no body",
+         ctx do
+      stub_stream(ctx.bypass, [error_body()], 400)
+      Logger.put_module_level(ReqLLM.Streaming, :error)
+      on_exit(fn -> Logger.delete_module_level(ReqLLM.Streaming) end)
+
+      log =
+        capture_log([level: :debug], fn ->
+          assert {:error, %Error{kind: :bad_request}} =
+                   ExAthena.stream(@user_sentinel, fn _ -> :ok end, opts(ctx, log_bodies: false))
+        end)
+
+      refute log =~ @body_sentinel
+      refute log =~ @user_sentinel
+    end
+
+    test "with log_bodies: false a successful query logs no message or reply text", ctx do
+      stub_generate(ctx.bypass)
+
+      log =
+        capture_log([level: :debug], fn ->
+          assert {:ok, _} =
+                   ExAthena.query(@user_sentinel,
+                     provider: :gemini,
+                     model: @model,
+                     api_key: @key,
+                     base_url: ctx.base_url,
+                     system_prompt: "SYSTEM-SENTINEL-283",
+                     log_bodies: false
+                   )
+        end)
+
+      assert log =~ "←done"
+      refute log =~ @user_sentinel
+      refute log =~ "SYSTEM-SENTINEL-283"
+      refute log =~ "tea"
+    end
+
+    test "with log_bodies: false a successful stream logs no text, thought or tool arguments",
+         ctx do
+      stub_stream(ctx.bypass, [
+        ~s({"candidates":[{"content":{"role":"model","parts":[{"text":"THOUGHT-SENTINEL-283","thought":true}]}}]}),
+        ~s({"candidates":[{"content":{"role":"model","parts":[{"text":"REPLY-SENTINEL-283"}]}}]}),
+        ~s({"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"lookup","args":{"q":"ARGS-SENTINEL-283"}}}]},"finishReason":"STOP"}]})
+      ])
+
+      stream_opts = [
+        provider: :gemini,
+        model: @model,
+        api_key: @key,
+        base_url: ctx.base_url
+      ]
+
+      quiet =
+        capture_log([level: :debug], fn ->
+          assert {:ok, %ExAthena.Response{text: "REPLY-SENTINEL-283", tool_calls: [_]}} =
+                   ExAthena.stream(
+                     @user_sentinel,
+                     fn _ -> :ok end,
+                     [log_bodies: false] ++ stream_opts
+                   )
+        end)
+
+      loud =
+        capture_log([level: :debug], fn ->
+          ExAthena.stream(@user_sentinel, fn _ -> :ok end, stream_opts)
+        end)
+
+      for sentinel <- [
+            @user_sentinel,
+            "THOUGHT-SENTINEL-283",
+            "REPLY-SENTINEL-283",
+            "ARGS-SENTINEL-283"
+          ] do
+        refute quiet =~ sentinel
+        assert loud =~ sentinel
+      end
+    end
+
+    test "with log_bodies: false a failed embedding logs no body", ctx do
+      Bypass.stub(
+        ctx.bypass,
+        "POST",
+        "/v1beta/models/gemini-embedding-001:embedContent",
+        fn conn ->
+          conn
+          |> Plug.Conn.put_resp_content_type("application/json")
+          |> Plug.Conn.resp(400, error_body())
+        end
+      )
+
+      log =
+        capture_log([level: :debug], fn ->
+          assert {:error, %Error{kind: :bad_request}} =
+                   ExAthena.embed(
+                     "hi",
+                     opts(ctx, model: "gemini-embedding-001", log_bodies: false)
+                   )
+        end)
+
+      assert log =~ "←error"
+      refute log =~ @body_sentinel
+    end
+
+    test "by default the debug log still carries the text, so the refutes above can fail",
+         ctx do
+      stub_generate(ctx.bypass, @model, error_body(), 400)
+
+      log =
+        capture_log([level: :debug], fn -> ExAthena.query(@user_sentinel, opts(ctx)) end)
+
+      assert log =~ @user_sentinel
+      assert log =~ @body_sentinel
     end
   end
 

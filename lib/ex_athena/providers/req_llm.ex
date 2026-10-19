@@ -104,28 +104,33 @@ defmodule ExAthena.Providers.ReqLLM do
 
   @impl ExAthena.Provider
   def query(%Request{} = request, opts) do
+    log_bodies? = log_bodies?(opts)
+
     with {:ok, model_spec} <- resolve_model(request, opts),
          {:ok, messages} <- build_messages(request),
          {:ok, req_opts} <- build_opts(request, opts),
          :ok <- gemini_preflight(model_spec, req_opts, :query),
          :ok <- ensure_exo_instance(request, opts) do
-      log_request(:query, model_spec, request, messages, req_opts)
+      log_request(:query, model_spec, request, messages, req_opts, log_bodies?)
 
       case generate_text(model_spec, messages, req_opts) do
         {:ok, %ReqLLM.Response{} = resp} ->
           response = to_response(resp, request)
-          log_response(response)
+          log_response(response, log_bodies?)
           {:ok, response}
 
         {:error, reason} ->
-          log_error(reason)
-          {:error, to_error(reason)}
+          error = to_error(reason)
+          log_error(reason, error, log_bodies?)
+          {:error, error}
       end
     end
   end
 
   @impl ExAthena.Provider
   def stream(%Request{} = request, callback, opts) when is_function(callback, 1) do
+    log_bodies? = log_bodies?(opts)
+
     with {:ok, model_spec} <- resolve_model(request, opts),
          {:ok, messages} <- build_messages(request),
          {:ok, req_opts} <- build_opts(request, opts),
@@ -133,13 +138,13 @@ defmodule ExAthena.Providers.ReqLLM do
          :ok <- ensure_exo_instance(request, opts) do
       gemini? = Gemini.model?(model_spec)
       req_opts = if gemini?, do: Gemini.with_header_auth(req_opts), else: req_opts
-      log_request(:stream, model_spec, request, messages, req_opts)
+      log_request(:stream, model_spec, request, messages, req_opts, log_bodies?)
 
       case ReqLLM.stream_text(model_spec, messages, req_opts) do
         {:ok, %ReqLLM.StreamResponse{} = sr} ->
-          case consume_stream(sr, callback, request, gemini: gemini?) do
+          case consume_stream(sr, callback, request, gemini: gemini?, log_bodies: log_bodies?) do
             {:ok, response} ->
-              log_response(response)
+              log_response(response, log_bodies?)
               {:ok, response}
 
             {:error, _} = err ->
@@ -147,8 +152,9 @@ defmodule ExAthena.Providers.ReqLLM do
           end
 
         {:error, reason} ->
-          log_error(reason)
-          {:error, to_error(reason)}
+          error = to_error(reason)
+          log_error(reason, error, log_bodies?)
+          {:error, error}
       end
     end
   end
@@ -164,6 +170,11 @@ defmodule ExAthena.Providers.ReqLLM do
   defp gemini_preflight(model_spec, req_opts, kind) do
     if Gemini.model?(model_spec), do: Gemini.preflight(req_opts, kind), else: :ok
   end
+
+  # `log_bodies: false` (per call, or in the provider's config) keeps message
+  # text, replies and provider error bodies out of the log. Counts, kinds and
+  # statuses still log.
+  defp log_bodies?(opts), do: Keyword.get(opts, :log_bodies, true) != false
 
   # ── Embeddings ────────────────────────────────────────────────────
   #
@@ -194,8 +205,9 @@ defmodule ExAthena.Providers.ReqLLM do
            }}
 
         {:error, reason} ->
-          log_error(reason)
-          {:error, to_error(reason)}
+          error = to_error(reason)
+          log_error(reason, error, log_bodies?(opts))
+          {:error, error}
       end
     end
   end
@@ -940,6 +952,8 @@ defmodule ExAthena.Providers.ReqLLM do
   @stream_bytes_per_token 8
 
   def consume_stream(%ReqLLM.StreamResponse{stream: stream}, callback, request, opts \\ []) do
+    log_bodies? = Keyword.get(opts, :log_bodies, true)
+
     max_stream_bytes =
       (request.max_tokens ||
          Tuning.get(:model, :max_completion_tokens, @default_completion_tokens)) *
@@ -959,6 +973,7 @@ defmodule ExAthena.Providers.ReqLLM do
       finish_reason: nil,
       usage: nil,
       first_chunk_logged: false,
+      log_bodies: log_bodies?,
       stream_started_ms: System.monotonic_time(:millisecond)
     }
 
@@ -986,11 +1001,20 @@ defmodule ExAthena.Providers.ReqLLM do
         {:ok, final}
       rescue
         e in [ReqLLM.Error.API.Stream, Mint.TransportError, Finch.Error] ->
-          Logger.warning(
-            "#{@log_prefix} transport/stream error during consume: #{Exception.message(e)}"
-          )
+          error = to_error(e)
 
-          {:error, to_error(e)}
+          if log_bodies? do
+            Logger.warning(
+              "#{@log_prefix} transport/stream error during consume: #{Exception.message(e)}"
+            )
+          else
+            Logger.warning(
+              "#{@log_prefix} transport/stream error during consume: " <>
+                "kind=#{error.kind} status=#{inspect(error.status)}"
+            )
+          end
+
+          {:error, error}
       after
         stop_heartbeat(heartbeat_pid)
       end
@@ -1017,10 +1041,11 @@ defmodule ExAthena.Providers.ReqLLM do
 
         # Log the resolved tool calls. Warn when args are still empty after patching
         # (means neither fragments nor raw_arguments provided usable JSON).
-        if Enum.any?(tool_calls, fn tc ->
-             args = if is_struct(tc), do: tc.arguments, else: Map.get(tc, :arguments)
-             args == %{} or is_nil(args)
-           end) do
+        if log_bodies? and
+             Enum.any?(tool_calls, fn tc ->
+               args = if is_struct(tc), do: tc.arguments, else: Map.get(tc, :arguments)
+               args == %{} or is_nil(args)
+             end) do
           Logger.warning(
             "#{@log_prefix} [diag] tool_call with empty args after patching — " <>
               "buffer=#{inspect(final.tool_call_args_buffer)} " <>
@@ -1028,16 +1053,17 @@ defmodule ExAthena.Providers.ReqLLM do
               "calls=#{inspect(Enum.map(tool_calls, fn tc -> {Map.get(tc, :name) || (is_struct(tc) && tc.name), Map.get(tc, :arguments) || (is_struct(tc) && tc.arguments)} end))}"
           )
         else
-          Logger.debug(fn ->
-            calls_preview =
-              Enum.map_join(tool_calls, ", ", fn tc ->
-                name = if is_struct(tc), do: tc.name, else: Map.get(tc, :name)
-                args = if is_struct(tc), do: tc.arguments, else: Map.get(tc, :arguments)
-                "#{name}(#{inspect(args, limit: 5, printable_limit: 200)})"
-              end)
+          log_bodies? &&
+            Logger.debug(fn ->
+              calls_preview =
+                Enum.map_join(tool_calls, ", ", fn tc ->
+                  name = if is_struct(tc), do: tc.name, else: Map.get(tc, :name)
+                  args = if is_struct(tc), do: tc.arguments, else: Map.get(tc, :arguments)
+                  "#{name}(#{inspect(args, limit: 5, printable_limit: 200)})"
+                end)
 
-            "#{@log_prefix} ←tool_calls_resolved #{calls_preview}"
-          end)
+              "#{@log_prefix} ←tool_calls_resolved #{calls_preview}"
+            end)
         end
 
         {:ok,
@@ -1199,32 +1225,37 @@ defmodule ExAthena.Providers.ReqLLM do
   defp maybe_log_first_chunk(_chunk, acc), do: acc
 
   defp handle_chunk(%{type: :content, text: text}, callback, acc) when is_binary(text) do
-    Logger.debug(fn ->
-      "#{@log_prefix} ←text_delta #{byte_size(text)}B: #{preview(text, 80)}"
-    end)
+    acc.log_bodies &&
+      Logger.debug(fn ->
+        "#{@log_prefix} ←text_delta #{byte_size(text)}B: #{preview(text, 80)}"
+      end)
 
     ExAthena.Streaming.text_delta(callback, text)
     %{acc | text: [text | acc.text], streamed_bytes: acc.streamed_bytes + byte_size(text)}
   end
 
   defp handle_chunk(%{type: :thinking, text: text}, callback, acc) when is_binary(text) do
-    Logger.debug(fn ->
-      "#{@log_prefix} ←thinking_delta #{byte_size(text)}B: #{preview(text, 80)}"
-    end)
+    acc.log_bodies &&
+      Logger.debug(fn ->
+        "#{@log_prefix} ←thinking_delta #{byte_size(text)}B: #{preview(text, 80)}"
+      end)
 
     ExAthena.Streaming.thinking_delta(callback, text)
     %{acc | thinking: [text | acc.thinking], streamed_bytes: acc.streamed_bytes + byte_size(text)}
   end
 
   defp handle_chunk(%{type: :tool_call} = tc, _callback, acc) do
-    Logger.debug(fn ->
-      name = Map.get(tc, :name) || Map.get(tc, "name") || "<unknown>"
-      args = Map.get(tc, :arguments) || Map.get(tc, "arguments") || %{}
-      index = tc.metadata && (Map.get(tc.metadata, :index) || Map.get(tc.metadata, "index"))
-      suffix = if args == %{}, do: " (args pending fragments; index=#{inspect(index)})", else: ""
+    acc.log_bodies &&
+      Logger.debug(fn ->
+        name = Map.get(tc, :name) || Map.get(tc, "name") || "<unknown>"
+        args = Map.get(tc, :arguments) || Map.get(tc, "arguments") || %{}
+        index = tc.metadata && (Map.get(tc.metadata, :index) || Map.get(tc.metadata, "index"))
 
-      "#{@log_prefix} ←tool_call name=#{inspect(name)} args=#{inspect(args, limit: 3, printable_limit: 200)}#{suffix}"
-    end)
+        suffix =
+          if args == %{}, do: " (args pending fragments; index=#{inspect(index)})", else: ""
+
+        "#{@log_prefix} ←tool_call name=#{inspect(name)} args=#{inspect(args, limit: 3, printable_limit: 200)}#{suffix}"
+      end)
 
     %{acc | tool_calls: acc.tool_calls ++ [tc]}
   end
@@ -1278,7 +1309,7 @@ defmodule ExAthena.Providers.ReqLLM do
 
   # ── Logging helpers (Claude Code-style adapter-boundary breadcrumbs) ──
 
-  defp log_request(kind, model_spec, %Request{} = request, messages, req_opts) do
+  defp log_request(kind, model_spec, %Request{} = request, messages, req_opts, log_bodies?) do
     base_url = Keyword.get(req_opts, :base_url) || "<provider default>"
     backend = Keyword.get(req_opts, :openai_compatible_backend)
     n_msgs = length(messages)
@@ -1289,28 +1320,31 @@ defmodule ExAthena.Providers.ReqLLM do
         "base_url=#{base_url}#{if backend, do: " backend=#{inspect(backend)}", else: ""}"
     )
 
-    Logger.debug(fn ->
-      sp_preview =
-        case request.system_prompt do
-          nil -> "nil"
-          "" -> "\"\""
-          str when is_binary(str) -> "#{byte_size(str)}B: #{preview(str, 200)}"
-        end
+    log_bodies? &&
+      Logger.debug(fn ->
+        sp_preview =
+          case request.system_prompt do
+            nil -> "nil"
+            "" -> "\"\""
+            str when is_binary(str) -> "#{byte_size(str)}B: #{preview(str, 200)}"
+          end
 
-      msg_lines =
-        messages
-        |> Enum.with_index()
-        |> Enum.map(fn {%ReqLLM.Message{role: role, content: parts}, i} ->
-          text = parts |> Enum.map(&content_part_text/1) |> Enum.join(" ")
-          "  msg[#{i}] #{role}: #{preview(text, 200)}"
-        end)
-        |> Enum.join("\n")
+        msg_lines =
+          messages
+          |> Enum.with_index()
+          |> Enum.map(fn {%ReqLLM.Message{role: role, content: parts}, i} ->
+            text = parts |> Enum.map(&content_part_text/1) |> Enum.join(" ")
+            "  msg[#{i}] #{role}: #{preview(text, 200)}"
+          end)
+          |> Enum.join("\n")
 
-      "#{@log_prefix} →#{kind} system_prompt=#{sp_preview}\n#{msg_lines}"
-    end)
+        "#{@log_prefix} →#{kind} system_prompt=#{sp_preview}\n#{msg_lines}"
+      end)
+
+    :ok
   end
 
-  defp log_response(%Response{} = resp) do
+  defp log_response(%Response{} = resp, log_bodies?) do
     text_chars = byte_size(resp.text || "")
     n_tool_calls = length(resp.tool_calls || [])
 
@@ -1320,13 +1354,20 @@ defmodule ExAthena.Providers.ReqLLM do
         "usage=#{inspect(resp.usage, limit: 5)}"
     )
 
-    Logger.debug(fn ->
-      "#{@log_prefix} ←done text_preview=#{preview(resp.text || "", 300)}"
-    end)
+    log_bodies? &&
+      Logger.debug(fn ->
+        "#{@log_prefix} ←done text_preview=#{preview(resp.text || "", 300)}"
+      end)
+
+    :ok
   end
 
-  defp log_error(reason) do
+  defp log_error(reason, _error, true) do
     Logger.warning("#{@log_prefix} ←error #{inspect(reason, limit: 5, printable_limit: 500)}")
+  end
+
+  defp log_error(_reason, %Error{} = error, false) do
+    Logger.warning("#{@log_prefix} ←error kind=#{error.kind} status=#{inspect(error.status)}")
   end
 
   defp content_part_text(%ReqLLM.Message.ContentPart{text: text}) when is_binary(text), do: text
