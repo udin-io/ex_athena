@@ -234,15 +234,16 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
     end
   end
 
-  defp warn_once(key, value, default) do
+  defp warn_once(key, value, default, wanted \\ nil) do
     marker = {__MODULE__, :bad_setting, key, value}
 
     unless :persistent_term.get(marker, false) do
       :persistent_term.put(marker, true)
+      wanted = wanted || "a whole number of milliseconds from 0 to #{@max_timeout_ms}"
 
       Logger.warning(
-        "[ExAthena.Lsp.ImplicitDiagnostics] #{key} must be a whole number of " <>
-          "milliseconds from 0 to #{@max_timeout_ms}, got #{inspect(value)}; using #{default}"
+        "[ExAthena.Lsp.ImplicitDiagnostics] #{key} must be #{wanted}, " <>
+          "got #{inspect(value)}; using #{inspect(default)}"
       )
     end
   end
@@ -282,18 +283,31 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
     :exit, _ -> :client_down
   end
 
-  defp filter_severities(diags) do
-    allowed =
-      Application.get_env(
-        :ex_athena,
-        :lsp_implicit_diagnostics_severities,
-        @default_severities
-      )
+  # The server writes these, so read them defensively: skip entries that are
+  # not maps, and treat a payload that is not a list as no diagnostics.
+  defp filter_severities(diags) when is_list(diags) do
+    allowed = severities_setting()
 
     Enum.filter(diags, fn d ->
-      atom = Map.get(@severity_atoms, d["severity"])
-      atom in allowed
+      is_map(d) and Map.get(@severity_atoms, d["severity"]) in allowed
     end)
+  end
+
+  defp filter_severities(_diags), do: []
+
+  defp severities_setting do
+    case Application.get_env(
+           :ex_athena,
+           :lsp_implicit_diagnostics_severities,
+           @default_severities
+         ) do
+      list when is_list(list) ->
+        list
+
+      other ->
+        warn_once(:lsp_implicit_diagnostics_severities, other, @default_severities, "a list")
+        @default_severities
+    end
   end
 
   defp format(diags, abs_path, cwd) do
@@ -302,15 +316,21 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
     lines =
       Enum.map(diags, fn d ->
         sev = Map.get(@severity_atoms, d["severity"], :unknown)
-        msg = d["message"] || ""
-        start = get_in(d, ["range", "start"]) || %{}
-        line = (start["line"] || 0) + 1
-        col = (start["character"] || 0) + 1
-        "#{sev}: #{msg} at #{rel}:#{line}:#{col}"
+        msg = if is_binary(d["message"]), do: d["message"], else: ""
+        start = position(d["range"])
+        "#{sev}: #{msg} at #{rel}:#{start.line + 1}:#{start.col + 1}"
       end)
 
     "[lsp diagnostics]\n" <> Enum.join(lines, "\n")
   end
+
+  defp position(%{"start" => %{} = start}),
+    do: %{line: non_neg(start["line"]), col: non_neg(start["character"])}
+
+  defp position(_range), do: %{line: 0, col: 0}
+
+  defp non_neg(n) when is_integer(n) and n >= 0, do: n
+  defp non_neg(_), do: 0
 
   defp count_from({:augment, text}) do
     text |> String.split("\n") |> Enum.count(&(&1 =~ ~r/^(error|warning|information|hint):/))

@@ -271,6 +271,36 @@ defmodule ExAthena.Lsp.ImplicitDiagnosticsTest do
       end
     end
 
+    # The language server writes the diagnostics, so the hook must survive
+    # any shape of them: a raise in the hook halts the agent run.
+    test "malformed diagnostics from the server keep the good ones and do not raise",
+         %{dir: dir} do
+      setup_lsp_override(["--bad-diagnostics", "list"])
+      path = write_elixir_file(dir)
+      payload = %{arguments: %{"path" => path}, cwd: dir, tool_name: "Edit"}
+
+      assert {:augment, text} = hook_or_flunk(payload)
+      assert text =~ "error: real error at test.ex:1:1"
+    end
+
+    test "a diagnostics payload that is not a list returns :ok", %{dir: dir} do
+      setup_lsp_override(["--bad-diagnostics", "string"])
+      path = write_elixir_file(dir)
+      payload = %{arguments: %{"path" => path}, cwd: dir, tool_name: "Edit"}
+
+      assert :ok = hook_or_flunk(payload)
+    end
+
+    test "a severities setting that is not a list falls back to the default", %{dir: dir} do
+      Application.put_env(:ex_athena, :lsp_implicit_diagnostics_severities, :error)
+      on_exit(fn -> Application.delete_env(:ex_athena, :lsp_implicit_diagnostics_severities) end)
+      path = write_elixir_file(dir)
+      payload = %{arguments: %{"path" => path}, cwd: dir, tool_name: "Edit"}
+
+      assert {:augment, text} = hook_or_flunk(payload)
+      assert text =~ "error: undefined function foo/0"
+    end
+
     test "a bad timeout setting is warned about once, not on every edit", %{dir: dir} do
       bad = "warn-once-#{System.unique_integer([:positive])}"
       Application.put_env(:ex_athena, :lsp_implicit_diagnostics_timeout_ms, bad)

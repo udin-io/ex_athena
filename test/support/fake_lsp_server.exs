@@ -11,6 +11,9 @@ defmodule FakeLspServer do
       client's `initialized` notification, as the LSP spec lets a server do.
     * `--init-delay-ms N` — wait N ms before answering `initialize`, to stand
       in for a server that is slow to start.
+    * `--bad-diagnostics list|string` — answer a didOpen with malformed
+      diagnostics: a list mixing bad entries with one good error, or a bare
+      string where the list belongs.
     * `--pid-file PATH` — write this server's OS pid to PATH at startup, so a
       test can check whether the process outlived its client.
 
@@ -80,6 +83,11 @@ defmodule FakeLspServer do
       fail_initialize: fail_init,
       strict_init: "--strict-init" in argv,
       init_delay_ms: init_delay_ms(argv),
+      bad_diagnostics:
+        case Enum.drop_while(argv, &(&1 != "--bad-diagnostics")) do
+          ["--bad-diagnostics", kind | _] -> kind
+          _ -> nil
+        end,
       initialized: false
     })
   end
@@ -260,20 +268,41 @@ defmodule FakeLspServer do
   defp handle(%{"method" => "textDocument/didOpen", "params" => params}, port, state) do
     uri = get_in(params, ["textDocument", "uri"]) || ""
 
-    unless state.suppress_next_diag do
-      notify(port, "textDocument/publishDiagnostics", %{
-        "uri" => uri,
-        "diagnostics" => [
-          %{
-            "range" => %{
-              "start" => %{"line" => 0, "character" => 0},
-              "end" => %{"line" => 0, "character" => 5}
-            },
-            "severity" => 1,
-            "message" => "undefined function foo/0"
-          }
-        ]
-      })
+    cond do
+      state.suppress_next_diag ->
+        :ok
+
+      state.bad_diagnostics == "string" ->
+        notify(port, "textDocument/publishDiagnostics", %{"uri" => uri, "diagnostics" => "x"})
+
+      state.bad_diagnostics == "list" ->
+        notify(port, "textDocument/publishDiagnostics", %{
+          "uri" => uri,
+          "diagnostics" => [
+            "not a map",
+            %{"severity" => 1, "message" => %{"nested" => true}, "range" => [1, 2]},
+            %{
+              "severity" => 1,
+              "message" => "real error",
+              "range" => %{"start" => %{"line" => "2", "character" => nil}}
+            }
+          ]
+        })
+
+      true ->
+        notify(port, "textDocument/publishDiagnostics", %{
+          "uri" => uri,
+          "diagnostics" => [
+            %{
+              "range" => %{
+                "start" => %{"line" => 0, "character" => 0},
+                "end" => %{"line" => 0, "character" => 5}
+              },
+              "severity" => 1,
+              "message" => "undefined function foo/0"
+            }
+          ]
+        })
     end
 
     %{state | suppress_next_diag: false}
