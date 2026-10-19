@@ -478,6 +478,16 @@ ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   now applied only to the providers that have one; everything else leaves the
   Runner without a `:base_url` for the adapter and app config to resolve.
 
+### Security
+
+- **The dev and test lock now holds bandit 1.13.1.**
+  ([#278](https://github.com/udin-io/ex_athena/issues/278)) bandit 1.11.1
+  carried two advisories: EEF-CVE-2026-105660 (a client sets the host and port
+  the app sees through the HTTP/1 request line) and EEF-CVE-2026-105659 (a slow
+  trickle of HTTP/2 window updates holds a connection open). `mix hex.audit`
+  lists no bandit advisory now. bandit stays an optional dependency; an app
+  that serves `mix athena.web` keeps its own lock and upgrades bandit itself.
+
 ## v0.20.0 — One instrumented inference path, configurable rails & a settings UI
 
 ### Added
