@@ -133,9 +133,12 @@ defmodule ExAthena.Lsp.Manager do
 
   # --- private ---
 
+  # The Registry removes a dead client's entry asynchronously, so a lookup
+  # right after the client exits can still return its pid. Treat that pid as
+  # gone; registering a fresh client replaces the stale entry.
   defp lookup(root, language) do
     case Registry.lookup(ExAthena.Lsp.Registry, {root, language}) do
-      [{pid, _}] -> {:ok, pid}
+      [{pid, _}] -> if Process.alive?(pid), do: {:ok, pid}, else: :not_found
       [] -> :not_found
     end
   end

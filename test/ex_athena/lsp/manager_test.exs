@@ -132,6 +132,29 @@ defmodule ExAthena.Lsp.ManagerTest do
       assert Process.alive?(pid2)
     end
 
+    # The Registry drops a dead client's entry asynchronously. Suspending the
+    # process that does it holds the stale entry in place, so the race the
+    # test above hit now and then happens on every run.
+    test "a client that has exited is never handed out again" do
+      root = unique_root()
+      {:ok, pid1} = Manager.ensure_started(root, :elixir)
+      ref = Process.monitor(pid1)
+
+      cleaner = Module.concat(ExAthena.Lsp.Registry, "PIDPartition0")
+      :sys.suspend(cleaner)
+
+      try do
+        :ok = Manager.stop(root, :elixir)
+        assert_receive {:DOWN, ^ref, :process, ^pid1, _}, 3_000
+
+        {:ok, pid2} = Manager.ensure_started(root, :elixir)
+        assert pid2 != pid1
+        assert Process.alive?(pid2)
+      after
+        :sys.resume(cleaner)
+      end
+    end
+
     test "stop/2 on non-existent client returns :ok" do
       root = unique_root()
       assert :ok = Manager.stop(root, :elixir)
