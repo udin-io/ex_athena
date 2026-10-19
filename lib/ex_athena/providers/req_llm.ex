@@ -42,6 +42,7 @@ defmodule ExAthena.Providers.ReqLLM do
 
   alias ExAthena.{Embedding, Error, ModelDiscovery, ModelListing, Request, Response}
   alias ExAthena.Messages.{Message, ToolResult}
+  alias ExAthena.Providers.ReqLLM.Gemini
   alias ExAthena.Tuning
 
   # Claude Code-style log prefix so callers can filter/tail the adapter
@@ -106,10 +107,11 @@ defmodule ExAthena.Providers.ReqLLM do
     with {:ok, model_spec} <- resolve_model(request, opts),
          {:ok, messages} <- build_messages(request),
          {:ok, req_opts} <- build_opts(request, opts),
+         :ok <- gemini_preflight(model_spec, req_opts, :query),
          :ok <- ensure_exo_instance(request, opts) do
       log_request(:query, model_spec, request, messages, req_opts)
 
-      case ReqLLM.generate_text(model_spec, messages, req_opts) do
+      case generate_text(model_spec, messages, req_opts) do
         {:ok, %ReqLLM.Response{} = resp} ->
           response = to_response(resp, request)
           log_response(response)
@@ -127,12 +129,15 @@ defmodule ExAthena.Providers.ReqLLM do
     with {:ok, model_spec} <- resolve_model(request, opts),
          {:ok, messages} <- build_messages(request),
          {:ok, req_opts} <- build_opts(request, opts),
+         :ok <- gemini_preflight(model_spec, req_opts, :stream),
          :ok <- ensure_exo_instance(request, opts) do
+      gemini? = Gemini.model?(model_spec)
+      req_opts = if gemini?, do: Gemini.with_header_auth(req_opts), else: req_opts
       log_request(:stream, model_spec, request, messages, req_opts)
 
       case ReqLLM.stream_text(model_spec, messages, req_opts) do
         {:ok, %ReqLLM.StreamResponse{} = sr} ->
-          case consume_stream(sr, callback, request) do
+          case consume_stream(sr, callback, request, gemini: gemini?) do
             {:ok, response} ->
               log_response(response)
               {:ok, response}
@@ -148,6 +153,18 @@ defmodule ExAthena.Providers.ReqLLM do
     end
   end
 
+  # Google's API goes through ex_athena's own request (see
+  # `ExAthena.Providers.ReqLLM.Gemini`); every other backend through req_llm.
+  defp generate_text(model_spec, messages, req_opts) do
+    if Gemini.model?(model_spec),
+      do: Gemini.generate_text(model_spec, messages, req_opts),
+      else: ReqLLM.generate_text(model_spec, messages, req_opts)
+  end
+
+  defp gemini_preflight(model_spec, req_opts, kind) do
+    if Gemini.model?(model_spec), do: Gemini.preflight(req_opts, kind), else: :ok
+  end
+
   # ── Embeddings ────────────────────────────────────────────────────
   #
   # req_llm 1.10 already ships an embeddings path (`ReqLLM.embed/3` → POST
@@ -158,14 +175,14 @@ defmodule ExAthena.Providers.ReqLLM do
 
   @impl ExAthena.Provider
   def embed(input, opts) do
-    with {:ok, model_spec} <- resolve_embedding_model(opts) do
-      req_opts = build_embed_opts(opts)
-
+    with {:ok, model_spec} <- resolve_embedding_model(opts),
+         req_opts = build_embed_opts(opts),
+         :ok <- gemini_preflight(model_spec, req_opts, :embed) do
       Logger.info(
         "#{@log_prefix} →embed model=#{model_id(model_spec)} inputs=#{length(List.wrap(input))}"
       )
 
-      case ReqLLM.embed(model_spec, input, req_opts) do
+      case embed_request(model_spec, input, req_opts) do
         {:ok, %{embedding: vectors, usage: usage}} ->
           {:ok,
            %Embedding{
@@ -181,6 +198,12 @@ defmodule ExAthena.Providers.ReqLLM do
           {:error, to_error(reason)}
       end
     end
+  end
+
+  defp embed_request(model_spec, input, req_opts) do
+    if Gemini.model?(model_spec),
+      do: Gemini.embed(model_spec, input, req_opts),
+      else: ReqLLM.embed(model_spec, input, req_opts)
   end
 
   # A single string yields a single vector; ExAthena.Embedding always exposes
@@ -916,7 +939,7 @@ defmodule ExAthena.Providers.ReqLLM do
   # guarantees the turn terminates; the truncated turn is then handled normally.
   @stream_bytes_per_token 8
 
-  def consume_stream(%ReqLLM.StreamResponse{stream: stream}, callback, request) do
+  def consume_stream(%ReqLLM.StreamResponse{stream: stream}, callback, request, opts \\ []) do
     max_stream_bytes =
       (request.max_tokens ||
          Tuning.get(:model, :max_completion_tokens, @default_completion_tokens)) *
@@ -982,7 +1005,13 @@ defmodule ExAthena.Providers.ReqLLM do
         text = final.text |> Enum.reverse() |> IO.iodata_to_binary()
         thinking = final.thinking |> Enum.reverse() |> IO.iodata_to_binary()
 
-        finish_reason = normalize_finish_reason(final.finish_reason)
+        finish_reason =
+          stream_finish_reason(
+            normalize_finish_reason(final.finish_reason),
+            text,
+            tool_calls,
+            Keyword.get(opts, :gemini, false)
+          )
 
         ExAthena.Streaming.stop(callback, finish_reason || :stop)
 
@@ -1049,6 +1078,13 @@ defmodule ExAthena.Providers.ReqLLM do
     do: Map.get(@finish_reasons, reason, :error)
 
   defp normalize_finish_reason(reason), do: reason
+
+  # Google returns no candidates at all for a blocked prompt (its
+  # `promptFeedback.blockReason`), and req_llm's stream decoder drops that
+  # event, so a Gemini stream that ends with no finish reason and no output
+  # was refused, not answered.
+  defp stream_finish_reason(nil, text, [], true) when text in ["", nil], do: :content_filter
+  defp stream_finish_reason(reason, _text, _tool_calls, _gemini?), do: reason
 
   # Merge accumulated argument fragments back into each tool call.
   # Handles two llama.cpp streaming quirks:
@@ -1311,6 +1347,8 @@ defmodule ExAthena.Providers.ReqLLM do
   # Public (@doc false) so the classification contract is directly testable,
   # mirroring `context_overflow?/1` below.
   @doc false
+  def to_error(%Error{} = error), do: error
+
   # A stream that the server refused with an HTTP status carries that status
   # on its cause; classify it like the same refusal on a query.
   def to_error(%ReqLLM.Error.API.Stream{cause: %{status: status} = cause})
