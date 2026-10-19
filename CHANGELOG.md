@@ -45,8 +45,10 @@ ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   client holds requests and notifications until the server answers
   `initialize`. A server that never answered kept the client alive and the
   queue growing, one full copy of the file per LSP tool call. The client now
-  gives the handshake 30 s, then fails what it holds with
-  `{:error, :init_timeout}` and stops; the next call starts a fresh server.
+  gives the handshake 30 s by default (`:lsp_init_timeout_ms`), then fails
+  what it holds with `{:error, :init_timeout}`, kills the server's process and
+  stops; the next call starts a fresh server. An LSP tool call that reaches a
+  client as it stops now gets an error back instead of ending the run.
 
 - **A language server that just exited is no longer handed out again.**
   ([#282](https://github.com/udin-io/ex_athena/issues/282)) For a moment
