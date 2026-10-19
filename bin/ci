@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# Runs the steps .github/workflows/ci.yml runs, in one place, so a local run
+# and CI check the same things. BLOCKING steps stop the script on failure;
+# ADVISORY steps print their result and carry on, as in the workflow.
+#
+#   bin/ci            every step
+#   bin/ci --fast     skip dialyzer (its PLT build takes minutes when cold)
+#
+# Set MIX_TEST_PARTITION when two checkouts run at once (see CLAUDE.md).
+
+set -uo pipefail
+
+cd "$(dirname "$0")/.."
+
+fast=false
+[[ "${1:-}" == "--fast" ]] && fast=true
+
+printf '%s\n' "elixir/otp: $(elixir -e 'IO.write(System.version() <> " / OTP " <> System.otp_release())')"
+printf '%s\n' "hex: $(mix hex.info 2>/dev/null | head -1)"
+
+advisory_failures=()
+
+blocking() {
+  local name=$1
+  shift
+  printf '\n%s\n' "== BLOCKING: $name"
+  if ! "$@"; then
+    printf '%s\n' "bin/ci: $name failed"
+    exit 1
+  fi
+}
+
+advisory() {
+  local name=$1
+  shift
+  printf '\n%s\n' "== ADVISORY: $name"
+  "$@"
+  local code=$?
+  if [[ $code -ne 0 ]]; then
+    advisory_failures+=("$name (exit $code)")
+  fi
+}
+
+blocking "format" env MIX_ENV=test mix format --check-formatted
+blocking "compile --warnings-as-errors (test)" env MIX_ENV=test mix compile --force --warnings-as-errors
+blocking "test" env MIX_ENV=test mix test
+
+advisory "credo --strict" mix credo --strict
+advisory "sobelow" mix sobelow --config
+advisory "deps.audit" mix deps.audit
+advisory "hex.audit" mix hex.audit
+if [[ "$fast" == false ]]; then
+  advisory "dialyzer" mix dialyzer --format short
+fi
+
+printf '\n%s\n' "bin/ci: blocking steps passed"
+if [[ ${#advisory_failures[@]} -gt 0 ]]; then
+  printf '%s\n' "bin/ci: advisory steps with findings (they do not fail CI):"
+  printf '  %s\n' "${advisory_failures[@]}"
+fi
