@@ -165,13 +165,15 @@ sequenceDiagram
   Lsp->>Srv: initialize
   ID->>Lsp: await_initialized, up to 5 s
   Srv-->>Lsp: initialize reply
-  ID->>Lsp: textDocument/didOpen
-  Lsp->>Srv: textDocument/didOpen
+  ID->>Lsp: sync_document with the file's text, old diagnostics cleared
+  Lsp->>Srv: didOpen at version 1, or didChange at the next version
   Srv-->>Lsp: publishDiagnostics
   ID->>Lsp: poll diagnostics, up to 1.5 s
   ID-->>H: {:augment, "[lsp diagnostics] …"}
   H-->>M: augmented tool_result content
 ```
+
+After a second edit of the same file the client sends the new text as a full `didChange` with a rising version, and forgets the file's earlier diagnostics first. The hook then returns only what the server says about the new text. A `publishDiagnostics` that names an older version is ignored, and a file whose text did not change sends nothing.
 
 Source: [`ImplicitDiagnostics.maybe_merge/1`](../lib/ex_athena/lsp/implicit_diagnostics.ex). Wired in [`Loop.build_initial_state/2`](../lib/ex_athena/loop.ex#L573).
 

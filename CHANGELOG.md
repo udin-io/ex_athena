@@ -9,6 +9,15 @@ ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A second edit of a file no longer shows the first edit's diagnostics.**
+  ([#287](https://github.com/udin-io/ex_athena/issues/287)) The client kept
+  the last diagnostics for each file and the hook returned them at once, so
+  the second edit read errors the model had already fixed. It also sent
+  `didOpen` at version 1 on every edit, which a server that already has the
+  file open may ignore. The client now sends the new text as a `didChange`
+  with a rising version, drops the file's old diagnostics in the same step,
+  and ignores a late publish for an older version.
+
 - **The first edit after a language server starts now gets its diagnostics.**
   ([#282](https://github.com/udin-io/ex_athena/issues/282)) After an Edit or
   Write, the implicit-diagnostics hook waits 1.5 s for the language server to
