@@ -6,9 +6,10 @@ defmodule ExAthena.Tools.Lsp do
   `diagnostics` — by delegating to the running `ExAthena.Lsp.Client` for the
   file's language, managed by `ExAthena.Lsp.Manager`.
 
-  Before every position-based request the tool sends `textDocument/didOpen`
-  so the server has an up-to-date buffer. Repeated `didOpen` calls are
-  tolerated by LSP servers — they re-sync the buffer.
+  Before every request that names a file the tool syncs the file's text with
+  the server (`ExAthena.Lsp.Client.sync_document/2`): `didOpen` the first
+  time, a versioned `didChange` after an edit, nothing when the text is the
+  same.
 
   The `diagnostics` action reads push-cached diagnostics
   (`textDocument/publishDiagnostics` notifications stored by the client).
@@ -191,22 +192,17 @@ defmodule ExAthena.Tools.Lsp do
     end
   end
 
-  # --- didOpen ---
+  # --- document sync ---
 
   @doc false
   def ensure_did_open(pid, abs_path) do
     case File.read(abs_path) do
       {:ok, contents} ->
-        Client.notify(pid, "textDocument/didOpen", %{
-          "textDocument" => %{
-            "uri" => "file://" <> abs_path,
-            "languageId" => language_id(abs_path),
-            "version" => 1,
-            "text" => contents
-          }
+        Client.sync_document(pid, %{
+          uri: "file://" <> abs_path,
+          language_id: language_id(abs_path),
+          text: contents
         })
-
-        :ok
 
       {:error, reason} ->
         {:error, {:file_read_error, reason}}

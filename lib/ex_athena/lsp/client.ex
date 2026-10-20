@@ -121,6 +121,32 @@ defmodule ExAthena.Lsp.Client do
     GenServer.call(pid, {:diagnostics, uri})
   end
 
+  @doc """
+  Tell the server the current text of a file, and forget the file's old
+  diagnostics.
+
+  The first call for a `uri` sends `textDocument/didOpen` at version 1. Each
+  later call with different text sends a full-text `textDocument/didChange`
+  with the next version. A call with the text the server already has sends
+  nothing and keeps the diagnostics it earned.
+
+  The old diagnostics are dropped inside the same call that sends the text, so
+  a caller that waits for diagnostics afterwards sees only what the server
+  says about this text. A `publishDiagnostics` that names an older version is
+  ignored when it arrives late.
+
+  Takes `%{uri: ..., language_id: ..., text: ...}`. Returns `:ok`, or
+  `{:error, {:client_exit, reason}}` when the client has stopped.
+  """
+  @spec sync_document(pid(), %{uri: String.t(), language_id: String.t(), text: String.t()}) ::
+          :ok | {:error, term()}
+  def sync_document(pid, %{uri: _, language_id: _, text: _} = doc) do
+    GenServer.call(pid, {:sync_document, doc})
+  catch
+    :exit, {:timeout, _} -> {:error, :timeout}
+    :exit, reason -> {:error, {:client_exit, reason}}
+  end
+
   @doc "Initiate a graceful LSP shutdown and wait up to `timeout` ms."
   @spec stop(pid(), non_neg_integer()) :: :ok
   def stop(pid, timeout \\ @default_request_timeout) do
@@ -151,6 +177,8 @@ defmodule ExAthena.Lsp.Client do
       pending: %{},
       next_id: 1,
       diagnostics: %{},
+      # %{uri => {version, md5 of the text the server holds}}
+      documents: %{},
       capabilities: %{},
       root_uri: root_uri,
       root: root,
@@ -223,6 +251,10 @@ defmodule ExAthena.Lsp.Client do
 
   def handle_call({:diagnostics, uri}, _from, state) do
     {:reply, Map.get(state.diagnostics, uri, []), state}
+  end
+
+  def handle_call({:sync_document, doc}, _from, state) do
+    {:reply, :ok, sync_document_state(state, doc)}
   end
 
   def handle_call(:stop, _from, state) do
@@ -401,7 +433,12 @@ defmodule ExAthena.Lsp.Client do
   defp handle_notification("textDocument/publishDiagnostics", params, state) do
     uri = Map.get(params, "uri", "")
     diags = Map.get(params, "diagnostics", [])
-    %{state | diagnostics: Map.put(state.diagnostics, uri, diags)}
+
+    if stale_version?(state, uri, Map.get(params, "version")) do
+      state
+    else
+      %{state | diagnostics: Map.put(state.diagnostics, uri, diags)}
+    end
   end
 
   defp handle_notification("window/logMessage", params, state) do
@@ -410,6 +447,62 @@ defmodule ExAthena.Lsp.Client do
   end
 
   defp handle_notification(_method, _params, state), do: state
+
+  # A late publish for text we have since replaced must not stand in for the
+  # new text's diagnostics. Servers that send no version are taken at their word.
+  defp stale_version?(state, uri, version) when is_integer(version) do
+    case Map.get(state.documents, uri) do
+      {current, _digest} -> version < current
+      nil -> false
+    end
+  end
+
+  defp stale_version?(_state, _uri, _version), do: false
+
+  defp sync_document_state(state, %{uri: uri, language_id: language_id, text: text}) do
+    digest = :erlang.md5(text)
+
+    case Map.get(state.documents, uri) do
+      {_version, ^digest} ->
+        state
+
+      known ->
+        {method, version, text_document} =
+          case known do
+            nil ->
+              {"textDocument/didOpen", 1,
+               %{"uri" => uri, "languageId" => language_id, "version" => 1, "text" => text}}
+
+            {version, _old} ->
+              {"textDocument/didChange", version + 1, %{"uri" => uri, "version" => version + 1}}
+          end
+
+        params =
+          if method == "textDocument/didOpen",
+            do: %{"textDocument" => text_document},
+            else: %{
+              "textDocument" => text_document,
+              "contentChanges" => [%{"text" => text}]
+            }
+
+        state = %{
+          state
+          | documents: Map.put(state.documents, uri, {version, digest}),
+            diagnostics: Map.delete(state.diagnostics, uri)
+        }
+
+        send_or_queue_notification(state, method, params)
+    end
+  end
+
+  defp send_or_queue_notification(%{initialized: true} = state, method, params) do
+    send_notification(state.port, method, params)
+    state
+  end
+
+  defp send_or_queue_notification(state, method, params) do
+    %{state | queued: [{:notify, method, params} | state.queued]}
+  end
 
   # --- request helpers ---
 

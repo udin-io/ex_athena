@@ -151,6 +151,83 @@ defmodule ExAthena.Lsp.ClientTest do
     end
   end
 
+  describe "sync_document/2" do
+    @held ["--erl", "-noinput", @fake_server_script, "--echo-text", "--ignore-change"]
+
+    defp doc(text), do: %{uri: "file:///test/sync.ex", language_id: "elixir", text: text}
+
+    defp publish_frame(version, message) do
+      json =
+        Jason.encode!(%{
+          "jsonrpc" => "2.0",
+          "method" => "textDocument/publishDiagnostics",
+          "params" => %{
+            "uri" => "file:///test/sync.ex",
+            "version" => version,
+            "diagnostics" => [%{"severity" => 1, "message" => message}]
+          }
+        })
+
+      "Content-Length: #{byte_size(json)}\r\n\r\n" <> json
+    end
+
+    defp deliver(pid, frame), do: send(pid, {:sys.get_state(pid).port, {:data, frame}})
+
+    test "a changed text drops the first text's diagnostics until the server answers" do
+      # The server holds the change, so nothing answers the second text.
+      pid = start_client(args: @held)
+      await_initialized(pid)
+      :ok = Client.sync_document(pid, doc("one"))
+      assert_diagnostics(pid, "file:///test/sync.ex", 2_000)
+
+      :ok = Client.sync_document(pid, doc("two"))
+      assert Client.diagnostics(pid, "file:///test/sync.ex") == []
+    end
+
+    test "a publish that names an older version arrives late and is ignored" do
+      pid = start_client(args: @held)
+      await_initialized(pid)
+      :ok = Client.sync_document(pid, doc("one"))
+      assert_diagnostics(pid, "file:///test/sync.ex", 2_000)
+      :ok = Client.sync_document(pid, doc("two"))
+
+      deliver(pid, publish_frame(1, "about one"))
+      assert Client.diagnostics(pid, "file:///test/sync.ex") == []
+    end
+
+    test "a publish that names the current version is kept (control)" do
+      pid = start_client(args: @held)
+      await_initialized(pid)
+      :ok = Client.sync_document(pid, doc("one"))
+      assert_diagnostics(pid, "file:///test/sync.ex", 2_000)
+      :ok = Client.sync_document(pid, doc("two"))
+
+      deliver(pid, publish_frame(2, "about two"))
+      assert_diagnostics(pid, "file:///test/sync.ex", 2_000)
+      assert [%{"message" => "about two"}] = Client.diagnostics(pid, "file:///test/sync.ex")
+    end
+
+    test "the same text twice sends nothing and keeps its diagnostics" do
+      pid = start_client(args: @held)
+      await_initialized(pid)
+      :ok = Client.sync_document(pid, doc("one"))
+      assert_diagnostics(pid, "file:///test/sync.ex", 2_000)
+
+      :ok = Client.sync_document(pid, doc("one"))
+      assert [_] = Client.diagnostics(pid, "file:///test/sync.ex")
+    end
+
+    test "returns an error, not an exit, when the client has stopped" do
+      pid = start_client()
+      await_initialized(pid)
+      ref = Process.monitor(pid)
+      Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 5_000
+
+      assert {:error, {:client_exit, _}} = Client.sync_document(pid, doc("one"))
+    end
+  end
+
   describe "diagnostics/2" do
     test "returns empty list for unknown uri" do
       pid = start_client()

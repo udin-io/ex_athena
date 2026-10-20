@@ -11,7 +11,11 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
        5000 ms) for the server to answer its `initialize` handshake. A server
        just launched spends this time booting; one already running answers at
        once.
-    4. Sends `textDocument/didOpen` with the current file contents.
+    4. Syncs the file's current text with the server: `didOpen` the first
+       time, a versioned `didChange` after an edit. The client drops the
+       file's old diagnostics in the same step, so step 5 sees only what the
+       server says about the new text. A server that sends no version with
+       `publishDiagnostics` can still deliver a late list for the old text.
     5. Polls `publishDiagnostics` push-notifications for up to
        `:lsp_implicit_diagnostics_timeout_ms` (default 1500 ms). The window
        opens after the handshake, so a slow boot does not eat it.
@@ -23,7 +27,8 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
   collapse to `:ok`. The hook runs inside the agent loop, so every wait in it
   is bounded by a setting: it blocks for at most the start timeout plus the
   diagnostics window (5 s and 1.5 s by default), plus up to 5 s for each of the
-  Manager lookup and the last diagnostics poll when those processes are busy.
+  Manager lookup, the text sync and the last diagnostics poll when those
+  processes are busy.
   A large setting makes a long wait; keep both in seconds, not minutes.
 
   ## Configuration keys

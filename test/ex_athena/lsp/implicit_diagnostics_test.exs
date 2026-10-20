@@ -35,6 +35,11 @@ defmodule ExAthena.Lsp.ImplicitDiagnosticsTest do
     end)
   end
 
+  defp put_diagnostics_timeout(ms) do
+    Application.put_env(:ex_athena, :lsp_implicit_diagnostics_timeout_ms, ms)
+    on_exit(fn -> Application.delete_env(:ex_athena, :lsp_implicit_diagnostics_timeout_ms) end)
+  end
+
   defp elapsed_ms(fun) do
     before_ms = System.monotonic_time(:millisecond)
     result = fun.()
@@ -245,13 +250,70 @@ defmodule ExAthena.Lsp.ImplicitDiagnosticsTest do
       :erlang.trace(pid, true, [:receive])
       task = Task.async(fn -> ImplicitDiagnostics.post_tool_use_hook(payload, "c1") end)
 
-      assert_receive {:trace, ^pid, :receive,
-                      {:"$gen_cast", {:notify, "textDocument/didOpen", _params}}},
+      assert_receive {:trace, ^pid, :receive, {:"$gen_call", _from, {:sync_document, _doc}}},
                      5_000
 
       Process.exit(pid, :kill)
 
       assert :ok = Task.await(task, 5_000)
+    end
+
+    # A second edit must report the server's verdict on the second text. The
+    # fake echoes the text it holds in each diagnostic, so a stale list from
+    # the first edit shows as "saw: first".
+    test "a second edit returns the diagnostics for the second text only", %{dir: dir} do
+      setup_lsp_override(["--echo-text", "--strict-open"])
+      path = Path.join(dir, "test.ex")
+      payload = %{arguments: %{"path" => path}, cwd: dir, tool_name: "Edit"}
+
+      File.write!(path, "first")
+      assert {:augment, first} = hook_or_flunk(payload)
+      assert first =~ "saw: first"
+
+      File.write!(path, "second")
+      assert {:augment, second} = hook_or_flunk(payload)
+      assert second =~ "saw: second"
+      refute second =~ "saw: first"
+    end
+
+    # The server is held at the racing step: it has the new text and has not
+    # answered. The first edit's list must not fill in for the missing answer.
+    test "a second edit returns :ok while the server has not answered the new text", %{dir: dir} do
+      setup_lsp_override(["--echo-text", "--ignore-change"])
+      put_diagnostics_timeout(300)
+      path = Path.join(dir, "test.ex")
+      payload = %{arguments: %{"path" => path}, cwd: dir, tool_name: "Edit"}
+
+      File.write!(path, "first")
+      assert {:augment, first} = hook_or_flunk(payload)
+      assert first =~ "saw: first"
+
+      File.write!(path, "second")
+      assert :ok = hook_or_flunk(payload)
+    end
+
+    # Control for the held-server test: an unchanged file keeps the diagnostics
+    # the server already gave, since the server hears nothing new to answer.
+    test "a second hook run on an unchanged file returns the same diagnostics", %{dir: dir} do
+      setup_lsp_override(["--echo-text", "--ignore-change"])
+      path = Path.join(dir, "test.ex")
+      File.write!(path, "same")
+      payload = %{arguments: %{"path" => path}, cwd: dir, tool_name: "Edit"}
+
+      assert {:augment, first} = hook_or_flunk(payload)
+      assert {:augment, ^first} = hook_or_flunk(payload)
+    end
+
+    test "ensure_did_open returns an error, not an exit, when the client has stopped", %{dir: dir} do
+      path = write_elixir_file(dir)
+      {:ok, pid} = Manager.client_for_file(dir, path)
+      assert :ok = Client.await_initialized(pid, 10_000)
+
+      ref = Process.monitor(pid)
+      Process.exit(pid, :kill)
+      assert_receive {:DOWN, ^ref, :process, ^pid, _}, 5_000
+
+      assert {:error, {:client_exit, _}} = ExAthena.Tools.Lsp.ensure_did_open(pid, path)
     end
 
     for key <- [:lsp_implicit_diagnostics_start_timeout_ms, :lsp_implicit_diagnostics_timeout_ms],
