@@ -6,6 +6,17 @@ defmodule FakeLspServer do
 
   No external dependencies required — uses only OTP stdlib.
 
+  Command-line flags (after the script path):
+    * `--strict-init` — drop every notification that arrives before the
+      client's `initialized` notification, as the LSP spec lets a server do.
+    * `--init-delay-ms N` — wait N ms before answering `initialize`, to stand
+      in for a server that is slow to start.
+    * `--bad-diagnostics list|string` — answer a didOpen with malformed
+      diagnostics: a list mixing bad entries with one good error, or a bare
+      string where the list belongs.
+    * `--pid-file PATH` — write this server's OS pid to PATH at startup, so a
+      test can check whether the process outlived its client.
+
   State flags:
     * `:suppress_next_diag` — if true, the next textDocument/didOpen will NOT
       emit publishDiagnostics (flag resets after use).
@@ -59,12 +70,33 @@ defmodule FakeLspServer do
   def run do
     port = Port.open({:fd, 0, 1}, [:binary, :eof])
     fail_init = System.get_env("FAKE_LSP_FAIL_INITIALIZE") == "1"
+    argv = System.argv()
+
+    case Enum.drop_while(argv, &(&1 != "--pid-file")) do
+      ["--pid-file", path | _] -> File.write!(path, System.pid())
+      _ -> :ok
+    end
 
     loop(port, "", %{
       suppress_next_diag: false,
       fail_next_request: false,
-      fail_initialize: fail_init
+      fail_initialize: fail_init,
+      strict_init: "--strict-init" in argv,
+      init_delay_ms: init_delay_ms(argv),
+      bad_diagnostics:
+        case Enum.drop_while(argv, &(&1 != "--bad-diagnostics")) do
+          ["--bad-diagnostics", kind | _] -> kind
+          _ -> nil
+        end,
+      initialized: false
     })
+  end
+
+  defp init_delay_ms(argv) do
+    case Enum.drop_while(argv, &(&1 != "--init-delay-ms")) do
+      ["--init-delay-ms", ms | _] -> String.to_integer(ms)
+      _ -> 0
+    end
   end
 
   defp loop(port, buffer, state) do
@@ -156,7 +188,23 @@ defmodule FakeLspServer do
 
   # --- message handlers (each returns new state) ---
 
+  # A strict server ignores notifications sent before the handshake completes.
+  defp handle(
+         %{"method" => method} = msg,
+         _port,
+         %{strict_init: true, initialized: false} = state
+       )
+       when method not in ["initialized", "exit"] and not is_map_key(msg, "id") do
+    state
+  end
+
+  defp handle(%{"method" => "initialized"}, _port, state) do
+    %{state | initialized: true}
+  end
+
   defp handle(%{"method" => "initialize", "id" => id}, port, state) do
+    if state.init_delay_ms > 0, do: Process.sleep(state.init_delay_ms)
+
     if state.fail_initialize do
       error_reply(port, id, -32602, "InvalidParams")
     else
@@ -220,20 +268,41 @@ defmodule FakeLspServer do
   defp handle(%{"method" => "textDocument/didOpen", "params" => params}, port, state) do
     uri = get_in(params, ["textDocument", "uri"]) || ""
 
-    unless state.suppress_next_diag do
-      notify(port, "textDocument/publishDiagnostics", %{
-        "uri" => uri,
-        "diagnostics" => [
-          %{
-            "range" => %{
-              "start" => %{"line" => 0, "character" => 0},
-              "end" => %{"line" => 0, "character" => 5}
-            },
-            "severity" => 1,
-            "message" => "undefined function foo/0"
-          }
-        ]
-      })
+    cond do
+      state.suppress_next_diag ->
+        :ok
+
+      state.bad_diagnostics == "string" ->
+        notify(port, "textDocument/publishDiagnostics", %{"uri" => uri, "diagnostics" => "x"})
+
+      state.bad_diagnostics == "list" ->
+        notify(port, "textDocument/publishDiagnostics", %{
+          "uri" => uri,
+          "diagnostics" => [
+            "not a map",
+            %{"severity" => 1, "message" => %{"nested" => true}, "range" => [1, 2]},
+            %{
+              "severity" => 1,
+              "message" => "real error",
+              "range" => %{"start" => %{"line" => "2", "character" => nil}}
+            }
+          ]
+        })
+
+      true ->
+        notify(port, "textDocument/publishDiagnostics", %{
+          "uri" => uri,
+          "diagnostics" => [
+            %{
+              "range" => %{
+                "start" => %{"line" => 0, "character" => 0},
+                "end" => %{"line" => 0, "character" => 5}
+              },
+              "severity" => 1,
+              "message" => "undefined function foo/0"
+            }
+          ]
+        })
     end
 
     %{state | suppress_next_diag: false}

@@ -36,9 +36,12 @@ defmodule ExAthena.Loop.ImplicitDiagnosticsIntegrationTest do
     end
   end
 
-  defp setup_lsp_override do
+  defp setup_lsp_override(server_flags \\ []) do
     Application.put_env(:ex_athena, :lsp_servers, %{
-      elixir: %{binary: @elixir_bin, args: ["--erl", "-noinput", @fake_server_script]}
+      elixir: %{
+        binary: @elixir_bin,
+        args: ["--erl", "-noinput", @fake_server_script | server_flags]
+      }
     })
 
     on_exit(fn -> Application.delete_env(:ex_athena, :lsp_servers) end)
@@ -116,6 +119,34 @@ defmodule ExAthena.Loop.ImplicitDiagnosticsIntegrationTest do
       assert tr.content =~ "edited foo.ex"
       assert tr.content =~ "[lsp diagnostics]"
       assert tr.content =~ "error"
+    end
+
+    # CI runners sometimes took longer than the 1.5 s diagnostics window to
+    # boot the server (issue 282); a 2 s start makes that every run.
+    test "an edit reports diagnostics from a server slower to start than the window",
+         %{dir: dir} do
+      setup_lsp_override(["--init-delay-ms", "2000"])
+      Application.put_env(:ex_athena, :lsp_implicit_diagnostics_start_timeout_ms, 20_000)
+
+      on_exit(fn ->
+        Application.delete_env(:ex_athena, :lsp_implicit_diagnostics_start_timeout_ms)
+      end)
+
+      path = Path.join(dir, "slow.ex")
+      File.write!(path, "defmodule Slow do\nend\n")
+
+      assert {:ok, %Result{} = result} =
+               Loop.run("fix the file",
+                 provider: :mock,
+                 mock: [responder: edit_then_stop(path)],
+                 cwd: dir,
+                 tools: [FakeEditTool]
+               )
+
+      [tool_msg] = Enum.filter(result.messages, &(&1.role == :tool))
+      [tr] = tool_msg.tool_results
+      assert tr.content =~ "edited slow.ex"
+      assert tr.content =~ "[lsp diagnostics]"
     end
 
     test "telemetry stop event fires with had_errors: true", %{dir: dir} do

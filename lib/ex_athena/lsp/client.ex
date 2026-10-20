@@ -6,8 +6,9 @@ defmodule ExAthena.Lsp.Client do
 
   1. `start_link/1` opens the OS process port and sends the LSP `initialize`
      request via `handle_continue/2`. The GenServer is immediately callable —
-     requests received before initialization completes are queued and replayed
-     once `initialized` is confirmed.
+     requests and notifications received before initialization completes are
+     queued and replayed in order once `initialized` is confirmed, because the
+     LSP spec forbids sending either before the `initialize` reply.
   2. `request/4` sends a JSON-RPC request and awaits the reply (default 30 s).
      Multiple concurrent callers are safe — replies are correlated by `id`.
   3. `notify/3` sends a one-way notification (no reply expected).
@@ -43,6 +44,7 @@ defmodule ExAthena.Lsp.Client do
 
   @default_request_timeout 30_000
   @shutdown_wait_ms 1_000
+  @default_init_timeout 30_000
 
   # --- public API ---
 
@@ -56,6 +58,10 @@ defmodule ExAthena.Lsp.Client do
     * `:root` (required) — plain filesystem root path (for telemetry/registry).
     * `:language` (required) — language atom (for telemetry).
     * `:name` (optional) — GenServer name (via-tuple for Registry).
+    * `:init_timeout` (optional) — ms to wait for the `initialize` reply,
+      default 30 000. Past it, every queued caller gets
+      `{:error, :init_timeout}` and the client stops, so a server that never
+      answers cannot make the queue grow without end.
   """
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts) do
@@ -72,7 +78,8 @@ defmodule ExAthena.Lsp.Client do
   Send a JSON-RPC request and await the response.
 
   Returns `{:ok, result}` or `{:error, reason}`. On timeout returns
-  `{:error, :timeout}`.
+  `{:error, :timeout}`; when the client has stopped, `{:error, {:client_exit,
+  reason}}`.
   """
   @spec request(pid(), String.t(), map(), non_neg_integer()) ::
           {:ok, term()} | {:error, term()}
@@ -81,6 +88,9 @@ defmodule ExAthena.Lsp.Client do
       GenServer.call(pid, {:request, method, params, timeout}, timeout + 5_000)
     catch
       :exit, {:timeout, _} -> {:error, :timeout}
+      # The client stopped, or stops before it replies. Tools rescue raises
+      # but not exits, so an exit here would end the agent run.
+      :exit, reason -> {:error, {:client_exit, reason}}
     end
   end
 
@@ -88,6 +98,21 @@ defmodule ExAthena.Lsp.Client do
   @spec notify(pid(), String.t(), map()) :: :ok
   def notify(pid, method, params \\ %{}) do
     GenServer.cast(pid, {:notify, method, params})
+  end
+
+  @doc """
+  Wait up to `timeout` ms for the server to answer the `initialize` request.
+
+  Returns `:ok` once the handshake is done, `{:error, :timeout}` when it is
+  not done in time, or `{:error, reason}` when the handshake fails or the
+  server exits first.
+  """
+  @spec await_initialized(pid(), timeout()) :: :ok | {:error, term()}
+  def await_initialized(pid, timeout) do
+    GenServer.call(pid, :await_initialized, timeout)
+  catch
+    :exit, {:timeout, _} -> {:error, :timeout}
+    :exit, reason -> {:error, {:client_exit, reason}}
   end
 
   @doc "Return cached diagnostics for the given `uri`."
@@ -115,6 +140,7 @@ defmodule ExAthena.Lsp.Client do
     root_uri = Keyword.fetch!(opts, :root_uri)
     root = Keyword.fetch!(opts, :root)
     language = Keyword.fetch!(opts, :language)
+    init_timeout = Keyword.get(opts, :init_timeout, @default_init_timeout)
 
     port = open_port(binary, args, root)
 
@@ -133,9 +159,12 @@ defmodule ExAthena.Lsp.Client do
       # id of the in-flight initialize request; nil after handshake
       init_request_id: nil,
       initialized: false,
-      # [{from, method, params, timeout}] collected before handshake
-      queued_requests: [],
-      shutting_down: false
+      # newest first, collected before the handshake:
+      # {:request, from, method, params, timeout} | {:notify, method, params}
+      # | {:waiter, from} (an await_initialized/2 caller)
+      queued: [],
+      shutting_down: false,
+      init_timeout: init_timeout
     }
 
     Telemetry.event(
@@ -170,6 +199,7 @@ defmodule ExAthena.Lsp.Client do
     }
 
     send_request(state.port, id, "initialize", params)
+    Process.send_after(self(), :init_deadline, state.init_timeout)
     {:noreply, %{state | init_request_id: id}}
   end
 
@@ -179,8 +209,15 @@ defmodule ExAthena.Lsp.Client do
       state = dispatch_request(state, method, params, timeout, from)
       {:noreply, state}
     else
-      queued = [{from, method, params, timeout} | state.queued_requests]
-      {:noreply, %{state | queued_requests: queued}}
+      {:noreply, %{state | queued: [{:request, from, method, params, timeout} | state.queued]}}
+    end
+  end
+
+  def handle_call(:await_initialized, from, state) do
+    if state.initialized do
+      {:reply, :ok, state}
+    else
+      {:noreply, %{state | queued: [{:waiter, from} | state.queued]}}
     end
   end
 
@@ -200,8 +237,12 @@ defmodule ExAthena.Lsp.Client do
 
   @impl true
   def handle_cast({:notify, method, params}, state) do
-    send_notification(state.port, method, params)
-    {:noreply, state}
+    if state.initialized do
+      send_notification(state.port, method, params)
+      {:noreply, state}
+    else
+      {:noreply, %{state | queued: [{:notify, method, params} | state.queued]}}
+    end
   end
 
   @impl true
@@ -221,9 +262,7 @@ defmodule ExAthena.Lsp.Client do
       GenServer.reply(from, {:error, {:lsp_port_exit, status}})
     end
 
-    for {from, _method, _params, _timeout} <- state.queued_requests do
-      GenServer.reply(from, {:error, {:lsp_port_exit, status}})
-    end
+    reply_queued(state, {:error, {:lsp_port_exit, status}})
 
     {:stop, {:lsp_port_exit, status}, state}
   end
@@ -237,6 +276,19 @@ defmodule ExAthena.Lsp.Client do
         GenServer.reply(from, {:error, :timeout})
         {:noreply, state}
     end
+  end
+
+  # The handshake has finished, or failed and is already stopping the client.
+  def handle_info(:init_deadline, %{init_request_id: nil} = state), do: {:noreply, state}
+
+  def handle_info(:init_deadline, state) do
+    Logger.warning(
+      "[ExAthena.Lsp.Client] #{state.binary} did not answer initialize within " <>
+        "#{state.init_timeout} ms; stopping"
+    )
+
+    reply_queued(state, {:error, :init_timeout})
+    {:stop, {:shutdown, :init_timeout}, %{state | queued: []}}
   end
 
   def handle_info({:lsp_init_failed, err}, state) do
@@ -289,7 +341,7 @@ defmodule ExAthena.Lsp.Client do
     caps = (result || %{}) |> Map.get("capabilities", %{})
     state = %{state | capabilities: caps, init_request_id: nil, initialized: true}
     send_notification(state.port, "initialized", %{})
-    flush_queued_requests(state)
+    flush_queued(state)
   end
 
   # Initialize error response — fail every queued caller and stop the GenServer.
@@ -299,12 +351,9 @@ defmodule ExAthena.Lsp.Client do
        when not is_nil(id) do
     Logger.error("[ExAthena.Lsp.Client] LSP initialize failed: #{inspect(err)}")
 
-    for {from, _method, _params, _timeout} <- state.queued_requests do
-      GenServer.reply(from, {:error, {:lsp_init_failed, err}})
-    end
-
+    reply_queued(state, {:error, {:lsp_init_failed, err}})
     send(self(), {:lsp_init_failed, err})
-    %{state | queued_requests: [], init_request_id: nil}
+    %{state | queued: [], init_request_id: nil}
   end
 
   # Response to one of our requests.
@@ -386,12 +435,31 @@ defmodule ExAthena.Lsp.Client do
 
   defp cancel_deadline_timer(_), do: :ok
 
-  defp flush_queued_requests(state) do
-    queued = Enum.reverse(state.queued_requests)
-    state = %{state | queued_requests: []}
+  defp flush_queued(state) do
+    queued = Enum.reverse(state.queued)
+    state = %{state | queued: []}
 
-    Enum.reduce(queued, state, fn {from, method, params, timeout}, acc ->
-      dispatch_request(acc, method, params, timeout, from)
+    Enum.reduce(queued, state, fn
+      {:request, from, method, params, timeout}, acc ->
+        dispatch_request(acc, method, params, timeout, from)
+
+      {:notify, method, params}, acc ->
+        send_notification(acc.port, method, params)
+        acc
+
+      {:waiter, from}, acc ->
+        GenServer.reply(from, :ok)
+        acc
+    end)
+  end
+
+  # Fail every caller still waiting on the handshake. Queued notifications
+  # have no caller and are dropped.
+  defp reply_queued(state, reply) do
+    Enum.each(state.queued, fn
+      {:request, from, _method, _params, _timeout} -> GenServer.reply(from, reply)
+      {:waiter, from} -> GenServer.reply(from, reply)
+      {:notify, _method, _params} -> :ok
     end)
   end
 
@@ -441,6 +509,10 @@ defmodule ExAthena.Lsp.Client do
 
   defp next_id(%{next_id: id} = state), do: {id, %{state | next_id: id + 1}}
 
+  # The LSP spec forbids `shutdown` before the handshake, and a server stuck
+  # before it reads nothing, so close it and kill its process at once.
+  defp run_shutdown(%{initialized: false} = state), do: close_and_kill(state.port)
+
   defp run_shutdown(state) do
     {id, _state} = next_id(state)
     send_request(state.port, id, "shutdown", %{})
@@ -457,12 +529,36 @@ defmodule ExAthena.Lsp.Client do
     receive do
       {port, {:exit_status, _}} when port == state.port -> :ok
     after
-      @shutdown_wait_ms ->
-        try do
-          Port.close(state.port)
-        rescue
-          ArgumentError -> :ok
-        end
+      @shutdown_wait_ms -> close_and_kill(state.port)
     end
+  end
+
+  # Closing the port only closes the server's pipes; a server that ignores
+  # end-of-input keeps running. Kill its OS process too. The port has sent no
+  # exit status, so the process has not been reaped and its pid is still ours.
+  defp close_and_kill(port) do
+    os_pid =
+      case Port.info(port, :os_pid) do
+        {:os_pid, os_pid} -> os_pid
+        nil -> nil
+      end
+
+    try do
+      Port.close(port)
+    rescue
+      ArgumentError -> :ok
+    end
+
+    if os_pid, do: kill_os_process(os_pid)
+    :ok
+  end
+
+  defp kill_os_process(os_pid) do
+    case System.find_executable("kill") do
+      nil -> :ok
+      kill -> System.cmd(kill, ["-KILL", Integer.to_string(os_pid)], stderr_to_stdout: true)
+    end
+
+    :ok
   end
 end

@@ -8,11 +8,14 @@ defmodule ExAthena.Lsp.ManagerTest do
 
   # Override :lsp_servers so Manager resolves to our fake server binary
   # instead of the real elixir-ls binary (which may not be installed).
-  defp setup_lsp_override do
+  defp setup_lsp_override(server_flags \\ []) do
     Application.put_env(:ex_athena, :lsp_servers, %{
       # --erl "-noinput" prevents the Erlang :user group leader from competing
       # with our Port.open({:fd, 0, 1}) reads in the fake server's VM.
-      elixir: %{binary: @elixir_bin, args: ["--erl", "-noinput", @fake_server_script]}
+      elixir: %{
+        binary: @elixir_bin,
+        args: ["--erl", "-noinput", @fake_server_script | server_flags]
+      }
     })
 
     on_exit(fn -> Application.delete_env(:ex_athena, :lsp_servers) end)
@@ -132,9 +135,59 @@ defmodule ExAthena.Lsp.ManagerTest do
       assert Process.alive?(pid2)
     end
 
+    # The Registry drops a dead client's entry asynchronously. Suspending the
+    # process that does it holds the stale entry in place, so the race the
+    # test above hit now and then happens on every run.
+    test "a client that has exited is never handed out again" do
+      root = unique_root()
+      {:ok, pid1} = Manager.ensure_started(root, :elixir)
+      ref = Process.monitor(pid1)
+
+      cleaner = Module.concat(ExAthena.Lsp.Registry, "PIDPartition0")
+      :sys.suspend(cleaner)
+
+      try do
+        :ok = Manager.stop(root, :elixir)
+        assert_receive {:DOWN, ^ref, :process, ^pid1, _}, 3_000
+
+        {:ok, pid2} = Manager.ensure_started(root, :elixir)
+        assert pid2 != pid1
+        assert Process.alive?(pid2)
+      after
+        :sys.resume(cleaner)
+      end
+    end
+
     test "stop/2 on non-existent client returns :ok" do
       root = unique_root()
       assert :ok = Manager.stop(root, :elixir)
+    end
+  end
+
+  describe "handshake deadline" do
+    setup do
+      start_lsp_supervisor()
+      :ok
+    end
+
+    test "the lsp_init_timeout_ms setting bounds a client's handshake" do
+      setup_lsp_override(["--init-delay-ms", "120000"])
+      Application.put_env(:ex_athena, :lsp_init_timeout_ms, 1_000)
+      on_exit(fn -> Application.delete_env(:ex_athena, :lsp_init_timeout_ms) end)
+
+      {:ok, pid} = Manager.ensure_started(unique_root(), :elixir)
+      ref = Process.monitor(pid)
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, {:shutdown, :init_timeout}}, 6_000
+    end
+
+    test "a malformed lsp_init_timeout_ms falls back to the default" do
+      setup_lsp_override()
+      Application.put_env(:ex_athena, :lsp_init_timeout_ms, "1000")
+      on_exit(fn -> Application.delete_env(:ex_athena, :lsp_init_timeout_ms) end)
+
+      {:ok, pid} = Manager.ensure_started(unique_root(), :elixir)
+      assert :ok = ExAthena.Lsp.Client.await_initialized(pid, 10_000)
     end
   end
 

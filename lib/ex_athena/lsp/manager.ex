@@ -3,8 +3,9 @@ defmodule ExAthena.Lsp.Manager do
   Manages one `ExAthena.Lsp.Client` per `{project_root, language}` pair.
 
   Clients are lazily spawned under `ExAthena.Lsp.ClientSupervisor` and
-  registered in `ExAthena.Lsp.Registry` — the registry is the source of
-  truth for "is this client running?", not Manager state.
+  registered in `ExAthena.Lsp.Registry`. The registry, not Manager state,
+  says whether a client runs, but it drops a dead client's entry a moment
+  late, so a lookup also checks the pid is alive.
 
   Manager state holds only a `%{monitor_ref => {root, language}}` map for
   crash telemetry; pids are always looked up from the Registry.
@@ -133,15 +134,38 @@ defmodule ExAthena.Lsp.Manager do
 
   # --- private ---
 
+  # The Registry removes a dead client's entry asynchronously, so a lookup
+  # right after the client exits can still return its pid. Treat that pid as
+  # gone; registering a fresh client replaces the stale entry.
   defp lookup(root, language) do
     case Registry.lookup(ExAthena.Lsp.Registry, {root, language}) do
-      [{pid, _}] -> {:ok, pid}
+      [{pid, _}] -> if Process.alive?(pid), do: {:ok, pid}, else: :not_found
       [] -> :not_found
     end
   end
 
   defp via(root, language) do
     {:via, Registry, {ExAthena.Lsp.Registry, {root, language}}}
+  end
+
+  @default_init_timeout_ms 30_000
+  # The largest timeout Process.send_after/3 accepts.
+  @max_timeout_ms 4_294_967_295
+
+  defp init_timeout_ms do
+    case Application.get_env(:ex_athena, :lsp_init_timeout_ms, @default_init_timeout_ms) do
+      ms when is_integer(ms) and ms >= 0 and ms <= @max_timeout_ms ->
+        ms
+
+      other ->
+        Logger.warning(
+          "[ExAthena.Lsp.Manager] lsp_init_timeout_ms must be a whole number of " <>
+            "milliseconds from 0 to #{@max_timeout_ms}, got #{inspect(other)}; " <>
+            "using #{@default_init_timeout_ms}"
+        )
+
+        @default_init_timeout_ms
+    end
   end
 
   defp do_start(root, language) do
@@ -161,7 +185,8 @@ defmodule ExAthena.Lsp.Manager do
                  root_uri: "file://#{root}",
                  root: root,
                  language: language,
-                 name: via(root, language)
+                 name: via(root, language),
+                 init_timeout: init_timeout_ms()
                ]
              ]},
           restart: :transient

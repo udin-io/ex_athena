@@ -7,19 +7,30 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
 
     1. Resolves the file path from the tool call's `arguments["path"]`.
     2. Looks up (or spawns) the language server for the file's extension.
-    3. Sends `textDocument/didOpen` with the current file contents.
-    4. Polls `publishDiagnostics` push-notifications for up to
-       `:lsp_implicit_diagnostics_timeout_ms` (default 1500 ms).
-    5. Filters to `:lsp_implicit_diagnostics_severities` (default `[:error, :warning]`).
-    6. Returns `{:augment, text}` with a `[lsp diagnostics]` block, or
+    3. Waits up to `:lsp_implicit_diagnostics_start_timeout_ms` (default
+       5000 ms) for the server to answer its `initialize` handshake. A server
+       just launched spends this time booting; one already running answers at
+       once.
+    4. Sends `textDocument/didOpen` with the current file contents.
+    5. Polls `publishDiagnostics` push-notifications for up to
+       `:lsp_implicit_diagnostics_timeout_ms` (default 1500 ms). The window
+       opens after the handshake, so a slow boot does not eat it.
+    6. Filters to `:lsp_implicit_diagnostics_severities` (default `[:error, :warning]`).
+    7. Returns `{:augment, text}` with a `[lsp diagnostics]` block, or
        `:ok` if there is nothing to report.
 
   All failure paths (LSP disabled, unsupported file type, server crash, timeout)
-  collapse to `:ok` — the hook must never stall the agent loop.
+  collapse to `:ok`. The hook runs inside the agent loop, so every wait in it
+  is bounded by a setting: it blocks for at most the start timeout plus the
+  diagnostics window (5 s and 1.5 s by default), plus up to 5 s for each of the
+  Manager lookup and the last diagnostics poll when those processes are busy.
+  A large setting makes a long wait; keep both in seconds, not minutes.
 
   ## Configuration keys
 
     * `:lsp_implicit_diagnostics_enabled` — boolean, default `true`
+    * `:lsp_implicit_diagnostics_start_timeout_ms` — how long to wait for a
+      server to finish starting, in ms, default `5000`
     * `:lsp_implicit_diagnostics_timeout_ms` — poll deadline in ms, default `1500`
     * `:lsp_implicit_diagnostics_severities` — list of `:error | :warning |
       :information | :hint`, default `[:error, :warning]`
@@ -31,6 +42,9 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
   alias ExAthena.Tools.Lsp, as: LspTool
 
   @default_timeout_ms 1_500
+  @default_start_timeout_ms 5_000
+  # The largest timeout GenServer.call/3 and Process.send_after/3 accept.
+  @max_timeout_ms 4_294_967_295
   @default_severities [:error, :warning]
   @poll_interval_ms 50
 
@@ -103,6 +117,9 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
          {:ok, abs_path} <- file_from_payload(payload) |> log_step(:no_path),
          :ok <- has_language?(abs_path) |> log_step(:unsupported_language, abs_path),
          {:ok, pid} <- client_for_file(payload, abs_path) |> log_step(:no_client, abs_path),
+         :ok <-
+           Client.await_initialized(pid, start_timeout_ms())
+           |> log_step(:server_not_started, abs_path),
          :ok <- LspTool.ensure_did_open(pid, abs_path) |> log_step(:did_open_failed, abs_path),
          diags when diags != [] <-
            await_diagnostics(pid, abs_path) |> log_no_diags(abs_path),
@@ -200,13 +217,39 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
 
   defp client_for_file(_, _), do: {:error, :no_cwd}
 
-  defp await_diagnostics(pid, abs_path) do
-    timeout_ms =
-      Application.get_env(
-        :ex_athena,
-        :lsp_implicit_diagnostics_timeout_ms,
-        @default_timeout_ms
+  defp start_timeout_ms,
+    do: ms_setting(:lsp_implicit_diagnostics_start_timeout_ms, @default_start_timeout_ms)
+
+  # A timeout that is not a whole number of milliseconds within the VM's timer
+  # limit would raise inside the hook, and a raise there halts the agent run.
+  # Use the default instead, and warn once per bad value, not once per edit.
+  defp ms_setting(key, default) do
+    case Application.get_env(:ex_athena, key, default) do
+      ms when is_integer(ms) and ms >= 0 and ms <= @max_timeout_ms ->
+        ms
+
+      other ->
+        warn_once(key, other, default)
+        default
+    end
+  end
+
+  defp warn_once(key, value, default, wanted \\ nil) do
+    marker = {__MODULE__, :bad_setting, key, value}
+
+    unless :persistent_term.get(marker, false) do
+      :persistent_term.put(marker, true)
+      wanted = wanted || "a whole number of milliseconds from 0 to #{@max_timeout_ms}"
+
+      Logger.warning(
+        "[ExAthena.Lsp.ImplicitDiagnostics] #{key} must be #{wanted}, " <>
+          "got #{inspect(value)}; using #{inspect(default)}"
       )
+    end
+  end
+
+  defp await_diagnostics(pid, abs_path) do
+    timeout_ms = ms_setting(:lsp_implicit_diagnostics_timeout_ms, @default_timeout_ms)
 
     uri = "file://" <> abs_path
     deadline = System.monotonic_time(:millisecond) + timeout_ms
@@ -214,7 +257,10 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
   end
 
   defp do_poll(pid, uri, deadline) do
-    case Client.diagnostics(pid, uri) do
+    case current_diagnostics(pid, uri) do
+      :client_down ->
+        []
+
       [] ->
         remaining = deadline - System.monotonic_time(:millisecond)
 
@@ -230,18 +276,38 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
     end
   end
 
-  defp filter_severities(diags) do
-    allowed =
-      Application.get_env(
-        :ex_athena,
-        :lsp_implicit_diagnostics_severities,
-        @default_severities
-      )
+  # A server that dies mid-window must not crash the agent loop.
+  defp current_diagnostics(pid, uri) do
+    Client.diagnostics(pid, uri)
+  catch
+    :exit, _ -> :client_down
+  end
+
+  # The server writes these, so read them defensively: skip entries that are
+  # not maps, and treat a payload that is not a list as no diagnostics.
+  defp filter_severities(diags) when is_list(diags) do
+    allowed = severities_setting()
 
     Enum.filter(diags, fn d ->
-      atom = Map.get(@severity_atoms, d["severity"])
-      atom in allowed
+      is_map(d) and Map.get(@severity_atoms, d["severity"]) in allowed
     end)
+  end
+
+  defp filter_severities(_diags), do: []
+
+  defp severities_setting do
+    case Application.get_env(
+           :ex_athena,
+           :lsp_implicit_diagnostics_severities,
+           @default_severities
+         ) do
+      list when is_list(list) ->
+        list
+
+      other ->
+        warn_once(:lsp_implicit_diagnostics_severities, other, @default_severities, "a list")
+        @default_severities
+    end
   end
 
   defp format(diags, abs_path, cwd) do
@@ -250,15 +316,21 @@ defmodule ExAthena.Lsp.ImplicitDiagnostics do
     lines =
       Enum.map(diags, fn d ->
         sev = Map.get(@severity_atoms, d["severity"], :unknown)
-        msg = d["message"] || ""
-        start = get_in(d, ["range", "start"]) || %{}
-        line = (start["line"] || 0) + 1
-        col = (start["character"] || 0) + 1
-        "#{sev}: #{msg} at #{rel}:#{line}:#{col}"
+        msg = if is_binary(d["message"]), do: d["message"], else: ""
+        start = position(d["range"])
+        "#{sev}: #{msg} at #{rel}:#{start.line + 1}:#{start.col + 1}"
       end)
 
     "[lsp diagnostics]\n" <> Enum.join(lines, "\n")
   end
+
+  defp position(%{"start" => %{} = start}),
+    do: %{line: non_neg(start["line"]), col: non_neg(start["character"])}
+
+  defp position(_range), do: %{line: 0, col: 0}
+
+  defp non_neg(n) when is_integer(n) and n >= 0, do: n
+  defp non_neg(_), do: 0
 
   defp count_from({:augment, text}) do
     text |> String.split("\n") |> Enum.count(&(&1 =~ ~r/^(error|warning|information|hint):/))

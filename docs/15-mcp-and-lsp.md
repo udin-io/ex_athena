@@ -138,9 +138,15 @@ Source: [`Tools.Lsp`](../lib/ex_athena/tools/lsp.ex). The model uses this when i
 
 After every `write` / `edit` / `apply_patch`, the kernel auto-adds a `PostToolUse` hook that:
 
-1. Runs the LSP against the touched file.
-2. Collects diagnostics.
-3. Returns `{:augment, "Diagnostics: …"}` so the model sees them on the next turn.
+1. Gets the language server for the touched file, starting it if none runs.
+2. Waits up to 5 s for the server to answer its `initialize` handshake
+   (`:lsp_implicit_diagnostics_start_timeout_ms`). A running server answers
+   at once.
+3. Opens the file in the server, then waits up to 1.5 s for its diagnostics
+   (`:lsp_implicit_diagnostics_timeout_ms`). This window opens after the
+   handshake, so a slow boot does not use it up (issue 282).
+4. Returns `{:augment, "[lsp diagnostics] …"}` so the model sees them on the
+   next turn.
 
 ```mermaid
 sequenceDiagram
@@ -148,17 +154,22 @@ sequenceDiagram
   participant T as Tools.Edit
   participant H as Hooks
   participant ID as ImplicitDiagnostics
-  participant Lsp as Lsp.Manager
+  participant Lsp as Lsp.Client
   participant Srv as Language Server
 
   M->>T: execute Edit args ctx
   T-->>M: {:ok, applied}
   M->>H: PostToolUse(Edit)
   H->>ID: invoke
-  ID->>Lsp: textDocument/publishDiagnostics for file
-  Lsp->>Srv: notify changes
-  Srv-->>Lsp: diagnostics
-  ID-->>H: {:augment, "warnings: …"}
+  ID->>Lsp: client for file, started if needed
+  Lsp->>Srv: initialize
+  ID->>Lsp: await_initialized, up to 5 s
+  Srv-->>Lsp: initialize reply
+  ID->>Lsp: textDocument/didOpen
+  Lsp->>Srv: textDocument/didOpen
+  Srv-->>Lsp: publishDiagnostics
+  ID->>Lsp: poll diagnostics, up to 1.5 s
+  ID-->>H: {:augment, "[lsp diagnostics] …"}
   H-->>M: augmented tool_result content
 ```
 
@@ -198,7 +209,9 @@ Both wire into the same Tool spec system, so the Mode + permissions + hooks don'
 
 - **MCP framing reuse**: stdio framing is shared between MCP and LSP ([`Lsp.Framing`](../lib/ex_athena/lsp/framing.ex)). Don't duplicate — extend the existing module if you need a new variant.
 - **Tool name namespacing**: MCP tools get prefixed with the server name to avoid collision. Don't strip the prefix in error messages — users need to know which server produced the result.
-- **LSP is best-effort**: implicit diagnostics fail silently (no diagnostics produced → no augment text). Don't gate the loop on diagnostics availability.
+- **LSP is best-effort**: implicit diagnostics fail silently (no diagnostics produced → no augment text). Don't gate the loop on diagnostics availability. A server that never starts, refuses the handshake or dies mid-wait returns no diagnostics; the hook blocks for at most the start timeout plus the diagnostics window.
+- **Nothing goes to a server before its handshake reply**: `Lsp.Client` queues requests and notifications until the `initialize` reply, then sends them in order, as the LSP spec requires. A server that has not answered within 30 s (`:lsp_init_timeout_ms`) fails the queue with `{:error, :init_timeout}`; its client kills the server's OS process, skipping the spec-forbidden `shutdown`, and stops.
+- **The Manager never returns a dead client**: the Registry drops a dead client's entry asynchronously, so `Lsp.Manager` checks the pid is alive before it hands it out.
 - **Server crashes**: both MCP and LSP supervisors restart child processes. If a server crashes mid-call, the in-flight request returns `{:error, …}` and the model gets to retry or pivot.
 - **Don't hand-roll JSON-RPC**: use the existing [`Mcp.Protocol`](../lib/ex_athena/mcp/protocol.ex) helpers. They handle frame ids, error codes, and notification vs request distinction.
 

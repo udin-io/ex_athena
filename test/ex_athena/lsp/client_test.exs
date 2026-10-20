@@ -8,7 +8,11 @@ defmodule ExAthena.Lsp.ClientTest do
   @root System.tmp_dir!()
 
   defp start_client(opts \\ []) do
-    default = [
+    start_supervised!({Client, Keyword.merge(default_opts(), opts)})
+  end
+
+  defp default_opts do
+    [
       binary: @elixir_bin,
       # --erl "-noinput" prevents the Erlang :user group leader from competing
       # with our Port.open({:fd, 0, 1}) reads in the fake server's VM.
@@ -17,8 +21,16 @@ defmodule ExAthena.Lsp.ClientTest do
       root: @root,
       language: :test
     ]
+  end
 
-    start_supervised!({Client, Keyword.merge(default, opts)})
+  defp os_process_gone?(os_pid, wait_ms) do
+    {_, code} = System.cmd("kill", ["-0", os_pid], stderr_to_stdout: true)
+
+    cond do
+      code != 0 -> true
+      wait_ms <= 0 -> false
+      true -> Process.sleep(100) && os_process_gone?(os_pid, wait_ms - 100)
+    end
   end
 
   # Waits until the client completes initialization by making a simple
@@ -107,6 +119,36 @@ defmodule ExAthena.Lsp.ClientTest do
       # The diagnostics state is updated when handle_info processes the notification.
       assert_diagnostics(pid, "file:///test/foo.ex", 500)
     end
+
+    # The LSP spec forbids notifications before the initialize reply, and a
+    # strict server drops them. The fake server answers a didOpen with
+    # diagnostics, so diagnostics arrive only if the didOpen reached it.
+    test "a notification sent before the handshake still reaches a strict server" do
+      pid = start_client(args: ["--erl", "-noinput", @fake_server_script, "--strict-init"])
+      uri = "file:///test/early.ex"
+
+      :ok =
+        Client.notify(pid, "textDocument/didOpen", %{
+          "textDocument" => %{
+            "uri" => uri,
+            "languageId" => "elixir",
+            "version" => 1,
+            "text" => ""
+          }
+        })
+
+      await_initialized(pid)
+      assert_diagnostics(pid, uri, 2_000)
+    end
+
+    test "a strict server gets a notification sent after the handshake (control)" do
+      pid = start_client(args: ["--erl", "-noinput", @fake_server_script, "--strict-init"])
+      await_initialized(pid)
+
+      # notif/trigger after the handshake is answered: diagnostics arrive.
+      :ok = Client.notify(pid, "notif/trigger", %{})
+      assert_diagnostics(pid, "file:///test/foo.ex", 2_000)
+    end
   end
 
   describe "diagnostics/2" do
@@ -162,6 +204,118 @@ defmodule ExAthena.Lsp.ClientTest do
       _pid = start_client()
 
       assert_receive {:telemetry_spawn, %{phase: :started}}, 3_000
+    end
+  end
+
+  describe "await_initialized/2" do
+    test "returns :ok once the server answers the handshake" do
+      pid = start_client()
+      assert :ok = Client.await_initialized(pid, 10_000)
+      # A second call after the handshake answers at once.
+      assert :ok = Client.await_initialized(pid, 100)
+    end
+
+    test "returns {:error, :timeout} while a slow server is still starting" do
+      pid =
+        start_client(args: ["--erl", "-noinput", @fake_server_script, "--init-delay-ms", "3000"])
+
+      assert {:error, :timeout} = Client.await_initialized(pid, 200)
+      assert Process.alive?(pid)
+    end
+
+    test "returns an error when the server refuses the handshake" do
+      System.put_env("FAKE_LSP_FAIL_INITIALIZE", "1")
+      on_exit(fn -> System.delete_env("FAKE_LSP_FAIL_INITIALIZE") end)
+
+      pid =
+        start_supervised!(
+          {Client,
+           [
+             binary: @elixir_bin,
+             args: ["--erl", "-noinput", @fake_server_script],
+             root_uri: "file://#{@root}",
+             root: @root,
+             language: :test
+           ]},
+          restart: :temporary
+        )
+
+      assert {:error, {:lsp_init_failed, %{"message" => "InvalidParams"}}} =
+               Client.await_initialized(pid, 10_000)
+    end
+  end
+
+  describe "handshake deadline" do
+    test "a server that never answers initialize fails the queue and stops the client" do
+      pid =
+        start_supervised!(
+          {Client,
+           [
+             binary: @elixir_bin,
+             args: ["--erl", "-noinput", @fake_server_script, "--init-delay-ms", "10000"],
+             root_uri: "file://#{@root}",
+             root: @root,
+             language: :test,
+             init_timeout: 1_500
+           ]},
+          restart: :temporary
+        )
+
+      ref = Process.monitor(pid)
+      caller = self()
+
+      spawn(fn ->
+        send(caller, {:result, Client.request(pid, "textDocument/echo", %{}, 20_000)})
+      end)
+
+      assert_receive {:result, {:error, :init_timeout}}, 5_000
+      assert_receive {:DOWN, ^ref, :process, ^pid, {:shutdown, :init_timeout}}, 5_000
+    end
+
+    # A server stuck before its handshake reads nothing, so closing its pipes
+    # does not end it. The client must not leave it running.
+    test "the stuck server's OS process is gone once the client stops" do
+      pid_file = Path.join(System.tmp_dir!(), "fake_lsp_#{System.unique_integer([:positive])}")
+      on_exit(fn -> File.rm(pid_file) end)
+
+      pid =
+        start_supervised!(
+          {Client,
+           [
+             binary: @elixir_bin,
+             args: [
+               "--erl",
+               "-noinput",
+               @fake_server_script,
+               "--init-delay-ms",
+               "120000",
+               "--pid-file",
+               pid_file
+             ],
+             root_uri: "file://#{@root}",
+             root: @root,
+             language: :test,
+             init_timeout: 1_500
+           ]},
+          restart: :temporary
+        )
+
+      ref = Process.monitor(pid)
+      assert_receive {:DOWN, ^ref, :process, ^pid, {:shutdown, :init_timeout}}, 5_000
+
+      os_pid = File.read!(pid_file)
+      assert os_process_gone?(os_pid, 3_000), "fake server #{os_pid} still running"
+    end
+  end
+
+  describe "request/4 on a client that has stopped" do
+    test "returns an error instead of exiting the caller" do
+      pid = start_supervised!({Client, default_opts()}, restart: :temporary)
+      await_initialized(pid)
+      :ok = Client.stop(pid)
+      refute Process.alive?(pid)
+
+      assert {:error, _reason} = Client.request(pid, "textDocument/echo", %{}, 1_000)
     end
   end
 
