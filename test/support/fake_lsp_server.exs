@@ -14,6 +14,13 @@ defmodule FakeLspServer do
     * `--bad-diagnostics list|string` — answer a didOpen with malformed
       diagnostics: a list mixing bad entries with one good error, or a bare
       string where the list belongs.
+    * `--echo-text` — put the document's current text in the diagnostic
+      message ("saw: <text>") and the document's version in the publish, so a
+      test sees which text a result belongs to.
+    * `--ignore-change` — hold a `didChange` unanswered: the server tracks the
+      new text and publishes nothing, as a server still busy with it would.
+    * `--strict-open` — ignore a `didOpen` for a document that is already
+      open, as the LSP spec lets a server do.
     * `--pid-file PATH` — write this server's OS pid to PATH at startup, so a
       test can check whether the process outlived its client.
 
@@ -82,6 +89,10 @@ defmodule FakeLspServer do
       fail_next_request: false,
       fail_initialize: fail_init,
       strict_init: "--strict-init" in argv,
+      echo_text: "--echo-text" in argv,
+      ignore_change: "--ignore-change" in argv,
+      strict_open: "--strict-open" in argv,
+      docs: %{},
       init_delay_ms: init_delay_ms(argv),
       bad_diagnostics:
         case Enum.drop_while(argv, &(&1 != "--bad-diagnostics")) do
@@ -264,48 +275,28 @@ defmodule FakeLspServer do
     %{state | fail_next_request: true}
   end
 
-  # textDocument/didOpen — optionally publish diagnostics for the opened URI.
+  # textDocument/didChange — track the new text and version, then publish
+  # unless the server is told to hold the change.
+  defp handle(%{"method" => "textDocument/didChange", "params" => params}, port, state) do
+    uri = get_in(params, ["textDocument", "uri"]) || ""
+    version = get_in(params, ["textDocument", "version"])
+    [%{"text" => text} | _] = params["contentChanges"]
+    state = %{state | docs: Map.put(state.docs, uri, {version, text})}
+
+    unless state.ignore_change, do: publish_for_document(port, state, uri)
+    state
+  end
+
+  # textDocument/didOpen — a strict server keeps the first open of a document
+  # and ignores a second one; otherwise publish diagnostics for the URI.
   defp handle(%{"method" => "textDocument/didOpen", "params" => params}, port, state) do
     uri = get_in(params, ["textDocument", "uri"]) || ""
 
-    cond do
-      state.suppress_next_diag ->
-        :ok
-
-      state.bad_diagnostics == "string" ->
-        notify(port, "textDocument/publishDiagnostics", %{"uri" => uri, "diagnostics" => "x"})
-
-      state.bad_diagnostics == "list" ->
-        notify(port, "textDocument/publishDiagnostics", %{
-          "uri" => uri,
-          "diagnostics" => [
-            "not a map",
-            %{"severity" => 1, "message" => %{"nested" => true}, "range" => [1, 2]},
-            %{
-              "severity" => 1,
-              "message" => "real error",
-              "range" => %{"start" => %{"line" => "2", "character" => nil}}
-            }
-          ]
-        })
-
-      true ->
-        notify(port, "textDocument/publishDiagnostics", %{
-          "uri" => uri,
-          "diagnostics" => [
-            %{
-              "range" => %{
-                "start" => %{"line" => 0, "character" => 0},
-                "end" => %{"line" => 0, "character" => 5}
-              },
-              "severity" => 1,
-              "message" => "undefined function foo/0"
-            }
-          ]
-        })
+    if state.strict_open and Map.has_key?(state.docs, uri) do
+      state
+    else
+      did_open(params, uri, port, state)
     end
-
-    %{state | suppress_next_diag: false}
   end
 
   # textDocument/definition — returns a deterministic single-location list.
@@ -467,6 +458,82 @@ defmodule FakeLspServer do
 
   # Catch-all for notifications (no id) — ignore.
   defp handle(_notification, _port, state), do: state
+
+  defp did_open(params, uri, port, state) do
+    state = %{
+      state
+      | docs:
+          Map.put(
+            state.docs,
+            uri,
+            {get_in(params, ["textDocument", "version"]),
+             get_in(params, ["textDocument", "text"])}
+          )
+    }
+
+    cond do
+      state.echo_text and not state.suppress_next_diag ->
+        publish_for_document(port, state, uri)
+
+      state.suppress_next_diag ->
+        :ok
+
+      state.bad_diagnostics == "string" ->
+        notify(port, "textDocument/publishDiagnostics", %{"uri" => uri, "diagnostics" => "x"})
+
+      state.bad_diagnostics == "list" ->
+        notify(port, "textDocument/publishDiagnostics", %{
+          "uri" => uri,
+          "diagnostics" => [
+            "not a map",
+            %{"severity" => 1, "message" => %{"nested" => true}, "range" => [1, 2]},
+            %{
+              "severity" => 1,
+              "message" => "real error",
+              "range" => %{"start" => %{"line" => "2", "character" => nil}}
+            }
+          ]
+        })
+
+      true ->
+        notify(port, "textDocument/publishDiagnostics", %{
+          "uri" => uri,
+          "diagnostics" => [
+            %{
+              "range" => %{
+                "start" => %{"line" => 0, "character" => 0},
+                "end" => %{"line" => 0, "character" => 5}
+              },
+              "severity" => 1,
+              "message" => "undefined function foo/0"
+            }
+          ]
+        })
+    end
+
+    %{state | suppress_next_diag: false}
+  end
+
+  defp publish_for_document(port, state, uri) do
+    {version, text} = Map.fetch!(state.docs, uri)
+
+    message = if state.echo_text, do: "saw: " <> text, else: "undefined function foo/0"
+
+    notify(port, "textDocument/publishDiagnostics", %{
+      "uri" => uri,
+      "version" => version,
+      "diagnostics" => [
+        %{
+          "range" => %{
+            "start" => %{"line" => 0, "character" => 0},
+            "end" => %{"line" => 0, "character" => 5}
+          },
+          "severity" => 1,
+          "message" => message
+        }
+      ]
+    })
+  end
 
   # --- wire helpers ---
 
