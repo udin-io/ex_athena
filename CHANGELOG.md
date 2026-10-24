@@ -5,17 +5,20 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.21.1 — Dependency update
+## v0.22.0 — Dependency update
 
 ### Changed
 
-- **Every dependency in the lock moves to its latest release.**
+- **The `req_llm` floor rises from `~> 1.15` to `~> 1.29`.** 1.15 to 1.28
+  carry CVE-2026-107685 (WebSocket sessions did not verify TLS certificates,
+  critical), so a host could keep a vulnerable release. Raevos picks up 1.29 on
+  its next upgrade; a host that pins `req_llm` below 1.29 must lift it.
+- **Every dependency in the lock moves to its latest release**
   ([#292](https://github.com/udin-io/ex_athena/issues/292),
-  [#291](https://github.com/udin-io/ex_athena/issues/291)) That includes
-  req_llm 1.15 to 1.29, which fixes a critical advisory (WebSocket sessions
-  did not verify TLS certificates), plug_crypto 2.2.1 and ex_ratatui 0.18. The
-  version ranges in `mix.exs` do not change, so a host's own lock decides which
-  versions it gets. `mix hex.audit` still lists one advisory, cowlib 2.21.0
+  [#291](https://github.com/udin-io/ex_athena/issues/291)), including
+  plug_crypto 2.2.1 and ex_ratatui 0.18. The other version ranges in `mix.exs`
+  do not change, so a host's own lock decides which versions it gets.
+  `mix hex.audit` still lists one advisory, cowlib 2.21.0
   (CVE-2026-43966), which has no fixed release; it comes in through the
   test-only bypass dependency.
 - req_llm 1.29 retries 408, 429 and 5xx responses three times by itself and

@@ -1,7 +1,7 @@
 defmodule ExAthena.MixProject do
   use Mix.Project
 
-  @version "0.21.1"
+  @version "0.22.0"
   @source_url "https://github.com/udin-io/ex_athena"
 
   def project do
@@ -43,10 +43,11 @@ defmodule ExAthena.MixProject do
       {:mox, "~> 1.0", only: :test},
       {:erlexec, "~> 2.0"},
       {:req, "~> 0.5"},
-      # 1.15 is the floor: earlier versions accept :reasoning_effort and then
-      # drop it before encoding an OpenAI chat-completions body (agentjido/req_llm#753),
-      # which silently disables the knob for every local model we serve.
-      {:req_llm, "~> 1.15"},
+      # 1.29 is the floor: 1.15 to 1.28 carry EEF-CVE-2026-107685 (WebSocket
+      # sessions skip TLS certificate checks), and the adapter's
+      # `max_retries: 0` assumes 1.29's retry. Igniter cannot write a range, so
+      # `igniter.upgrade` pins `== 1.29.0`; restore `~> 1.29` by hand after it.
+      {:req_llm, "~> 1.29"},
       {:jason, "~> 1.4"},
       {:nimble_options, "~> 1.1"},
       {:telemetry, "~> 1.3"},
