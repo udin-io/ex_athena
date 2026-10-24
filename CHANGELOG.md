@@ -5,7 +5,26 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.21.1 — Dependency update
+
+### Changed
+
+- **Every dependency in the lock moves to its latest release.**
+  ([#292](https://github.com/udin-io/ex_athena/issues/292),
+  [#291](https://github.com/udin-io/ex_athena/issues/291)) That includes
+  req_llm 1.15 to 1.29, which fixes a critical advisory (WebSocket sessions
+  did not verify TLS certificates), plug_crypto 2.2.1 and ex_ratatui 0.18. The
+  version ranges in `mix.exs` do not change, so a host's own lock decides which
+  versions it gets. `mix hex.audit` still lists one advisory, cowlib 2.21.0
+  (CVE-2026-43966), which has no fixed release; it comes in through the
+  test-only bypass dependency.
+- req_llm 1.29 retries 408, 429 and 5xx responses three times by itself and
+  hides the `Retry-After` header. ExAthena now sends `max_retries: 0` so the
+  loop's one retry, which honors `retry_after_ms`, stays the only retry. Pass
+  `provider_opts: [max_retries: n]` to turn req_llm's retry back on. Embedding
+  calls follow req_llm's new default.
+- The Gemini guide names `ReqLLM.Streaming.Failure`, the module req_llm 1.29
+  logs a failed stream's body from, in the `Logger.put_module_level/2` line.
 
 ### Fixed
 

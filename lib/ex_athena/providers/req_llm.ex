@@ -561,7 +561,12 @@ defmodule ExAthena.Providers.ReqLLM do
         tools: to_req_llm_tools(request.tools),
         tool_choice: request.tool_choice,
         response_format: Keyword.get(opts, :response_format, request.response_format),
-        receive_timeout: request.timeout_ms
+        receive_timeout: request.timeout_ms,
+        # req_llm 1.29 retries 408/429/5xx three times on its own and hides the
+        # Retry-After header. The loop owns the one retry and honors
+        # `retry_after_ms`, so only a provider_opts `:max_retries` turns
+        # req_llm's retry back on.
+        max_retries: 0
       ]
       |> Keyword.reject(fn {_k, v} -> is_nil(v) or v == [] end)
 

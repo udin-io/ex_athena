@@ -451,8 +451,8 @@ defmodule ExAthena.Providers.ReqLLMGeminiTest do
     test "with log_bodies: false and req_llm's stream log raised, a failed stream logs no body",
          ctx do
       stub_stream(ctx.bypass, [error_body()], 400)
-      Logger.put_module_level(ReqLLM.Streaming, :error)
-      on_exit(fn -> Logger.delete_module_level(ReqLLM.Streaming) end)
+      Logger.put_module_level(ReqLLM.Streaming.Failure, :error)
+      on_exit(fn -> Logger.delete_module_level(ReqLLM.Streaming.Failure) end)
 
       log =
         capture_log([level: :debug], fn ->
