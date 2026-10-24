@@ -136,11 +136,13 @@ config :ex_athena, :gemini, log_bodies: false
 ```
 
 Errors then log their kind and status only. One line stays outside
-ExAthena's reach: req_llm itself logs a failed stream's body at warning.
-Raise that module's level in your app to drop it:
+ExAthena's reach: req_llm itself logs a failed stream's body at warning when
+the server answers with an error status. Raise that module's level in your app
+to drop it (req_llm 1.29 and later log it from `ReqLLM.Streaming.Failure`,
+earlier versions from `ReqLLM.Streaming`):
 
 ```elixir
-Logger.put_module_level(ReqLLM.Streaming, :error)
+Logger.put_module_level(ReqLLM.Streaming.Failure, :error)
 ```
 
 Two more places can still carry text you'd rather keep out of logs:
