@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.22.1 — Dependency update
+
+### Changed
+
+- **The lock moves bandit to 1.14.1, jsv to 0.27.0 and phoenix_html to 4.4.0**
+  ([#296](https://github.com/udin-io/ex_athena/issues/296)). bandit 1.14.1
+  fixes 12 advisories (HTTP/1.1 and HTTP/2 memory and request-smuggling
+  faults), jsv 0.27.0 fixes EEF-CVE-2026-117680, and phoenix_html 4.4.0 fixes
+  EEF-CVE-2026-117645. The version ranges in `mix.exs` do not change, so a
+  host's own lock decides which versions it gets: move bandit, jsv and
+  phoenix_html there.
+- `mix hex.audit` still lists cowboy 2.20.0 and cowlib 2.21.0. They have no
+  fixed release and come in through test-only dependencies; the rest is
+  tracked in [#280](https://github.com/udin-io/ex_athena/issues/280).
+
 ## v0.22.0 — Dependency update
 
 ### Changed
