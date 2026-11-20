@@ -90,6 +90,47 @@ defmodule ExAthena.Providers.ReqLLMGeminiTest do
 
   defp query_params(query_string), do: URI.decode_query(query_string)
 
+  # Holds the caller before its first read of a stream until req_llm's HTTP
+  # task has read the whole response and exited (issue 286). req_llm emits
+  # `[:req_llm, :request, :start]` in the caller's process after it starts
+  # that task and before the caller reads, so the handler waits there. It
+  # sends `:caller_held` once every task is gone, or `:hold_timed_out`. A
+  # task that is gone before the handler looks counts as held only when the
+  # stub already reported the request, so the hold never passes on no call.
+  defp hold_caller_until_http_finishes do
+    test = self()
+    id = {__MODULE__, :hold, make_ref()}
+
+    :telemetry.attach(id, [:req_llm, :request, :start], &__MODULE__.hold_caller/4, test)
+    on_exit(fn -> :telemetry.detach(id) end)
+  end
+
+  def hold_caller(_event, _measurements, _metadata, test) do
+    if self() == test do
+      refs =
+        ReqLLM.TaskSupervisor
+        |> Task.Supervisor.children()
+        |> Enum.map(&Process.monitor/1)
+
+      all_down? =
+        Enum.all?(refs, fn ref ->
+          receive do
+            {:DOWN, ^ref, :process, _pid, _reason} -> true
+          after
+            5_000 -> false
+          end
+        end)
+
+      held? = all_down? and (refs != [] or stub_saw_stream?())
+      send(test, if(held?, do: :caller_held, else: :hold_timed_out))
+    end
+  end
+
+  defp stub_saw_stream? do
+    {:messages, messages} = Process.info(self(), :messages)
+    Enum.any?(messages, &match?({:stream, _query, _headers}, &1))
+  end
+
   describe "structured output" do
     for model <- ["gemini-flash-lite-latest", "gemini-2.5-flash"] do
       test "sends the schema as responseJsonSchema and returns the decoded map on #{model}",
@@ -577,6 +618,19 @@ defmodule ExAthena.Providers.ReqLLMGeminiTest do
 
       assert {:error, %Error{kind: :bad_request, status: 400}} =
                ExAthena.stream("hi", fn _ -> :ok end, opts(ctx))
+    end
+
+    # Issue 286: a refusal that reached req_llm before the caller's first read
+    # came back as an empty answer. The hold makes that order run every time.
+    test "a 400 that lands before the caller reads the stream is still :bad_request", ctx do
+      stub_stream(ctx.bypass, [~s({"error":{"code":400,"status":"INVALID_ARGUMENT"}})], 400)
+      hold_caller_until_http_finishes()
+
+      assert {:error, %Error{kind: :bad_request, status: 400}} =
+               ExAthena.stream("hi", fn _ -> :ok end, opts(ctx))
+
+      assert_received {:stream, _query, _headers}
+      assert_received :caller_held
     end
   end
 
