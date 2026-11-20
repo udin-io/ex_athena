@@ -26,8 +26,8 @@ ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **The `req_llm` floor rises from `~> 1.15` to `~> 1.29`.** 1.15 to 1.28
   carry CVE-2026-107685 (WebSocket sessions did not verify TLS certificates,
-  critical), so a host could keep a vulnerable release. Raevos picks up 1.29 on
-  its next upgrade; a host that pins `req_llm` below 1.29 must lift it.
+  critical), so a host could keep a vulnerable release. A host picks up 1.29
+  on its next upgrade; one that pins `req_llm` below 1.29 must lift it.
 - **Every dependency in the lock moves to its latest release**
   ([#292](https://github.com/udin-io/ex_athena/issues/292),
   [#291](https://github.com/udin-io/ex_athena/issues/291)), including
