@@ -1361,6 +1361,14 @@ defmodule ExAthena.Tools.SpawnAgent do
   # which is exactly what the counter is for. See
   # `ExAthena.Loop.Terminations.budget_exhaustion?/1` for why this is not
   # `category/1 == :capacity`.
+  defp unfinished_error(:error_context_window_exceeded = finish_reason, digest) do
+    {:error, :uncounted,
+     "worker stopped on its budget (#{finish_reason}): its next request no longer fits " <>
+       "the model's context window, even after compacting. It did not fail at the task. " <>
+       "What it learned before stopping:\n#{digest}\n" <>
+       "Re-delegate a SMALLER slice building on those findings, or finish without it."}
+  end
+
   defp unfinished_error(finish_reason, digest) do
     if Terminations.budget_exhaustion?(finish_reason) do
       {:error, :uncounted,

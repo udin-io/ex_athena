@@ -14,7 +14,7 @@ defmodule ExAthena.RequestQueueCrashSafetyTest do
         streaming: false,
         json_mode: false,
         structured_output: false,
-        max_tokens: 1000,
+        max_tokens: 128_000,
         supports_resume: false,
         supports_system_prompt: false,
         supports_temperature: false

@@ -21,6 +21,17 @@ ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   A worker with no cap ends on its turn limit or its time budget, so token spend is bounded only by those two. Set the cap if you want a spend bound. This reverses
   the 800,000 default from issue 214.
 
+- **A worker stops on a call that does not fit its model, not on a running
+  total** ([#313](https://github.com/udin-io/ex_athena/issues/313), part of
+  [#310](https://github.com/udin-io/ex_athena/issues/310)). After compaction,
+  the loop compares the next request with the context window the provider
+  reports. When it still does not fit, the run ends before the call goes out
+  with `:error_context_window_exceeded`, and a worker's parent reads that the
+  request no longer fits and gets the findings back. The wrap-up nudge now
+  follows how full that window is, instead of only the cumulative token cap.
+  A provider that reports no window never stops a run on this check;
+  compaction still sizes itself against a 128,000-token guess then.
+
 ## v0.22.1 — Dependency update
 
 ### Changed

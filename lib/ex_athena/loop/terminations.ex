@@ -47,6 +47,11 @@ defmodule ExAthena.Loop.Terminations do
       assembled prompt exceeded the model's context window. Modes signal this
       to the kernel so the compaction pipeline can attempt reactive recovery
       before the run terminates.
+    * `:error_context_window_exceeded` — the next request does not fit the
+      window the provider reports, even after compaction. The loop stops
+      before the call goes out. `Result.error_diagnostic` carries the
+      estimated tokens and the window. Category `:capacity`, and a budget
+      exhaustion: a smaller slice of the work fits.
     * `:error_no_progress` — consecutive-iteration productivity threshold
       exceeded; the last N iterations produced identical tool calls with no
       new text. The `Result.no_progress_snapshot` field carries the stuck
@@ -80,6 +85,7 @@ defmodule ExAthena.Loop.Terminations do
           | :error_halted
           | :error_compaction_failed
           | :error_prompt_too_long
+          | :error_context_window_exceeded
           | :error_no_progress
           | :error_schema_validation
           | :error_provider_auth
@@ -99,6 +105,7 @@ defmodule ExAthena.Loop.Terminations do
     :error_halted,
     :error_compaction_failed,
     :error_prompt_too_long,
+    :error_context_window_exceeded,
     :error_no_progress,
     :error_schema_validation,
     :error_provider_auth,
@@ -153,6 +160,7 @@ defmodule ExAthena.Loop.Terminations do
   def budget_exhaustion?(:error_max_budget_usd), do: true
   def budget_exhaustion?(:error_max_turns), do: true
   def budget_exhaustion?(:error_prompt_too_long), do: true
+  def budget_exhaustion?(:error_context_window_exceeded), do: true
   def budget_exhaustion?(:error_thinking_starved), do: true
   def budget_exhaustion?(:budget_handback), do: true
   def budget_exhaustion?(_), do: false
@@ -180,6 +188,7 @@ defmodule ExAthena.Loop.Terminations do
   def category(:error_during_execution), do: :retryable
   def category(:error_schema_validation), do: :retryable
   def category(:error_prompt_too_long), do: :capacity
+  def category(:error_context_window_exceeded), do: :capacity
   def category(:error_no_progress), do: :capacity
   def category(:error_thinking_starved), do: :capacity
   def category(:error_halted), do: :fatal
