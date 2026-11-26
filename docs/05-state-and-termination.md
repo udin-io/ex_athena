@@ -111,6 +111,7 @@ stateDiagram-v2
     [*] --> error_consecutive_mistakes
     [*] --> error_no_progress
     [*] --> error_prompt_too_long
+    [*] --> error_context_window_exceeded
   }
   state "Retryable" as ret {
     [*] --> error_during_execution
@@ -140,6 +141,7 @@ stateDiagram-v2
 | `:error_consecutive_mistakes` | `:capacity` | `consecutive_mistakes >= max`. | [`loop.ex:129`](../lib/ex_athena/loop.ex#L129) |
 | `:error_no_progress` | `:capacity` | `unproductive_iterations >= max` with guard > 0. Carries `no_progress_snapshot`. | [`loop.ex:140`](../lib/ex_athena/loop.ex#L140) |
 | `:error_prompt_too_long` | `:capacity` | Reactive compact failed or still too large. | [`loop.ex:190`](../lib/ex_athena/loop.ex#L190) |
+| `:error_context_window_exceeded` | `:capacity` | After compaction, the next request is still larger than the window the provider reports. The loop stops before the call goes out; `error_diagnostic` holds the estimate and the window. A provider that reports no window never trips it. | [`loop.ex`](../lib/ex_athena/loop.ex) |
 | `:error_during_execution` | `:retryable` | Mode returned `{:error, reason}` not handled specially. | [`loop.ex:161`](../lib/ex_athena/loop.ex#L161) |
 | `:error_schema_validation` | `:retryable` | Structured output failed schema; `error_diagnostic` carries detail. | `Structured` |
 | `:error_halted` | `:fatal` | Hook or tool returned `{:halt, reason}`; `meta.early_halt` is set. | [`loop.ex:121`](../lib/ex_athena/loop.ex#L121) |

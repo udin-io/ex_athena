@@ -16,6 +16,10 @@ defmodule ExAthena.Providers.ReqLLMTest do
       assert Adapter.capabilities().structured_output == true
     end
 
+    test "marks the 32_768 fallback as a guess" do
+      assert Adapter.capabilities([]).max_tokens_guess == true
+    end
+
     test "returns max_tokens: 32_768 as conservative fallback" do
       assert Adapter.capabilities().max_tokens == 32_768
     end
@@ -44,6 +48,7 @@ defmodule ExAthena.Providers.ReqLLMTest do
     test "uses llm_db context for known openai model" do
       opts = [model: "gpt-4o-mini", req_llm_provider_tag: "openai"]
       caps = Adapter.capabilities(opts)
+      refute Map.has_key?(caps, :max_tokens_guess)
       {:ok, model} = LLMDB.model(:openai, "gpt-4o-mini")
       assert caps.max_tokens == model.limits[:context]
     end

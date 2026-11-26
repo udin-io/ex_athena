@@ -38,6 +38,19 @@ defmodule ExAthena.Loop.BudgetPressureTest do
       assert_in_delta f, 0.5, 0.001
     end
 
+    test "the nudge follows how full the model's window is, with no token cap set" do
+      msgs = [ExAthena.Messages.user(String.duplicate("word ", 4_000))]
+
+      full = state(messages: msgs, capabilities: %{max_tokens: 6_000})
+      assert BudgetPressure.note(full, 0) =~ "reduce scope"
+
+      roomy = state(messages: msgs, capabilities: %{max_tokens: 200_000})
+      assert BudgetPressure.note(roomy, 0) == nil
+
+      guessed = state(messages: msgs, capabilities: %{max_tokens: 6_000, max_tokens_guess: true})
+      assert BudgetPressure.note(guessed, 0) == nil
+    end
+
     test "a run with no token cap never nudges, however many tokens it has used" do
       s = state(max_input_tokens: 0) |> with_tokens(5_000_000)
       assert BudgetPressure.note(s, 0) == nil

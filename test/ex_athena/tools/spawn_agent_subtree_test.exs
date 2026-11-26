@@ -294,6 +294,32 @@ defmodule ExAthena.Tools.SpawnAgentSubtreeTest do
       assert message =~ "error_max_turns"
     end
 
+    test "a worker whose request cannot fit the model window stops and says so",
+         %{dir: dir} do
+      responder = fn _request ->
+        %Response{text: "never reached", finish_reason: :stop, provider: :mock}
+      end
+
+      ctx =
+        ToolContext.new(
+          cwd: dir,
+          assigns: %{
+            spawn_agent_opts: [
+              provider: :mock,
+              mock: [responder: responder],
+              memory: false,
+              capabilities: %{max_tokens: 1_000}
+            ]
+          }
+        )
+
+      big_brief = String.duplicate("word ", 3_000)
+
+      assert {:error, :uncounted, message} = SpawnAgent.execute(%{"prompt" => big_brief}, ctx)
+      assert message =~ "no longer fits the model's context window"
+      assert message =~ "error_context_window_exceeded"
+    end
+
     test "a worker under the ceiling is untouched", %{dir: dir} do
       responder = fn _request ->
         %Response{

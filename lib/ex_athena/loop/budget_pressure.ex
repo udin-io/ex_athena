@@ -83,7 +83,7 @@ defmodule ExAthena.Loop.BudgetPressure do
   def fractions(state, now) do
     %{
       iterations: ratio(state.iterations, state.max_iterations),
-      input_tokens: ratio(input_used(state), state.max_input_tokens),
+      input_tokens: input_fraction(state),
       wall_clock: wall_clock_fraction(state, now)
     }
   end
@@ -219,6 +219,29 @@ defmodule ExAthena.Loop.BudgetPressure do
       _ -> nil
     end
   end
+
+  # How full the input side is: the larger of the host's cumulative cap (when
+  # one is set) and how much of the model's window the next request fills.
+  # The window fill is what breaks a worker, so it is the default signal.
+  defp input_fraction(state) do
+    case {ratio(input_used(state), state.max_input_tokens), call_fill(state)} do
+      {nil, fill} -> fill
+      {used, nil} -> used
+      {used, fill} -> max(used, fill)
+    end
+  end
+
+  defp call_fill(%{messages: msgs, capabilities: %{max_tokens_guess: true}})
+       when is_list(msgs),
+       do: nil
+
+  defp call_fill(%{messages: msgs, capabilities: %{max_tokens: window}} = state)
+       when is_list(msgs) and is_integer(window) and window > 0 do
+    tokens = ExAthena.Compactor.estimate_tokens(msgs, ExAthena.Compactor.system_prompt(state))
+    clamp(tokens / window)
+  end
+
+  defp call_fill(_state), do: nil
 
   defp ratio(_used, cap) when not is_integer(cap) or cap <= 0, do: nil
   defp ratio(used, cap), do: clamp(used / cap)

@@ -79,6 +79,9 @@ defmodule ExAthena.Providers.ReqLLM do
       # compaction fire destructively at ~5k tokens on 32k+ local models;
       # every 2024+ local model serves ≥32k.
       max_tokens: 32_768,
+      # True while max_tokens is the guess above. The loop sizes compaction
+      # from it but never stops a run on it.
+      max_tokens_guess: true,
       supports_resume: false,
       supports_system_prompt: true,
       supports_temperature: true,
@@ -92,15 +95,18 @@ defmodule ExAthena.Providers.ReqLLM do
 
     case resolve_llmdb_context(opts) do
       {:ok, context} ->
-        %{base | max_tokens: context}
+        resolved(base, context)
 
       :error ->
         case ExAthena.ContextWindow.lookup(opts) do
-          {:ok, context} -> %{base | max_tokens: context}
+          {:ok, context} -> resolved(base, context)
           :error -> base
         end
     end
   end
+
+  defp resolved(base, context),
+    do: base |> Map.put(:max_tokens, context) |> Map.delete(:max_tokens_guess)
 
   @impl ExAthena.Provider
   def query(%Request{} = request, opts) do

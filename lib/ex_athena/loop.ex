@@ -124,6 +124,11 @@ defmodule ExAthena.Loop do
   alias ExAthena.Tools.Skill, as: SkillTool
   alias ExAthena.Tuning
 
+  require Logger
+
+  # Window assumed for sizing compaction when the provider reports none.
+  @fallback_context_window 128_000
+
   @default_max_iterations 55
   @default_max_mistakes 3
   @default_max_unproductive_iterations 3
@@ -189,37 +194,10 @@ defmodule ExAthena.Loop do
       true ->
         case maybe_compact(state) do
           {:ok, state} ->
-            Events.emit(state.on_event, {:iteration, state.iterations})
-
-            case run_pre_iteration_hook(state) do
-              {:halt, reason} ->
-                state
-                |> Map.put(:halted_reason, reason)
-                |> set_finish_reason(:error_halted)
-
-              {:ok, state} ->
-                case state.mode.iterate(state) do
-                  {:continue, new_state} ->
-                    new_state = update_progress_tracking(state, new_state)
-                    loop(%{new_state | iterations: new_state.iterations + 1})
-
-                  {:halt, new_state} ->
-                    new_state
-
-                  {:error, :error_prompt_too_long} ->
-                    handle_prompt_too_long(state)
-
-                  {:error, {:error_thinking_starved, info, %State{} = folded_state}} ->
-                    # The folded state (usage already accumulated) rides on the
-                    # signal so the starved attempt's token burn stays on the
-                    # budget across the retry/termination.
-                    handle_thinking_starved(folded_state, info)
-
-                  {:error, reason} ->
-                    state
-                    |> Map.put(:halted_reason, reason)
-                    |> set_finish_reason(:error_during_execution)
-                end
+            if call_fits?(state) do
+              iterate(state)
+            else
+              terminate_context_window_exceeded(state)
             end
 
           {:error, reason} ->
@@ -228,6 +206,81 @@ defmodule ExAthena.Loop do
             |> set_finish_reason(:error_compaction_failed)
         end
     end
+  end
+
+  defp iterate(%State{} = state) do
+    Events.emit(state.on_event, {:iteration, state.iterations})
+
+    case run_pre_iteration_hook(state) do
+      {:halt, reason} ->
+        state
+        |> Map.put(:halted_reason, reason)
+        |> set_finish_reason(:error_halted)
+
+      {:ok, state} ->
+        case state.mode.iterate(state) do
+          {:continue, new_state} ->
+            new_state = update_progress_tracking(state, new_state)
+            loop(%{new_state | iterations: new_state.iterations + 1})
+
+          {:halt, new_state} ->
+            new_state
+
+          {:error, :error_prompt_too_long} ->
+            handle_prompt_too_long(state)
+
+          {:error, {:error_thinking_starved, info, %State{} = folded_state}} ->
+            # The folded state (usage already accumulated) rides on the
+            # signal so the starved attempt's token burn stays on the
+            # budget across the retry/termination.
+            handle_thinking_starved(folded_state, info)
+
+          {:error, reason} ->
+            state
+            |> Map.put(:halted_reason, reason)
+            |> set_finish_reason(:error_during_execution)
+        end
+    end
+  end
+
+  # The window the provider reports, or nil. Only a window the provider
+  # reported can say a call does not fit; the fallback below is a guess.
+  defp context_window(%State{capabilities: caps}) do
+    case caps do
+      %{max_tokens_guess: true} -> nil
+      %{max_tokens: n} when is_integer(n) and n > 0 -> n
+      _ -> nil
+    end
+  end
+
+  # Compaction needs some window to size its target against, so it falls back
+  # to a guess when the provider reports none. The guess never stops a run.
+  defp compaction_window(%State{} = state),
+    do: context_window(state) || @fallback_context_window
+
+  # Does the next request fit the model after compaction ran? An unknown
+  # window cannot say no.
+  defp call_fits?(%State{} = state) do
+    case context_window(state) do
+      nil ->
+        true
+
+      window ->
+        ExAthena.Compactor.estimate_tokens(state.messages, system_prompt(state)) < window
+    end
+  end
+
+  defp terminate_context_window_exceeded(%State{} = state) do
+    window = context_window(state)
+    tokens = ExAthena.Compactor.estimate_tokens(state.messages, system_prompt(state))
+
+    Logger.warning(
+      "loop stopped: the next request is about #{tokens} tokens and does not fit the " <>
+        "model's #{window}-token window after compaction"
+    )
+
+    state = put_in(state.meta[:error_diagnostic], %{estimated_tokens: tokens, window: window})
+    set_finish_reason(state, :error_context_window_exceeded)
   end
 
   # Reactive recovery on `:error_prompt_too_long`: run the compaction
@@ -320,7 +373,7 @@ defmodule ExAthena.Loop do
   defp escalated_completion_cap(%State{} = state, info) do
     case info[:completion_cap] || state.request_template.max_tokens do
       cap when is_integer(cap) and cap > 0 ->
-        context_window = state.capabilities[:max_tokens] || 128_000
+        context_window = compaction_window(state)
 
         prompt_tokens =
           ExAthena.Compactor.estimate_tokens(state.messages, system_prompt(state))
@@ -368,7 +421,7 @@ defmodule ExAthena.Loop do
 
     estimate = %{
       tokens: ExAthena.Compactor.estimate_tokens(state.messages, system_prompt(state)),
-      max_tokens: state.capabilities[:max_tokens] || 128_000,
+      max_tokens: compaction_window(state),
       force: true
     }
 
@@ -468,7 +521,7 @@ defmodule ExAthena.Loop do
 
     estimate = %{
       tokens: ExAthena.Compactor.estimate_tokens(state.messages, system_prompt(state)),
-      max_tokens: state.capabilities[:max_tokens] || 128_000
+      max_tokens: compaction_window(state)
     }
 
     if function_exported?(compactor, :should_compact?, 2) and
