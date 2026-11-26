@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## Unreleased
+
+### Changed
+
+- **A worker has no total-token cap unless you set one**
+  ([#312](https://github.com/udin-io/ex_athena/issues/312), part of
+  [#310](https://github.com/udin-io/ex_athena/issues/310)). Until now a worker
+  stopped once its model calls added up to 800,000 input tokens. Every call
+  re-sends the whole conversation, so that total grew with each turn and said
+  nothing about whether the next call fit the model: two workers stopped
+  mid-edit at 834k and 805k while their largest call was 46k. `agents.max_input_tokens`
+  now defaults to 0 (off), in settings and in `config :ex_athena, :agents`. A
+  host that sets it above 0 still stops a worker with `:error_max_input_tokens`.
+  A worker with no cap ends on its turn limit or its time budget, so token spend is bounded only by those two. Set the cap if you want a spend bound. This reverses
+  the 800,000 default from issue 214.
+
 ## v0.22.1 — Dependency update
 
 ### Changed

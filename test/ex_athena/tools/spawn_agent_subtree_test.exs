@@ -249,6 +249,51 @@ defmodule ExAthena.Tools.SpawnAgentSubtreeTest do
       assert message =~ "the engine lives in llama_cpp.ex"
     end
 
+    # The cap is the host's to set. With none set, a worker's calls may add up
+    # to any total; only its turn limit and clock end it.
+    test "a worker with no ceiling set runs past 800k input tokens in total",
+         %{dir: dir} do
+      responder = fn _request ->
+        %Response{
+          text: "still going",
+          tool_calls: [
+            %ToolCall{
+              id: "c#{System.unique_integer([:positive])}",
+              name: "todo_write",
+              arguments: %{
+                "todos" => [
+                  %{
+                    "content" => "step #{System.unique_integer([:positive])}",
+                    "status" => "in_progress"
+                  }
+                ]
+              }
+            }
+          ],
+          finish_reason: :tool_calls,
+          provider: :mock,
+          usage: %{input_tokens: 100_000, output_tokens: 100}
+        }
+      end
+
+      ctx =
+        ToolContext.new(
+          cwd: dir,
+          assigns: %{
+            spawn_agent_opts: [
+              provider: :mock,
+              mock: [responder: responder],
+              memory: false,
+              max_iterations: 12
+            ]
+          }
+        )
+
+      assert {:error, :uncounted, message} = SpawnAgent.execute(%{"prompt" => "work"}, ctx)
+      refute message =~ "error_max_input_tokens"
+      assert message =~ "error_max_turns"
+    end
+
     test "a worker under the ceiling is untouched", %{dir: dir} do
       responder = fn _request ->
         %Response{
