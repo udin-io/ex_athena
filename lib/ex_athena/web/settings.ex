@@ -218,13 +218,13 @@ defmodule ExAthena.Web.Settings do
         %{
           key: :max_input_tokens,
           label: "Spend ceiling (input tokens)",
-          default: 800_000,
+          default: 0,
           type: :integer,
           min: 0,
           help:
-            "Stop a worker once it has consumed this many input tokens; it hands back " <>
-              "what it learned. 0 disables. Across 41 workers that finished, the most any " <>
-              "used was 702k; two that delivered nothing used 920k and 1.99M."
+            "Stop a worker once it has consumed this many input tokens in total; it hands " <>
+              "back what it learned. 0 (the default) sets no limit: a worker then ends on " <>
+              "its turn limit or its time budget."
         },
         %{
           key: :write_brief_rail,

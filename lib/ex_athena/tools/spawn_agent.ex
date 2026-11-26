@@ -172,11 +172,11 @@ defmodule ExAthena.Tools.SpawnAgent do
   # `configured_timeout/1` and `ExAthena.Agents.Deadline`.
   @default_timeout_ms 1_800_000
 
-  # Input-token ceiling for one worker. Set just above the largest spend
-  # observed from a worker that actually finished (701,896 across 41 of them),
-  # so it bites only on runaways: live, 1,992,051 and 920,357 on two workers
-  # that each delivered nothing.
-  @default_worker_input_tokens 800_000
+  # No total-token ceiling for a worker unless the host sets one. The running
+  # total says nothing about whether the next call fits the model, and it
+  # stopped workers that could go on (issue 310). The turn limit and the
+  # clock bound a runaway. 0 = off.
+  @default_worker_input_tokens 0
 
   # Conclusions carried in a handoff digest. Tune via
   # config :ex_athena, :agents, digest_findings:.
@@ -463,13 +463,10 @@ defmodule ExAthena.Tools.SpawnAgent do
     sub_opts =
       base_opts
       |> Keyword.put_new(:max_iterations, worker_iterations(Map.get(args, "max_iterations")))
-      # Spend rail. Wall clock alone let a worker reach 1.99M input tokens
-      # inside its 30 minutes and finish none of its eight sub-steps; across
-      # 41 workers that DID finish, the most any used was 702k. A worker past
-      # this is not close to done. It stops with a :capacity termination, so
-      # the digest path below hands its findings back like any other
-      # unfinished worker. Tune via config :ex_athena, :agents,
-      # max_input_tokens: (nil disables).
+      # Spend rail, off by default. A host that sets a ceiling stops a worker
+      # past it with a :capacity termination, so the digest path below hands
+      # its findings back like any other unfinished worker. Set it via
+      # config :ex_athena, :agents, max_input_tokens: (0 or nil = off).
       |> Keyword.put_new(
         :max_input_tokens,
         Tuning.get(:agents, :max_input_tokens, @default_worker_input_tokens)

@@ -38,6 +38,12 @@ defmodule ExAthena.Loop.BudgetPressureTest do
       assert_in_delta f, 0.5, 0.001
     end
 
+    test "a run with no token cap never nudges, however many tokens it has used" do
+      s = state(max_input_tokens: 0) |> with_tokens(5_000_000)
+      assert BudgetPressure.note(s, 0) == nil
+      refute BudgetPressure.handback?(s, 0)
+    end
+
     test "input tokens, and nil when uncapped" do
       s = state(max_input_tokens: 800_000) |> with_tokens(600_000)
       assert %{input_tokens: f} = BudgetPressure.fractions(s, 0)

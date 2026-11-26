@@ -52,6 +52,7 @@ defmodule ExAthena.Web.SettingsTest do
         {{:agents, :max_iterations}, 50},
         {{:agents, :prompt_chars}, 160},
         {{:agents, :timeout_ms}, 1_800_000},
+        {{:agents, :max_input_tokens}, 0},
         {{:bash, :max_output_chars}, 16_000}
       ]
 
