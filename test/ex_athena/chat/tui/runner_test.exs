@@ -28,7 +28,9 @@ defmodule ExAthena.Chat.Tui.RunnerTest do
 
       assert opts[:provider] == :ollama
       assert opts[:model] == "qwen2.5"
-      assert opts[:mode] == :react
+      refute Keyword.has_key?(opts, :mode)
+      assert opts[:phase] == :default
+      assert is_function(opts[:can_use_tool], 3)
       assert opts[:base_url] == "http://localhost:11434"
       assert is_function(opts[:on_event], 1)
     end
@@ -168,6 +170,30 @@ defmodule ExAthena.Chat.Tui.RunnerTest do
     end
   end
 
+  describe "build_run_opts/3 with a host to ask" do
+    test "the session's level asks its approvals through the host" do
+      session = Session.new(provider: :ollama, model: "m") |> Session.set_permission(:ask)
+      opts = Runner.build_run_opts(session, fn _ -> :ok end, self())
+
+      assert opts[:phase] == :default
+      assert opts[:assigns][:ask_user] == self()
+
+      task = Task.async(fn -> opts[:can_use_tool].("write", %{"path" => "a.txt"}, nil) end)
+
+      assert_receive {:athena_ask_user, %{question: "Change a.txt?", reply_to: asker} = q}, 1_000
+      send(asker, {:athena_user_answer, q.tool_call_id, "Allow"})
+
+      assert Task.await(task) == :allow
+    end
+
+    test "with no host an approval denies instead of waiting" do
+      session = Session.new(provider: :ollama, model: "m")
+      opts = Runner.build_run_opts(session, fn _ -> :ok end)
+
+      assert {:deny, _} = opts[:can_use_tool].("write", %{"path" => "a.txt"}, nil)
+    end
+  end
+
   describe "start/2" do
     test "drives a Mock-backed run, sending {:athena_event, ...} for each loop event and a terminal {:athena_done, _}" do
       session =
@@ -177,8 +203,7 @@ defmodule ExAthena.Chat.Tui.RunnerTest do
       session = %{
         session
         | provider: :mock,
-          tools: [],
-          permission_mode: :default
+          tools: []
       }
 
       events = [
@@ -203,7 +228,7 @@ defmodule ExAthena.Chat.Tui.RunnerTest do
       # bubbled {:error, _}, so we don't pin which terminal — we just verify
       # one arrives after any number of :athena_event messages.
       session = Session.new(provider: :mock, model: "boom") |> Session.append_user("hi")
-      session = %{session | tools: [], permission_mode: :default}
+      session = %{session | tools: []}
 
       _ = Runner.start(session, self(), mock: [error: :boom])
 
@@ -220,8 +245,7 @@ defmodule ExAthena.Chat.Tui.RunnerTest do
       session = %{
         session
         | provider: :totally_made_up_provider,
-          tools: [],
-          permission_mode: :default
+          tools: []
       }
 
       _ = Runner.start(session, self(), [])

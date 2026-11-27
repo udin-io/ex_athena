@@ -19,7 +19,7 @@ defmodule ExAthena.Chat.Tui.Runner do
       crashes" rule).
   """
 
-  alias ExAthena.Chat.Session
+  alias ExAthena.Chat.{Permission, Session}
   alias ExAthena.Config
 
   @run_timeout_ms 24 * 60 * 60 * 1000
@@ -30,7 +30,7 @@ defmodule ExAthena.Chat.Tui.Runner do
   @spec start(Session.t(), pid(), keyword()) :: pid()
   def start(%Session{} = session, target_pid, extra_opts) when is_pid(target_pid) do
     callback = build_callback(target_pid)
-    opts = session |> build_run_opts(callback) |> Keyword.merge(extra_opts)
+    opts = session |> build_run_opts(callback, target_pid) |> Keyword.merge(extra_opts)
 
     {:ok, pid} =
       Task.start(fn ->
@@ -57,25 +57,52 @@ defmodule ExAthena.Chat.Tui.Runner do
     end
   end
 
-  @spec build_run_opts(Session.t(), (term() -> term())) :: keyword()
-  def build_run_opts(%Session{} = session, callback) when is_function(callback, 1) do
+  @doc """
+  The run options for `session`. With `ask_host:` (the TUI App's pid), the
+  session's permission level asks its approvals there, and `ask_user`
+  questions reach it too; without one, nothing can be asked, so the level's
+  approvals deny.
+  """
+  @spec build_run_opts(Session.t(), (term() -> term()), pid() | nil) :: keyword()
+  def build_run_opts(%Session{} = session, callback, ask_host \\ nil)
+      when is_function(callback, 1) do
     base = [
       provider: session.provider,
       model: session.model,
-      mode: session.mode,
       tools: session.tools,
       messages: session.messages,
-      permission_mode: session.permission_mode,
       on_event: callback,
       timeout_ms: @run_timeout_ms
     ]
 
     base
+    |> put_permission(session.permission, ask_host)
     |> maybe_put_cwd(session.cwd)
     |> maybe_put_confine(session.cwd)
     |> maybe_put_resume(session.provider_session_id)
     |> apply_default_base_url(session.provider)
     |> apply_provider_spec_extra_headers(session.provider)
+  end
+
+  defp put_permission(opts, level, host) do
+    ask = fn question, options, kind ->
+      id = "approval-" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
+
+      if is_pid(host) do
+        case ExAthena.Tools.AskUser.ask(host, id, question, options, %{kind: kind}) do
+          {:ok, answer} -> answer
+          {:error, :host_down} -> :gone
+        end
+      else
+        :gone
+      end
+    end
+
+    {_ref, permission_opts} = Keyword.pop(Permission.run_opts(level, ask), :level_ref)
+
+    opts
+    |> Keyword.merge(permission_opts)
+    |> then(fn o -> if is_pid(host), do: Keyword.put(o, :assigns, %{ask_user: host}), else: o end)
   end
 
   # Confine to the session's working directory by default (override with

@@ -38,12 +38,12 @@ defmodule ExAthena.Chat.CommandsTest do
                {:command, :model, ["qwen2.5-coder:14b"]}
     end
 
-    test "parses /mode with no args" do
-      assert Commands.parse("/mode") == {:command, :mode, []}
+    test "parses /permissions with no args" do
+      assert Commands.parse("/permissions") == {:command, :permissions, []}
     end
 
-    test "parses /mode with an inline argument" do
-      assert Commands.parse("/mode plan_and_solve") == {:command, :mode, ["plan_and_solve"]}
+    test "parses /permissions with an inline argument" do
+      assert Commands.parse("/permissions read_only") == {:command, :permissions, ["read_only"]}
     end
 
     test "parses /tools" do
@@ -96,7 +96,7 @@ defmodule ExAthena.Chat.CommandsTest do
       text = Commands.help_text()
 
       for verb <-
-            ~w(/model /mode /tools /clear /expand /details /cd /pwd /tab /diff /timeline /mouse /help /exit) do
+            ~w(/model /permissions /tools /clear /expand /details /cd /pwd /tab /diff /timeline /mouse /help /exit) do
         assert text =~ verb, "expected help text to mention #{verb}"
       end
     end

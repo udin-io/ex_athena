@@ -31,9 +31,8 @@ defmodule ExAthena.Chat.SessionTest do
 
       assert session.provider == :ollama
       assert session.model == "llama3.1"
-      assert session.mode == :react
+      assert session.permission == :ask
       assert session.tools == :all
-      assert session.permission_mode == :default
       assert session.messages == []
       assert session.iteration == 0
       assert session.usage == %{input_tokens: 0, output_tokens: 0}
@@ -49,10 +48,10 @@ defmodule ExAthena.Chat.SessionTest do
     end
 
     test "accepts overrides via opts" do
-      session = Session.new(model: "qwen2.5-coder:14b", mode: :plan_and_solve)
+      session = Session.new(model: "qwen2.5-coder:14b", permission: :read_only)
 
       assert session.model == "qwen2.5-coder:14b"
-      assert session.mode == :plan_and_solve
+      assert session.permission == :read_only
     end
   end
 
@@ -77,9 +76,9 @@ defmodule ExAthena.Chat.SessionTest do
   end
 
   describe "clear_messages/1" do
-    test "wipes messages but keeps model + mode + counters" do
+    test "wipes messages but keeps model + permission + counters" do
       session =
-        Session.new(model: "m", mode: :reflexion)
+        Session.new(model: "m", permission: :trusted)
         |> Session.append_user("x")
         |> Session.apply_result(%Result{
           iterations: 2,
@@ -92,7 +91,7 @@ defmodule ExAthena.Chat.SessionTest do
 
       assert cleared.messages == []
       assert cleared.model == "m"
-      assert cleared.mode == :reflexion
+      assert cleared.permission == :trusted
       # Counters reset too — a /clear is a "fresh start"
       assert cleared.iteration == 0
       assert cleared.usage == %{input_tokens: 0, output_tokens: 0}
@@ -100,7 +99,7 @@ defmodule ExAthena.Chat.SessionTest do
     end
   end
 
-  describe "set_model/2 and set_mode/2" do
+  describe "set_model/2 and set_permission/2" do
     test "set_model/2 swaps the model field, leaves the rest alone" do
       session = Session.new(model: "a") |> Session.append_user("hi")
 
@@ -110,9 +109,10 @@ defmodule ExAthena.Chat.SessionTest do
       assert updated.messages == session.messages
     end
 
-    test "set_mode/2 swaps the mode atom" do
+    test "set_permission/2 swaps the level, and an unknown one falls back to the default" do
       session = Session.new(model: "m")
-      assert Session.set_mode(session, :plan_and_solve).mode == :plan_and_solve
+      assert Session.set_permission(session, :edit).permission == :edit
+      assert Session.set_permission(session, :orchestrate).permission == :ask
     end
   end
 

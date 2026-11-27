@@ -8,7 +8,7 @@ defmodule ExAthena.Chat.Tui.StateTest do
 
   describe "new/1" do
     test "wraps a Chat.Session with default UI fields" do
-      session = Session.new(provider: :ollama, model: "qwen3:8b", mode: :react)
+      session = Session.new(provider: :ollama, model: "qwen3:8b")
       state = State.new(session)
 
       assert state.session == session
@@ -267,9 +267,9 @@ defmodule ExAthena.Chat.Tui.StateTest do
       state =
         Session.new()
         |> State.new()
-        |> State.open_popup({:mode, []})
+        |> State.open_popup({:permissions, []})
 
-      assert state.popup == {:mode, [], 0}
+      assert state.popup == {:permissions, [], 0}
     end
 
     test "move_popup_selection/2 wraps top-to-bottom and bottom-to-top" do
@@ -298,7 +298,7 @@ defmodule ExAthena.Chat.Tui.StateTest do
 
       assert State.move_popup_selection(base, +1) == base
 
-      empty = State.open_popup(base, {:mode, []})
+      empty = State.open_popup(base, {:permissions, []})
       assert State.move_popup_selection(empty, +1) == empty
     end
 
@@ -322,7 +322,7 @@ defmodule ExAthena.Chat.Tui.StateTest do
       moved = State.move_popup_selection(with_popup, +1)
       assert State.current_popup_selection(moved) == "b"
 
-      empty = State.open_popup(base, {:mode, []})
+      empty = State.open_popup(base, {:permissions, []})
       assert State.current_popup_selection(empty) == nil
     end
   end
@@ -356,15 +356,15 @@ defmodule ExAthena.Chat.Tui.StateTest do
   end
 
   describe "session passthroughs" do
-    test "set_model/2 and set_mode/2 update the wrapped session" do
+    test "set_model/2 and set_permission/2 update the wrapped session" do
       state =
         Session.new()
         |> State.new()
         |> State.set_model("gemma2:9b")
-        |> State.set_mode(:plan_and_solve)
+        |> State.set_permission(:read_only)
 
       assert state.session.model == "gemma2:9b"
-      assert state.session.mode == :plan_and_solve
+      assert state.session.permission == :read_only
     end
 
     test "clear_session/1 wipes messages and resets state.events" do
