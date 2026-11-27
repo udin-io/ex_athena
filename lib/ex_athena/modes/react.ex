@@ -24,8 +24,18 @@ defmodule ExAthena.Modes.ReAct do
 
   @behaviour ExAthena.Loop.Mode
 
-  alias ExAthena.{Messages, Permissions, Skills, Telemetry}
-  alias ExAthena.Loop.{BudgetPressure, Events, Inference, NarratedStop, Parallel, State}
+  alias ExAthena.{Messages, Permissions, Skills, Telemetry, Tuning}
+
+  alias ExAthena.Loop.{
+    BudgetPressure,
+    Events,
+    FinishChecks,
+    Inference,
+    NarratedStop,
+    Parallel,
+    State
+  }
+
   alias ExAthena.Messages.ToolCall
   alias ExAthena.Tools
   alias ExAthena.Tools.Skill, as: SkillTool
@@ -92,8 +102,32 @@ defmodule ExAthena.Modes.ReAct do
         {:halt, state}
 
       {:ok, request, state} ->
-        do_iterate(state, request, handback?)
+        state |> do_iterate(request, handback?) |> check_finish()
     end
+  end
+
+  # The one chat checks its work before it says done (issue 320): see
+  # `ExAthena.Loop.FinishChecks`. Only when ReAct IS the run's mode — a mode
+  # that wraps it (Orchestrate) runs its own checks on the same halt — and
+  # only at the top: a helper's report carries what it ran, and the chat
+  # reads that.
+  defp check_finish({:halt, %State{} = halted} = halt) do
+    if chat_checked?(halted) do
+      case FinishChecks.run(halted, voice: :chat) do
+        :pass -> halt
+        decided -> decided
+      end
+    else
+      halt
+    end
+  end
+
+  defp check_finish(other), do: other
+
+  defp chat_checked?(%State{mode: mode} = state) do
+    mode == __MODULE__ and not worker?(state) and
+      Map.get(state.ctx.assigns || %{}, :agent_depth, 0) == 0 and
+      Tuning.get(:chat, :finish_checks, true) == true
   end
 
   defp do_iterate(%State{} = state, request, handback?) do

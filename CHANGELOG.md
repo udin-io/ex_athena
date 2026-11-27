@@ -39,6 +39,34 @@ ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Every chat checks its work before it says done**
+  ([#320](https://github.com/udin-io/ex_athena/issues/320)). Only Orchestrate
+  used to read what a run did before letting it finish. A plain chat could
+  edit a file and answer "done" with no command, no test run and no look back
+  at the request. Now a top-level chat that changed files gets the same four
+  checks when it stops, whether it stops with text or with `finish`: a command
+  ran, a test run passed, a test executed the changed files, and the work was
+  read against the person's latest message. Each missing check adds one note
+  and one more turn, and fires once per request, across a resume too, so a
+  chat that cannot check its work still ends. A chat that changed nothing, a
+  helper, a read-only chat and a chat with neither `bash` nor `spawn_agent`
+  are never checked, and a chat on its last allowed turn ends as it stands.
+  Only the default `:react` mode runs these checks; Orchestrate keeps its own,
+  and Plan-and-Solve and Reflexion run none until they leave the library.
+  Text the chat reads (a file, a command's output, a fetched page) can neither
+  switch a check off nor count as a helper's test run, and a hook's injected
+  message never stands in for the request: a message a hook injects now
+  carries `name: "hook"` unless the hook named it. `config :ex_athena, :chat, finish_checks: false` turns
+  the checks off; the web settings show it under Chat.
+- **Every top-level chat briefs its helpers as Orchestrate did**
+  ([#320](https://github.com/udin-io/ex_athena/issues/320)). A helper sent
+  from a plain chat used to get only the prompt the model wrote. Now its brief
+  always carries an objective, the expected output, tool guidance and
+  boundaries, with a default for any part the model left out, and its system
+  prompt ends with the worker contract Orchestrate's helpers had. Set
+  `strict_spawn: false` or `subagent_prompt_suffix: ""` in `assigns` to keep
+  the old shape.
+
 - **A model can ask a worker for at most 200 turns**
   ([#316](https://github.com/udin-io/ex_athena/issues/316)). `spawn_agent` took
   any `max_iterations` a model sent: a request for 10,000 turns ran a worker

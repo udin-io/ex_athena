@@ -120,6 +120,24 @@ defmodule ExAthena.Web.Settings do
       ]
     },
     %{
+      ns: :chat,
+      title: "Chat",
+      blurb: "How the chat behaves before it says it is done.",
+      fields: [
+        %{
+          key: :finish_checks,
+          label: "Check its work before it says done",
+          default: true,
+          type: :select,
+          options: [true, false],
+          help:
+            "When the chat changed files, it must run a check, run the tests, run the " <>
+              "changed code and compare the work with your request before it stops. " <>
+              "Each check asks once."
+        }
+      ]
+    },
+    %{
       ns: :orchestrate,
       title: "Orchestration",
       blurb: "When the orchestrator stops planning and starts delegating.",

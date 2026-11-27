@@ -884,6 +884,7 @@ defmodule ExAthena.Loop do
         |> ExAthena.Agents.RunFolder.install()
         |> wire_coordinator(coordinator)
         |> maybe_put_subagent_suffix(Keyword.get(opts, :subagent_prompt_suffix))
+        |> put_helper_rails()
 
       if coordinator, do: ExAthena.Orchestrator.Coordinator.attach_run(coordinator, self())
 
@@ -909,7 +910,7 @@ defmodule ExAthena.Loop do
       # rewrite the user message, or `{:halt, reason}` to abort. Only
       # the most-recently-added user message (the prompt the caller
       # passed) is replaced when transformed.
-      {initial_messages, ups_halt} =
+      {initial_messages, request_message, ups_halt} =
         apply_user_prompt_submit(hooks_table, initial_messages, %{
           prompt: prompt,
           session_id: session_id,
@@ -981,6 +982,9 @@ defmodule ExAthena.Loop do
           # default to :infinity (orchestrate) must honor an explicit choice.
           |> Map.put(:explicit_max_iterations?, Keyword.has_key?(opts, :max_iterations))
           |> maybe_put_halt(ups_halt)
+          # The message this run answers, so the chat's finish checks scope to
+          # it and never to a message a hook added (see Loop.FinishChecks).
+          |> Map.put(:request_message, request_message)
       }
 
       _ =
@@ -1039,6 +1043,21 @@ defmodule ExAthena.Loop do
     |> Map.put(:agent_progress_reader, progress_reader)
   end
 
+  # Every top-level chat briefs its helpers the way Orchestrate did (issue
+  # 320): a full four-part brief, its missing parts filled with defaults
+  # (`SpawnAgent`'s strict spawn), and the worker contract in each helper's
+  # prompt. put_new, so a caller's own setting wins. A helper's assigns already
+  # carry the parent's choice, and SpawnAgent clears neither.
+  defp put_helper_rails(assigns) do
+    if Map.get(assigns, :agent_depth, 0) == 0 do
+      assigns
+      |> Map.put_new(:strict_spawn, true)
+      |> Map.put_new(:subagent_prompt_suffix, ExAthena.Agents.WorkerContract.text())
+    else
+      assigns
+    end
+  end
+
   defp maybe_put_subagent_suffix(assigns, nil), do: assigns
 
   defp maybe_put_subagent_suffix(assigns, suffix) when is_binary(suffix),
@@ -1075,12 +1094,9 @@ defmodule ExAthena.Loop do
   defp apply_user_prompt_submit(hooks, messages, payload) do
     outputs = ExAthena.Hooks.run_lifecycle_with_outputs(hooks, :UserPromptSubmit, payload)
 
-    new_messages =
-      messages
-      |> apply_transform(outputs.transform)
-      |> Kernel.++(outputs.injects)
+    sent = apply_transform(messages, outputs.transform)
 
-    {new_messages, outputs.halt}
+    {sent ++ outputs.injects, ExAthena.Loop.FinishChecks.request_message(sent), outputs.halt}
   end
 
   # Replace the last user-role message's content with the transformed prompt.

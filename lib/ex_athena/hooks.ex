@@ -130,6 +130,20 @@ defmodule ExAthena.Hooks do
   end
 
   @doc """
+  The `name` every injected message without one carries: `"hook"`.
+
+  A hook's inject is a user-role turn, and nothing else tells it apart from
+  the person's own message. The chat's finish checks scope to the person's
+  latest message (`ExAthena.Loop.FinishChecks`), so an untagged inject would
+  stand in for the request and switch the checks off.
+  """
+  @spec inject_name() :: String.t()
+  def inject_name, do: "hook"
+
+  defp tag_inject(%Message{name: nil} = msg), do: %{msg | name: inject_name()}
+  defp tag_inject(msg), do: msg
+
+  @doc """
   Like `run_lifecycle/3` but returns a structured outputs map so callers
   can act on `{:inject, msg}` and `{:transform, prompt}` returns. Used
   by the kernel to thread `UserPromptSubmit` transforms and
@@ -154,10 +168,10 @@ defmodule ExAthena.Hooks do
           {:halt, %{acc | halt: h}}
 
         {:inject, %Message{} = msg} ->
-          {:cont, %{acc | injects: acc.injects ++ [msg]}}
+          {:cont, %{acc | injects: acc.injects ++ [tag_inject(msg)]}}
 
         {:inject, list} when is_list(list) ->
-          {:cont, %{acc | injects: acc.injects ++ list}}
+          {:cont, %{acc | injects: acc.injects ++ Enum.map(list, &tag_inject/1)}}
 
         {:transform, prompt} when is_binary(prompt) ->
           {:cont, %{acc | transform: prompt}}
