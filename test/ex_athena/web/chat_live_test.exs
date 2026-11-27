@@ -867,7 +867,7 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
 
   # The completion save used to write whatever the last batched
   # `{:orchestrator_update, _, _}` had left in the assign. That flush is
-  # 100 ms behind, so a run that ended having submitted its answer was
+  # 250 ms behind, so a run that ended having submitted its answer was
   # persisted mid-flight — one live session reopened days later still showed
   # "main: running" with two todos outstanding.
   describe "closing the snapshot out on completion" do
@@ -1345,6 +1345,32 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
       assert html =~ "files-toggle"
       assert html =~ "a.txt"
       assert html =~ "subdir"
+    end
+  end
+
+  describe "agent_tree_node/1 live preview" do
+    import Phoenix.LiveViewTest, only: [render_component: 2]
+
+    defp render_node(agent) do
+      render_component(&ChatLive.agent_tree_node/1, agent: agent, by_parent: %{})
+    end
+
+    test "shows what a running worker is writing before its turn ends" do
+      agent =
+        %AgentInfo{id: "w1", name: "implementer", status: :running}
+        |> AgentInfo.apply_event({:content, "Reading the config "})
+        |> AgentInfo.apply_event({:content, "file now"})
+
+      assert render_node(agent) =~ "Reading the config file now"
+    end
+
+    test "shows nothing extra for a worker that has finished" do
+      agent =
+        %AgentInfo{id: "w1", name: "implementer", status: :running}
+        |> AgentInfo.apply_event({:content, "Reading the config file now"})
+        |> AgentInfo.apply_event({:done, %ExAthena.Result{finish_reason: :stop}})
+
+      refute render_node(agent) =~ "Reading the config file now"
     end
   end
 end

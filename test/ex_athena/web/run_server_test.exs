@@ -214,7 +214,7 @@ defmodule ExAthena.Web.RunServerTest do
 
   # The Overview only ever reached disk through the LiveView's 5s autosave, and
   # that timer stops the moment the run ends — so a run that finished with no
-  # browser attached (or one whose final save beat the coordinator's 100 ms
+  # browser attached (or one whose final save beat the coordinator's 250 ms
   # batched flush) left the Overview frozen mid-run. Session 0211188215f3 sat
   # at "main: running, iteration 7" for a run that had reached iteration 10 and
   # submitted its answer.

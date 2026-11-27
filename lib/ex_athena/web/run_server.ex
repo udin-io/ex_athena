@@ -388,7 +388,7 @@ defmodule ExAthena.Web.RunServer do
   # instant the run ends — so a run finishing with nobody attached persisted a
   # snapshot frozen at whatever the browser last saw. Taking it here closes
   # that gap, and applying the run's own Result closes the other one: the
-  # coordinator's terminal snapshot is batched (100 ms) and would otherwise
+  # coordinator's terminal snapshot is batched (250 ms) and would otherwise
   # lose the race against this very save.
   defp terminal_snapshot(%{coordinator: pid}, result) when is_pid(pid) do
     case Coordinator.snapshot(pid) do
