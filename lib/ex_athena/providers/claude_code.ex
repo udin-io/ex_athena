@@ -373,9 +373,12 @@ defmodule ExAthena.Providers.ClaudeCode do
   # Map ex_athena's permission phase → claude_code's permission mode. The CLI is
   # an autonomous agent working in an isolated worktree, so the default is
   # `:accept_edits` (apply file edits without prompting); read-only phases stay
-  # in `:plan`.
+  # in `:plan`. The CLI runs its own tools and never calls `can_use_tool`, so
+  # it cannot ask before an edit: below Trusted it edits freely, and Trusted
+  # (`:trusted`) lets its commands run too (issue 322).
   defp phase_to_mode(:plan), do: :plan
   defp phase_to_mode(:bypass_permissions), do: :bypass_permissions
+  defp phase_to_mode(:trusted), do: :bypass_permissions
   defp phase_to_mode(:accept_edits), do: :accept_edits
   defp phase_to_mode(_), do: :accept_edits
 

@@ -9,7 +9,7 @@ if Code.ensure_loaded?(ExRatatui.App) do
 
     Layout (top-to-bottom):
 
-      1. Header (1 row) — `provider · model · mode · iter=N · in/out tok · $cost`.
+      1. Header (1 row) — `provider · model · permission · iter=N · in/out tok · $cost`.
       2. Body (flex) — split horizontally 50/50 into:
            * Left  — `messages` WidgetList (one `{Paragraph, 1}` per event row).
              If `state.loading? == true`, a `Throbber` is appended.
@@ -24,7 +24,7 @@ if Code.ensure_loaded?(ExRatatui.App) do
     rect with a centered `List`.
     """
 
-    alias ExAthena.Chat.{Commands, Session, Tui.State}
+    alias ExAthena.Chat.{Commands, Permission, Session, Tui.State}
     alias ExRatatui.Frame
     alias ExRatatui.Layout
     alias ExRatatui.Layout.Rect
@@ -207,7 +207,7 @@ if Code.ensure_loaded?(ExRatatui.App) do
       IO.iodata_to_binary([
         to_string(s.model),
         " · ",
-        inspect(s.mode),
+        Permission.label(s.permission),
         " · iter=",
         Integer.to_string(s.iteration),
         " · ",
@@ -1015,7 +1015,8 @@ if Code.ensure_loaded?(ExRatatui.App) do
       {title, list_items} =
         case kind do
           :model -> {" Pick a model ", items}
-          :mode -> {" Pick a mode ", Enum.map(items, &inspect/1)}
+          :permissions -> {" What the chat may do ", Enum.map(items, &Permission.label/1)}
+          {:question, _q} -> {" Your answer ", items}
           :provider -> {" Pick a provider ", Enum.map(items, fn {_name, display} -> display end)}
         end
 

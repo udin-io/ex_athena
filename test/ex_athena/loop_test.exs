@@ -911,70 +911,17 @@ defmodule ExAthena.LoopTest do
       assert ExAthena.Tools.Finish in ExAthena.Tools.builtins()
     end
 
-    test "finish tool in :plan_and_solve mode halts with :submitted", %{dir: dir} do
-      responses = [
-        # Planning phase — text only, no tool calls
-        %Response{
-          text: "My plan: step 1 then step 2.",
-          tool_calls: [],
-          finish_reason: :stop,
-          provider: :mock
-        },
-        # Executing phase — model calls finish
-        %Response{
-          text: "",
-          tool_calls: [
-            %ToolCall{
-              id: "f_ps",
-              name: "finish",
-              arguments: %{"deliverable" => "plan_and_solve output"}
-            }
-          ],
-          finish_reason: :tool_calls,
-          provider: :mock
-        }
-      ]
+    test "a removed mode is refused with what to use instead", %{dir: dir} do
+      for {mode, hint} <- [
+            plan_and_solve: "phase: :plan",
+            reflexion: "finish checks",
+            orchestrate: "spawn_agent"
+          ] do
+        assert {:error, {:removed_mode, ^mode, text}} =
+                 Loop.run("do the task", provider: :mock, mock: [text: "x"], cwd: dir, mode: mode)
 
-      assert {:ok, result} =
-               Loop.run("plan the task",
-                 provider: :mock,
-                 mock: [responder: script(responses)],
-                 cwd: dir,
-                 mode: :plan_and_solve,
-                 tools: [ExAthena.Tools.Finish]
-               )
-
-      assert result.finish_reason == :submitted
-      assert result.deliverable == "plan_and_solve output"
-    end
-
-    test "finish tool in :reflexion mode halts with :submitted", %{dir: dir} do
-      responses = [
-        %Response{
-          text: "",
-          tool_calls: [
-            %ToolCall{
-              id: "f_ref",
-              name: "finish",
-              arguments: %{"deliverable" => "reflexion output"}
-            }
-          ],
-          finish_reason: :tool_calls,
-          provider: :mock
-        }
-      ]
-
-      assert {:ok, result} =
-               Loop.run("do the task",
-                 provider: :mock,
-                 mock: [responder: script(responses)],
-                 cwd: dir,
-                 mode: :reflexion,
-                 tools: [ExAthena.Tools.Finish]
-               )
-
-      assert result.finish_reason == :submitted
-      assert result.deliverable == "reflexion output"
+        assert text =~ hint
+      end
     end
   end
 

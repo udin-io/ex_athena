@@ -73,6 +73,7 @@ defmodule ExAthena.Modes.ReAct do
       state
       |> drop_helpers(helpers_on?(small?))
       |> add_todo_note(small?)
+      |> add_plan_note()
     else
       state
     end
@@ -107,12 +108,32 @@ defmodule ExAthena.Modes.ReAct do
   end
 
   defp add_todo_note(state, false), do: state
+  defp add_todo_note(state, true), do: append_system(state, @todo_note)
 
-  defp add_todo_note(%State{request_template: template} = state, true) do
+  # Issue 322. A chat pinned read-only is the plan step: it looks around, then
+  # shows a plan the person approves before anything changes. Only when the
+  # chat holds `plan_mode`, which carries the plan to the approval.
+  @plan_note """
+  ## Read only
+  This chat is read only: look around with the read-only tools and change
+  nothing. When you have a plan, call plan_mode with action "exit" and the plan
+  in `plan`, one step per line. The person approves it before anything
+  changes; if they ask you to keep planning, refine it and ask again.\
+  """
+
+  defp add_plan_note(%State{ctx: %{phase: :plan}} = state) do
+    if Tools.find(state.tool_specs, "plan_mode"),
+      do: append_system(state, @plan_note),
+      else: state
+  end
+
+  defp add_plan_note(state), do: state
+
+  defp append_system(%State{request_template: template} = state, note) do
     prompt =
       case template.system_prompt do
-        p when p in [nil, ""] -> @todo_note
-        p -> p <> "\n\n" <> @todo_note
+        p when p in [nil, ""] -> note
+        p -> p <> "\n\n" <> note
       end
 
     %{state | request_template: %{template | system_prompt: prompt}}
@@ -182,9 +203,8 @@ defmodule ExAthena.Modes.ReAct do
   end
 
   # The one chat checks its work before it says done (issue 320): see
-  # `ExAthena.Loop.FinishChecks`. Only when ReAct IS the run's mode — a mode
-  # that wraps it (Orchestrate) runs its own checks on the same halt — and
-  # only at the top: a helper's report carries what it ran, and the chat
+  # `ExAthena.Loop.FinishChecks`. Only when ReAct IS the run's mode — a custom
+  # mode that wraps it decides its own halts — and only at the top: a helper's report carries what it ran, and the chat
   # reads that.
   defp check_finish({:halt, %State{} = halted} = halt) do
     if top_chat?(halted) do
@@ -206,13 +226,13 @@ defmodule ExAthena.Modes.ReAct do
 
   defp finish_checks(halted) do
     if Tuning.get(:chat, :finish_checks, true) == true,
-      do: FinishChecks.run(halted, voice: :chat),
+      do: FinishChecks.run(halted),
       else: :pass
   end
 
   # A chat that stops with steps still open on its own to-do list usually
-  # narrated the next step instead of taking it (issue 321; Orchestrate's
-  # pending-todo nudge, moved here). Once per request, so the second stop is
+  # narrated the next step instead of taking it (issue 321; the pending-todo nudge
+  # Orchestrate had). Once per request, so the second stop is
   # final. A chat with no list is answering a question and is left alone, and
   # in the read-only phase an open list IS the plan it stops to show.
   @open_steps_marker "[chat runtime: open steps]"
@@ -697,11 +717,10 @@ defmodule ExAthena.Modes.ReAct do
   # brief was ever written.
   #
   # Scoped to workers on purpose. A top-level run's plain text goes to a human
-  # who can answer it in the next turn, so there is nothing to recover; and
-  # `Orchestrate.maybe_nudge_stop/1` already covers the orchestrator, whose
-  # test ("pending todos exist") a worker has no equivalent of. Keeping this
-  # one behind `parent_session_id` is also what stops the two from stacking on
-  # the same halt.
+  # who can answer it in the next turn, and the chat's own open-steps turn
+  # covers a stop with its to-do list unfinished. Keeping this one behind
+  # `parent_session_id` is also what stops the two from stacking on the same
+  # halt.
   #
   # See `ExAthena.Loop.NarratedStop` for what the text has to look like, and
   # why the rule is narrow enough that an `explore` worker — whose deliverable
@@ -1173,12 +1192,8 @@ defmodule ExAthena.Modes.ReAct do
   # calls arrive as `~~~tool_call` fences inside the text deltas — so also
   # filter those fences out of the visible {:content, _} stream (the loop
   # surfaces the parsed calls as {:tool_call, _} events when it runs them).
-  # Public (but undocumented) so the planning phases of other modes
-  # (Orchestrate, PlanAndSolve) can stream their single inference turn with
-  # the same translation/suppression semantics as ReAct turns.
-  @doc false
-  def stream_callback(%State{on_event: on_event} = state)
-      when is_function(on_event, 1) do
+  defp stream_callback(%State{on_event: on_event} = state)
+       when is_function(on_event, 1) do
     if function_exported?(state.provider_mod, :stream, 3) do
       non_native = not (state.capabilities[:native_tool_calls] || false)
 
@@ -1191,7 +1206,7 @@ defmodule ExAthena.Modes.ReAct do
     end
   end
 
-  def stream_callback(_state), do: {nil, nil}
+  defp stream_callback(_state), do: {nil, nil}
 
   defp stringify(value) when is_binary(value), do: value
   defp stringify(value), do: inspect(value, pretty: true, limit: :infinity)

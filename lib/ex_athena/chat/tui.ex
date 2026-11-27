@@ -9,12 +9,12 @@ if Code.ensure_loaded?(ExRatatui.App) do
 
     Layout (see `ExAthena.Chat.Tui.View`):
 
-      * Header (1 row) — provider · model · mode · iter · tokens · cost.
+      * Header (1 row) — provider · model · permission · iter · tokens · cost.
       * Messages (flex) — scrollback rendered from `state.events`.
       * Input (3 rows) — multiline textarea bound to `state.input_ref`.
       * Footer (1 row) — keyboard hints.
 
-    When the user types a `/model` or `/mode` command with no arg, a modal
+    When the user types a `/model` or `/permissions` command with no arg, a modal
     `Popup` overlays the messages area with a navigable list. Streaming
     tokens accumulate in `state.stream_buffer` and flush into the most
     recent assistant row every ~60 ms (`@tick_interval_ms`) so a fast
@@ -28,13 +28,12 @@ if Code.ensure_loaded?(ExRatatui.App) do
 
     use ExRatatui.App
 
-    alias ExAthena.Chat.{Commands, Session}
+    alias ExAthena.Chat.{Commands, Permission, Session}
     alias ExAthena.Chat.Tui.{Runner, State, View}
     alias ExAthena.Tools
     alias ExRatatui.Event
     alias ExRatatui.Frame
 
-    @modes [:react, :plan_and_solve, :reflexion, :orchestrate]
     @tick_interval_ms 60
     # Rows per PgUp/PgDn press. Roughly a half-page on a typical terminal —
     # comfortable for skimming without overshooting.
@@ -356,6 +355,18 @@ if Code.ensure_loaded?(ExRatatui.App) do
       {:noreply, State.move_popup_selection(state, +1)}
     end
 
+    # Esc on a question answers it, or the run would wait forever: the chat
+    # stays open, so nothing else would ever answer.
+    defp handle_popup_key(%Event.Key{code: "esc"}, %State{popup: {{:question, q}, _, _}} = state) do
+      if is_pid(q.reply_to), do: send(q.reply_to, {:athena_user_answer, q.tool_call_id, "Deny"})
+
+      state
+      |> State.close_popup()
+      |> State.append_event({:info, "You answered: Deny"})
+      |> State.next_question()
+      |> noreply()
+    end
+
     defp handle_popup_key(%Event.Key{code: "esc"}, state) do
       {:noreply, State.close_popup(state)}
     end
@@ -374,18 +385,35 @@ if Code.ensure_loaded?(ExRatatui.App) do
       end
     end
 
-    defp handle_popup_key(%Event.Key{code: "enter"}, %State{popup: {:mode, _, _}} = state) do
+    defp handle_popup_key(%Event.Key{code: "enter"}, %State{popup: {:permissions, _, _}} = state) do
       case State.current_popup_selection(state) do
         nil ->
           {:noreply, State.close_popup(state)}
 
-        mode when is_atom(mode) ->
+        level when is_atom(level) ->
           state
-          |> State.set_mode(mode)
+          |> State.set_permission(level)
           |> State.close_popup()
-          |> State.append_event({:info, "Mode → " <> inspect(mode)})
+          |> State.append_event({:info, "The chat may now: " <> Permission.label(level)})
           |> noreply()
       end
+    end
+
+    # A question from the run (ask_user, an approval): the answer goes to the
+    # process that asked, and an approved plan moves the chat's level.
+    defp handle_popup_key(
+           %Event.Key{code: "enter"},
+           %State{popup: {{:question, q}, _, _}} = state
+         ) do
+      answer = State.current_popup_selection(state)
+      if is_pid(q.reply_to), do: send(q.reply_to, {:athena_user_answer, q.tool_call_id, answer})
+
+      state
+      |> State.close_popup()
+      |> State.append_event({:info, "You answered: " <> to_string(answer)})
+      |> follow_plan_approval(q, answer)
+      |> State.next_question()
+      |> noreply()
     end
 
     defp handle_popup_key(%Event.Key{code: "enter"}, %State{popup: {:provider, _, _}} = state) do
@@ -458,7 +486,31 @@ if Code.ensure_loaded?(ExRatatui.App) do
       {:noreply, new_state}
     end
 
+    def handle_info({:athena_ask_user, %{question: question} = q}, %State{} = state) do
+      options =
+        case Map.get(q, :options, []) do
+          [_ | _] = opts -> opts
+          _ -> ["Yes", "No"]
+        end
+
+      state
+      |> State.append_event({:info, "ExAthena is asking: " <> question})
+      |> State.ask({Map.put_new(q, :reply_to, nil), options})
+      |> noreply()
+    end
+
     def handle_info(_msg, state), do: {:noreply, state}
+
+    # Only a plan approval the runtime asked moves the level: a question the
+    # model wrote can offer the same words.
+    defp follow_plan_approval(state, %{kind: :plan_approval}, answer) do
+      case Permission.level_after_approval(answer) do
+        nil -> state
+        level -> State.set_permission(state, level)
+      end
+    end
+
+    defp follow_plan_approval(state, _question, _answer), do: state
 
     # ── Submission + commands ────────────────────────────────────────────────
 
@@ -576,23 +628,23 @@ if Code.ensure_loaded?(ExRatatui.App) do
       {:noreply, state}
     end
 
-    defp dispatch_command(:mode, [], state) do
-      {:noreply, State.open_popup(state, {:mode, @modes})}
+    defp dispatch_command(:permissions, [], state) do
+      {:noreply, State.open_popup(state, {:permissions, Permission.levels()})}
     end
 
-    defp dispatch_command(:mode, [arg | _], state) do
-      case parse_mode_atom(arg) do
-        {:ok, mode} ->
-          state
-          |> State.set_mode(mode)
-          |> State.append_event({:info, "Mode → " <> inspect(mode)})
-          |> noreply()
+    defp dispatch_command(:permissions, [arg | _], state) do
+      if arg in Enum.map(Permission.levels(), &Atom.to_string/1) do
+        level = Permission.parse(arg)
 
-        :error ->
-          append_and_noreply(
-            state,
-            {:warning, "Unknown mode: " <> arg <> ". Try /mode with no args."}
-          )
+        state
+        |> State.set_permission(level)
+        |> State.append_event({:info, "The chat may now: " <> Permission.label(level)})
+        |> noreply()
+      else
+        append_and_noreply(
+          state,
+          {:warning, "Unknown level: " <> arg <> ". Try read_only, ask, edit or trusted."}
+        )
       end
     end
 
@@ -838,7 +890,8 @@ if Code.ensure_loaded?(ExRatatui.App) do
       |> State.append_event({:info, "ExAthena chat  (/help for commands, /exit to quit)"})
       |> State.append_event(
         {:info,
-         "provider=#{session.provider}  model=#{session.model}  mode=#{inspect(session.mode)}"}
+         "provider=#{session.provider}  model=#{session.model}  " <>
+           "permission=#{Permission.label(session.permission)}"}
       )
       |> State.append_event({:info, cwd_line})
     end
@@ -938,13 +991,6 @@ if Code.ensure_loaded?(ExRatatui.App) do
       String.to_existing_atom(name)
     rescue
       ArgumentError -> String.to_atom(name)
-    end
-
-    defp parse_mode_atom(arg) when is_binary(arg) do
-      candidate = String.to_existing_atom(arg)
-      if candidate in @modes, do: {:ok, candidate}, else: :error
-    rescue
-      ArgumentError -> :error
     end
 
     defp parse_expand_index([]), do: 1

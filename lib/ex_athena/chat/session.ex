@@ -15,9 +15,8 @@ defmodule ExAthena.Chat.Session do
 
   defstruct provider: :ollama,
             model: @default_model,
-            mode: :react,
+            permission: :ask,
             tools: :all,
-            permission_mode: :default,
             messages: [],
             iteration: 0,
             usage: %{input_tokens: 0, output_tokens: 0},
@@ -28,9 +27,8 @@ defmodule ExAthena.Chat.Session do
   @type t :: %__MODULE__{
           provider: atom(),
           model: String.t(),
-          mode: atom(),
+          permission: ExAthena.Chat.Permission.level(),
           tools: :all | [module()],
-          permission_mode: atom(),
           messages: [Message.t()],
           iteration: non_neg_integer(),
           usage: %{input_tokens: non_neg_integer(), output_tokens: non_neg_integer()},
@@ -51,9 +49,8 @@ defmodule ExAthena.Chat.Session do
     %__MODULE__{
       provider: provider,
       model: Keyword.get(opts, :model, configured_model),
-      mode: Keyword.get(opts, :mode, :react),
+      permission: ExAthena.Chat.Permission.parse(Keyword.get(opts, :permission, :ask)),
       tools: Keyword.get(opts, :tools, :all),
-      permission_mode: Keyword.get(opts, :permission_mode, :default),
       cwd: Keyword.get(opts, :cwd)
     }
   end
@@ -85,9 +82,10 @@ defmodule ExAthena.Chat.Session do
     %{session | model: model}
   end
 
-  @spec set_mode(t(), atom()) :: t()
-  def set_mode(%__MODULE__{} = session, mode) when is_atom(mode) do
-    %{session | mode: mode}
+  @doc "Set how much the chat may do without asking (`ExAthena.Chat.Permission`)."
+  @spec set_permission(t(), ExAthena.Chat.Permission.level()) :: t()
+  def set_permission(%__MODULE__{} = session, level) do
+    %{session | permission: ExAthena.Chat.Permission.parse(level)}
   end
 
   @spec set_provider(t(), atom()) :: t()

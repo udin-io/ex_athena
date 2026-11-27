@@ -341,6 +341,15 @@ defmodule ExAthena.Providers.ClaudeCodeTest do
       assert opts[:include_partial_messages] == false
     end
 
+    test "the read-only and trusted levels reach the CLI as its own modes" do
+      assert ClaudeCode.build_opts(request(), phase: :plan)[:permission_mode] == :plan
+
+      assert ClaudeCode.build_opts(request(), phase: :trusted)[:permission_mode] ==
+               :bypass_permissions
+
+      assert ClaudeCode.build_opts(request(), phase: :default)[:permission_mode] == :accept_edits
+    end
+
     test "build_opts/2 (used by query/2) does not set include_partial_messages" do
       opts = ClaudeCode.build_opts(request(), [])
       refute Keyword.has_key?(opts, :include_partial_messages)

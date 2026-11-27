@@ -31,8 +31,6 @@ flowchart TB
   subgraph Strategy [Strategy · lib/ex_athena/modes]
     ModeBeh[Loop.Mode behaviour]
     ReAct[Modes.ReAct]
-    PaS[Modes.PlanAndSolve]
-    Refl[Modes.Reflexion]
   end
 
   subgraph IO [I/O · messages + tool-call protocol]
@@ -101,8 +99,6 @@ flowchart TB
   LoopMod --> Skills
 
   ModeBeh -.implements.-> ReAct
-  ModeBeh -.implements.-> PaS
-  ModeBeh -.implements.-> Refl
 
   ReAct --> ProvBeh
   ReAct --> TC
@@ -164,8 +160,8 @@ Deep dive → [03 · Reasoning loop](03-reasoning-loop.md) · [05 · State & ter
 |---|---|
 | [`Loop.Mode`](../lib/ex_athena/loop/mode.ex) | Behaviour: `init/1`, `iterate/1`, optional `productivity_signal/2`. |
 | [`Modes.ReAct`](../lib/ex_athena/modes/react.ex) | Default — Reason → Act → Observe → repeat. Real-time streaming, native + TextTagged tool calls. |
-| [`Modes.PlanAndSolve`](../lib/ex_athena/modes/plan_and_solve.ex) | Plan once → execute many iterations. |
-| [`Modes.Reflexion`](../lib/ex_athena/modes/reflexion.ex) | Attempt → critique → retry. |
+| [`Chat.Permission`](../lib/ex_athena/chat/permission.ex) | The four permission levels a person picks: a phase plus the approvals `can_use_tool` asks. |
+| [`Loop.FinishChecks`](../lib/ex_athena/loop/finish_checks.ex) | The checks a chat must pass before it says done. |
 
 Deep dive → [04 · Modes](04-modes.md).
 
@@ -256,7 +252,7 @@ Deep dive → [15 · MCP & LSP](15-mcp-and-lsp.md).
 
 | Module | Role |
 |---|---|
-| [`Chat.Tui`](../lib/ex_athena/chat/tui.ex) | Terminal REPL via `ex_ratatui`. Slash commands (`/model`, `/mode`, `/tools`, …). |
+| [`Chat.Tui`](../lib/ex_athena/chat/tui.ex) | Terminal REPL via `ex_ratatui`. Slash commands (`/model`, `/permissions`, `/tools`, …). |
 | [`Web.*`](../lib/ex_athena/web) | Phoenix LiveView UI — session recall, fork, diff viewer. |
 
 ---

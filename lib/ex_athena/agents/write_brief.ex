@@ -7,8 +7,8 @@ defmodule ExAthena.Agents.WriteBrief do
   `bash`, so the worker spent 24.6 minutes and 540K input tokens producing a
   report it could not save, and two further workers were spawned purely to
   probe whether writing was possible at all. Two prompt-level rails already
-  say not to do this — `Modes.Orchestrate`'s protocol tells the orchestrator,
-  and `explore.md` tells the worker — and the model ignored the first. This
+  say not to do this — the orchestrator's protocol at the time, and
+  `explore.md` tells the worker — and the model ignored the first. This
   is the code rail behind them (issue 217).
 
   ## Why the answer is a judgement call

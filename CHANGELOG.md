@@ -7,6 +7,41 @@ ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Breaking
+
+These need the next release to be v0.23.0: on 0.x, a breaking change moves the
+minor version. Nobody has published it yet.
+
+- **One chat in place of the four chat modes; you pick how much it may do**
+  ([#322](https://github.com/udin-io/ex_athena/issues/322)). The web UI and the terminal UI asked you to choose ReAct, Plan & Solve, Reflexion or
+  Orchestrate before you typed, and none could do what another did mid-chat.
+  Now there is one chat, and the picker sets how much it may do without
+  asking: Read only (plan), Ask before edits (the new default), Edit freely or
+  Trusted (`ExAthena.Chat.Permission`). Read only is the plan step: the chat
+  looks around, then shows a plan through `plan_mode` (which gains a `plan`
+  argument), and your approval picks whether later edits ask; a helper cannot
+  leave Read only on its own. Ask before edits shows Allow and Deny before each
+  edit and each command; Edit freely asks only for commands; Read only asks
+  before any command it does not refuse outright. Below Trusted a web fetch, a
+  web search or a GitHub command asks too, since a request can carry data out,
+  and the language server asks once per run, since it compiles the project.
+  The web UI asks through the question card, the terminal UI through a popup
+  (Esc answers Deny), and two questions wait their turn. On the Claude Code
+  provider, which runs its own tools and cannot ask, every level below Trusted
+  edits without asking, and the picker says so. `mix athena.chat --permission
+  LEVEL` replaces `--mode` (which now stops with that hint), and
+  `/permissions` replaces `/mode`. A saved web chat keeps its level; one saved
+  before this opens at the default.
+  `ExAthena.Modes.PlanAndSolve`, `ExAthena.Modes.Reflexion` and
+  `ExAthena.Modes.Orchestrate` are gone. `mode: :plan_and_solve`, `:reflexion`
+  and `:orchestrate` now return `{:error, {:removed_mode, mode, hint}}` from
+  `ExAthena.run/2`, the hint naming what replaces each: phase `:plan`, the
+  finish checks (#320), and helpers in every chat. `:react` and custom mode
+  modules work as before. The `:orchestrate` settings namespace is gone with
+  its mode; its audit quote length moves to `config :ex_athena, :chat,
+  audit_request_chars:`. The `plan` helper agent runs as the chat in the
+  read-only phase.
+
 ### Added
 
 - **An orchestrator can name the folder its workers start in**
@@ -46,6 +81,21 @@ ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and reports does not change.
 
 ### Changed
+
+- **Read only refuses the write and run forms of read-only commands**
+  ([#322](https://github.com/udin-io/ex_athena/issues/322)). The read-only
+  phase ran `git grep -O<cmd>`, `git diff --output=`, `--ext-diff`, a command
+  behind an environment setting (`GIT_EXTERNAL_DIFF=…`), process substitution,
+  `find -fprint0`, `sort`/`tree -o`, a second `uniq`/`xxd` file, and `yq`,
+  `less`, `more`, `man` and `mix xref`; a flag in quotes, an escape, `$` or
+  `{…}`; a shortened long flag; `git ls-remote --upload-pack`, `git reflog delete` and `expire`, `rg --pre` and `sort
+  --compress-program`. Each of these writes a file, drops history or runs
+  code; each is refused now.
+- **A person's answer reaches the helper that asked**
+  ([#322](https://github.com/udin-io/ex_athena/issues/322)). A helper runs in
+  its own process, and the web UI sent every answer to the top-level run, so a
+  helper's `ask_user` question waited forever. Each question now names the
+  process that asked, and the answer goes there.
 
 - **Small models keep a to-do list and start with helpers off**
   ([#321](https://github.com/udin-io/ex_athena/issues/321)). A small local

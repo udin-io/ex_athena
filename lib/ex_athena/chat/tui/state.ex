@@ -36,7 +36,8 @@ defmodule ExAthena.Chat.Tui.State do
   @type popup ::
           nil
           | {:model, [String.t()], non_neg_integer()}
-          | {:mode, [atom()], non_neg_integer()}
+          | {:permissions, [atom()], non_neg_integer()}
+          | {{:question, map()}, [String.t()], non_neg_integer()}
           | {:provider, [{String.t(), String.t()}], non_neg_integer()}
 
   defstruct session: nil,
@@ -51,6 +52,7 @@ defmodule ExAthena.Chat.Tui.State do
             stream_buffer: "",
             loading?: false,
             popup: nil,
+            questions: [],
             events: [],
             # Structured tool-call records keyed by tool_call_id. Events
             # carry only a `{:tool_block, id}` reference; State holds the
@@ -114,6 +116,7 @@ defmodule ExAthena.Chat.Tui.State do
           stream_buffer: String.t(),
           loading?: boolean(),
           popup: popup(),
+          questions: [{map(), [String.t()]}],
           events: [event_row()],
           tool_blocks: %{String.t() => map()},
           details: [event_row()],
@@ -373,9 +376,9 @@ defmodule ExAthena.Chat.Tui.State do
     %{state | session: Session.set_model(session, model)}
   end
 
-  @spec set_mode(t(), atom()) :: t()
-  def set_mode(%__MODULE__{session: session} = state, mode) when is_atom(mode) do
-    %{state | session: Session.set_mode(session, mode)}
+  @spec set_permission(t(), atom()) :: t()
+  def set_permission(%__MODULE__{session: session} = state, level) do
+    %{state | session: Session.set_permission(session, level)}
   end
 
   @spec set_provider(t(), atom()) :: t()
@@ -409,16 +412,44 @@ defmodule ExAthena.Chat.Tui.State do
 
   @spec open_popup(
           t(),
-          {:model, [String.t()]} | {:mode, [atom()]} | {:provider, [{String.t(), String.t()}]}
+          {:model, [String.t()]}
+          | {:permissions, [atom()]}
+          | {:provider, [{String.t(), String.t()}]}
         ) :: t()
+  # A picker waits while a question is on screen: replacing it would leave
+  # its asker waiting forever.
+  def open_popup(%__MODULE__{popup: {{:question, _}, _, _}} = state, {_kind, _items}), do: state
+
   def open_popup(%__MODULE__{} = state, {kind, items})
-      when kind in [:model, :mode] and is_list(items) do
+      when kind in [:model, :permissions] and is_list(items) do
     %{state | popup: {kind, items, 0}}
   end
 
   def open_popup(%__MODULE__{} = state, {:provider, items}) when is_list(items) do
     %{state | popup: {:provider, items, 0}}
   end
+
+  @doc """
+  Show a question from the run, or queue it behind the one on screen.
+
+  A question replaces a picker (the picker can be reopened), but never another
+  question: that asker would wait forever.
+  """
+  @spec ask(t(), {map(), [String.t()]}) :: t()
+  def ask(%__MODULE__{popup: {{:question, _}, _, _}} = state, question),
+    do: %{state | questions: state.questions ++ [question]}
+
+  # The selection starts on the last option, the refusal ("Deny", "No, keep
+  # planning"), so an Enter meant for something else never approves.
+  def ask(%__MODULE__{} = state, {q, options}),
+    do: %{state | popup: {{:question, q}, options, max(length(options) - 1, 0)}}
+
+  @doc "Show the next queued question, if any, once the one on screen is answered."
+  @spec next_question(t()) :: t()
+  def next_question(%__MODULE__{popup: nil, questions: [next | rest]} = state),
+    do: ask(%{state | questions: rest}, next)
+
+  def next_question(state), do: state
 
   @spec close_popup(t()) :: t()
   def close_popup(%__MODULE__{} = state), do: %{state | popup: nil}

@@ -24,7 +24,7 @@ an error and exits.
 mix athena.chat
 mix athena.chat --provider llamacpp
 mix athena.chat --provider ollama --model qwen2.5-coder:14b
-mix athena.chat --mode plan_and_solve
+mix athena.chat --permission read_only
 mix athena.chat -p ~/projects/my_app
 ```
 
@@ -34,7 +34,7 @@ mix athena.chat -p ~/projects/my_app
 |---|---|---|
 | `--provider NAME` | | Which provider to use (`:ollama`, `:llamacpp`, `:openai_compatible`, `:claude`, `:gemini`, `:openrouter`, or a JSON-defined name). Defaults to `config :ex_athena, default_provider:`. |
 | `--model NAME` | | Initial model. Overrides the provider's configured default. |
-| `--mode NAME` | | Agent mode: `react`, `plan_and_solve`, or `reflexion`. |
+| `--permission LEVEL` | | How much the chat may do without asking: `read_only` (it shows a plan first), `ask` (default), `edit`, or `trusted`. |
 | `--path PATH` | `-p` | Working directory for filesystem tools. `~` is expanded. The chat process does **not** `cd` — tools just receive this as their `cwd`. |
 
 ## Selecting a provider
@@ -152,9 +152,9 @@ others.
 - **Input** — multiline textarea. `Enter` sends; `Shift+Enter` inserts a newline.
 - **Footer** — context-sensitive keyboard hints.
 
-## Model and mode pickers
+## Model and permission pickers
 
-Typing `/model` or `/mode` with no argument opens a scrollable popup over
+Typing `/model` or `/permissions` with no argument opens a scrollable popup over
 the messages area:
 
 ```
@@ -176,7 +176,7 @@ Or set directly to skip the picker:
 
 ```
 /model mistral-nemo
-/mode plan_and_solve
+/permissions read_only
 ```
 
 ## Slash commands
@@ -191,7 +191,7 @@ commands and their descriptions as you type the verb. Press `Tab` or
 | `/clear` | Wipe the conversation history and start a fresh session |
 | `/tools` | List the tools currently available to the agent |
 | `/model [name]` | Open the model picker, or set the model directly |
-| `/mode [name]` | Open the mode picker, or set the mode directly (`react`, `plan_and_solve`, `reflexion`) |
+| `/permissions [level]` | Open the level picker, or set it directly (`read_only`, `ask`, `edit`, `trusted`) |
 | `/expand [N]` | Show the full text of the Nth most-recent tool result (default: 1 = most recent) |
 | `/details [on\|off]` | Show or hide the right details pane; no argument toggles |
 | `/tab` | Cycle the details pane tab: Timeline ↔ Changes |
@@ -254,6 +254,6 @@ always shows the complete text.
   sending your next message resumes it.
 - **Side-by-side diff**: `/diff side` switches the Changes tab to a
   two-column layout. `/diff inline` or `/diff` switches back to unified.
-- **Mode switching**: `plan_and_solve` adds an explicit planning phase
-  before the agent executes tools — useful for complex multi-file tasks.
-  `reflexion` adds a self-critique loop after each iteration.
+- **Plan first**: `/permissions read_only` keeps the chat from changing
+  anything until you approve its plan — useful for complex multi-file
+  tasks. The approval picks whether later edits ask.

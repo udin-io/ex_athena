@@ -1,6 +1,6 @@
 defmodule ExAthena.Tuning do
   @moduledoc """
-  Runtime lookup for the tunable limits that govern orchestration, workers,
+  Runtime lookup for the tunable limits that govern the chat, workers,
   and the web run record.
 
   These started as module attributes chosen against one local model. Every
@@ -11,9 +11,9 @@ defmodule ExAthena.Tuning do
 
   Each namespace maps to one application-config entry:
 
-      config :ex_athena, :orchestrate,
-        max_planning_turns: 12,
-        max_turns_without_spawn: 3
+      config :ex_athena, :chat,
+        finish_checks: true,
+        small_model_below_b: 8
 
       config :ex_athena, :agents, result_chars: 32_000
       config :ex_athena, :web, agent_prompt_chars: 4_000

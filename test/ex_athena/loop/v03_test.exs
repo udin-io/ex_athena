@@ -432,8 +432,11 @@ defmodule ExAthena.Loop.V03Test do
 
     test "resolve/1 returns a module for atom shortcuts" do
       assert ExAthena.Loop.Mode.resolve(:react) == ExAthena.Modes.ReAct
-      assert ExAthena.Loop.Mode.resolve(:plan_and_solve) == ExAthena.Modes.PlanAndSolve
-      assert ExAthena.Loop.Mode.resolve(:reflexion) == ExAthena.Modes.Reflexion
+
+      assert {:error, {:removed_mode, :plan_and_solve, _}} =
+               ExAthena.Loop.Mode.resolve(:plan_and_solve)
+
+      assert {:error, {:removed_mode, :reflexion, _}} = ExAthena.Loop.Mode.resolve(:reflexion)
     end
 
     test "resolve/1 passes through unknown atoms as modules" do

@@ -2,9 +2,8 @@ defmodule ExAthena.Loop.Inference do
   @moduledoc """
   The single instrumented path for every provider call made inside a run.
 
-  ReAct's main turn, PlanAndSolve's planning turn, Reflexion's critique,
-  the conclusion-distillation micro-call, and the compaction summary all
-  route through `call/3`, which uniformly applies:
+  ReAct's main turn, the conclusion-distillation micro-call, and the
+  compaction summary all route through `call/3`, which uniformly applies:
 
     * **Request queue** — the call holds a `ExAthena.RequestQueue` slot for
       its full lifetime (per-provider concurrency gating for scarce local

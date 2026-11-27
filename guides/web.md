@@ -69,8 +69,8 @@ a model, so it renders in an opaque origin with no access to your session.
 │ Model        │  ● read(lib/auth.ex)               │  └ defmodule Auth…    │
 │ [qwen2.5…  ▼]│    └ defmodule Auth do             │                       │
 │              │      …4 more lines                  │ call  edit            │
-│ Mode         │                                    │  └ {"path":"lib/…"}   │
-│ [ReAct     ▼]│  ● edit(lib/auth.ex)               │ result                │
+│ May do       │                                    │  └ {"path":"lib/…"}   │
+│ [Ask befor…▼]│  ● edit(lib/auth.ex)               │ result                │
 │              │    └ patch applied (14 lines)       │  └ patch applied …    │
 │ + New session│                                    │                       │
 │ ▼ Sessions   │  ┌─────────────────────────────┐   │                       │
@@ -80,7 +80,8 @@ a model, so it renders in an opaque origin with no access to your session.
 └──────────────┴────────────────────────────────────┴───────────────────────┘
 ```
 
-- **Sidebar** (left) — provider, model, and mode selectors; session list and
+- **Sidebar** (left) — provider and model selectors, and what the chat may do
+  without asking (Read only (plan), Ask before edits, Edit freely, Trusted); session list and
   recent projects; live token/cost status block while the model is running.
 - **Messages** (center) — streaming assistant text with inline tool-call blocks
   showing collapsible output previews.
@@ -186,7 +187,7 @@ Every completed turn is auto-saved. The persistence layout under
 | `cwd` | Working directory for this session |
 | `provider` | Provider name at save time |
 | `model` | Model name at save time |
-| `mode` | Agent mode at save time |
+| `permission` | What the chat may do, at save time (a chat saved before it opens at Ask before edits) |
 | `created_at` / `updated_at` | `DateTime.t()` |
 | `display_messages` | Rendered message list for fast reload |
 | `ex_messages` | Raw `ExAthena.Messages` for resuming the loop |

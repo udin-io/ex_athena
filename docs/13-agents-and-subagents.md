@@ -58,7 +58,7 @@ A worker ends on the first limit it meets. All four are `config :ex_athena, :age
 - `max_requested_iterations`: the most turns a model may ask for through `spawn_agent`, 200 by default, 0 for no ceiling. A host's own `max_iterations` in `spawn_agent_opts` is not a model request and keeps its value.
 - `max_input_tokens`: total input tokens, 0 (off) by default.
 
-Orchestrate mode's top-level run has no turn limit, and this ceiling does not apply to it.
+A top-level run with `max_iterations: :infinity` has no turn limit, and this ceiling does not apply to it.
 
 ---
 
@@ -92,8 +92,7 @@ override the parent's `Loop.run` opts — within the guardrail bounds below.
 
 ## Guardrail inheritance — a child is never more privileged than its parent
 
-`Tools.SpawnAgent` clamps every spawn (model-initiated *and* the orchestrate
-runtime's auto-delegation) against the parent run's effective settings. Agent
+`Tools.SpawnAgent` clamps every spawn against the parent run's effective settings. Agent
 definitions and model-supplied args may **narrow** these; nothing they say can
 **widen** them:
 
@@ -124,7 +123,7 @@ is in [`Agents.load!/2`](../lib/ex_athena/agents.ex).
 | `description` | One-liner shown in the parent's tool catalog. |
 | `tools` | List of tool names the subagent may use. |
 | `phase` | One of `:plan / :default / :accept_edits / :trusted / :bypass_permissions`. |
-| `mode` | `:react / :plan_and_solve / :reflexion` (or a custom module name). |
+| `mode` | `:react` (or a custom module name). |
 | `model` | Provider model override (defaults to parent's). |
 | `provider` | Override the provider altogether. |
 | `isolation` | `:in_process` (default) or `:worktree`. |

@@ -13,7 +13,7 @@
 flowchart LR
   U([User prompt]) --> R[ExAthena.run/2]
   R --> L{Loop kernel}
-  L -->|each turn| M[Mode<br/>ReAct · PlanAndSolve · Reflexion]
+  L -->|each turn| M[Mode<br/>ReAct, the one chat]
   M --> P[Provider<br/>Ollama · OpenAI · Claude · Gemini]
   P --> M
   M --> T[Tools<br/>Read · Edit · Bash · …]
@@ -32,7 +32,7 @@ Three layers do the work:
 | Layer | Role | Key modules |
 |---|---|---|
 | **Kernel** | Drives iterations, enforces caps, threads state, classifies termination. | [`ExAthena.Loop`](../lib/ex_athena/loop.ex), [`Loop.State`](../lib/ex_athena/loop/state.ex), [`Loop.Terminations`](../lib/ex_athena/loop/terminations.ex) |
-| **Strategy (Mode)** | Decides *what to do this turn* — call provider, parse tool calls, halt or continue. | [`Loop.Mode`](../lib/ex_athena/loop/mode.ex), [`Modes.ReAct`](../lib/ex_athena/modes/react.ex), [`Modes.PlanAndSolve`](../lib/ex_athena/modes/plan_and_solve.ex), [`Modes.Reflexion`](../lib/ex_athena/modes/reflexion.ex) |
+| **Strategy (Mode)** | Decides *what to do this turn* — call provider, parse tool calls, halt or continue. | [`Loop.Mode`](../lib/ex_athena/loop/mode.ex), [`Modes.ReAct`](../lib/ex_athena/modes/react.ex) |
 | **Drivers** | Talk to LLMs, run tools, gate permissions, fire hooks. | [`Provider`](../lib/ex_athena/provider.ex), [`Tool`](../lib/ex_athena/tool.ex), [`Permissions`](../lib/ex_athena/permissions.ex), [`Hooks`](../lib/ex_athena/hooks.ex) |
 
 ---
@@ -63,7 +63,7 @@ Three layers do the work:
 | 01 | [Mental model](01-mental-model.md) | What's the one-page picture of a turn? |
 | 02 | [Architecture](02-architecture.md) | What are the subsystems and how do they fit? |
 | 03 | [Reasoning loop](03-reasoning-loop.md) | How does the kernel drive `Mode.iterate/1`? What happens between turns? |
-| 04 | [Modes](04-modes.md) | How do ReAct / Plan-and-Solve / Reflexion differ? |
+| 04 | [The chat](04-modes.md) | How does the one chat work, and what does each permission level allow? |
 | 05 | [State & termination](05-state-and-termination.md) | What's in `Loop.State`? What are the 13 finish reasons? |
 | 06 | [Messages & tool calls](06-messages-and-tool-calls.md) | What does the conversation look like in memory? How are tool calls parsed? |
 | 07 | [Tools](07-tools.md) | How does a tool execute? What's parallel-safe? |
@@ -84,7 +84,7 @@ Three layers do the work:
 ## Glossary
 
 - **Loop** — the kernel (`ExAthena.Loop`) that runs iterations until a termination fires.
-- **Mode** — pluggable per-turn strategy. Default `ReAct`; alternatives `PlanAndSolve`, `Reflexion`. See [04](04-modes.md).
+- **Mode** — pluggable per-turn strategy. The one builtin is `ReAct`, the chat; how much it may do is the run's permission level. See [04](04-modes.md).
 - **State** — opaque `Loop.State` struct threaded through every iteration. See [05](05-state-and-termination.md).
 - **Termination / finish reason** — one of 12 typed reasons in `Loop.Terminations`. Every run ends with exactly one. See [05](05-state-and-termination.md), [17](17-error-recovery.md).
 - **Tool** — stateless module implementing `ExAthena.Tool` behaviour. See [07](07-tools.md).

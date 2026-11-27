@@ -30,8 +30,10 @@ defmodule ExAthena.Loop do
     * `:tools` — list of modules implementing `ExAthena.Tool` or `:all`
       (default — all builtins). `nil` falls back to `config :ex_athena,
       tools: …`.
-    * `:mode` — atom (`:react`, `:plan_and_solve`, `:reflexion`) or module.
-      Defaults to `:react`.
+    * `:mode` — `:react` (the default) or a module implementing
+      `ExAthena.Loop.Mode`. The removed `:plan_and_solve`, `:reflexion` and
+      `:orchestrate` return `{:error, {:removed_mode, mode, hint}}`; pick how
+      much a chat may do with `:phase` instead (see `ExAthena.Chat.Permission`).
     * `:cwd`, `:phase`, `:assigns` — threaded into every tool's
       `ExAthena.ToolContext`.
     * `:allow_local_hosts` (default `false`) — let `web_fetch` reach
@@ -54,8 +56,7 @@ defmodule ExAthena.Loop do
     * `:hooks` — see `ExAthena.Hooks`.
     * `:max_iterations` (default 25) — hard iteration cap. Pass `:infinity`
       to disable it (the no-progress guard, mistake counter, and budget cap
-      still bound the run). The `:orchestrate` mode defaults to `:infinity`
-      unless an explicit cap is passed.
+      still bound the run).
     * `:max_consecutive_mistakes` (default 3) — counter threshold at
       which the loop terminates with `:error_consecutive_mistakes`.
     * `:max_unproductive_iterations` (default 3) — consecutive-iteration
@@ -165,8 +166,7 @@ defmodule ExAthena.Loop do
         |> Map.put(:halted_reason, reason)
         |> set_finish_reason(:error_halted)
 
-      # :infinity disables the cap (orchestrate mode default) — the
-      # no-progress guard, mistake counter, budget cap, and the host's stop
+      # :infinity disables the cap — the no-progress guard, mistake counter, budget cap, and the host's stop
       # control bound the run instead.
       is_integer(state.max_iterations) and state.iterations >= state.max_iterations ->
         state
@@ -789,7 +789,8 @@ defmodule ExAthena.Loop do
 
     tool_specs = opts |> Tools.resolve() |> normalize_tool_list()
 
-    with :ok <- validate_tools(tool_specs) do
+    with :ok <- validate_tools(tool_specs),
+         :ok <- validate_mode(mode) do
       # `function_exported?/3` does not load a module, so before the
       # provider's first call it answered false and the run lost the
       # model's real window and size.
@@ -982,9 +983,6 @@ defmodule ExAthena.Loop do
           # (see ReAct.maybe_summarize_conclusion).
           |> Map.put(:conclusion_summarizer, Keyword.get(opts, :conclusion_summarizer, false))
           |> Map.put(:ledger, [])
-          # Whether the caller explicitly chose an iteration cap — modes that
-          # default to :infinity (orchestrate) must honor an explicit choice.
-          |> Map.put(:explicit_max_iterations?, Keyword.has_key?(opts, :max_iterations))
           |> maybe_put_halt(ups_halt)
           # The message this run answers, so the chat's finish checks scope to
           # it and never to a message a hook added (see Loop.FinishChecks).
@@ -1061,6 +1059,9 @@ defmodule ExAthena.Loop do
       assigns
     end
   end
+
+  defp validate_mode({:error, _} = removed), do: removed
+  defp validate_mode(_mode), do: :ok
 
   defp maybe_put_subagent_suffix(assigns, nil), do: assigns
 

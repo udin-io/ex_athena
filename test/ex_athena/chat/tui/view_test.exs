@@ -8,11 +8,11 @@ defmodule ExAthena.Chat.Tui.ViewTest do
   alias ExRatatui.Widgets.{Block, List, Paragraph, Popup, Textarea, Throbber, WidgetList}
 
   describe "status_line/1" do
-    test "renders model · mode · iter · tokens · cost separated by middle-dot" do
+    test "renders model · permission · iter · tokens · cost separated by middle-dot" do
       session = %Session{
         provider: :ollama,
         model: "llama3.1",
-        mode: :react,
+        permission: :edit,
         iteration: 3,
         usage: %{input_tokens: 120, output_tokens: 45},
         cost_usd: 0.0042
@@ -22,7 +22,7 @@ defmodule ExAthena.Chat.Tui.ViewTest do
 
       assert is_binary(text)
       assert text =~ "llama3.1"
-      assert text =~ "react"
+      assert text =~ "Edit freely"
       assert text =~ "iter=3"
       assert text =~ "120/45 tok"
       assert text =~ "$0.0042"
@@ -32,7 +32,7 @@ defmodule ExAthena.Chat.Tui.ViewTest do
 
   describe "build_frame/2 — layout structure" do
     setup do
-      session = Session.new(provider: :ollama, model: "llama3.1", mode: :react)
+      session = Session.new(provider: :ollama, model: "llama3.1")
       state = State.new(session)
       frame = %Frame{width: 80, height: 24}
       {:ok, state: state, frame: frame}
@@ -77,7 +77,7 @@ defmodule ExAthena.Chat.Tui.ViewTest do
 
       assert {%Paragraph{text: text}, _} = header
       assert text =~ "llama3.1"
-      assert text =~ "react"
+      assert text =~ "Ask before edits"
     end
 
     test "footer is a Paragraph with shortcut hints (no popup)",
@@ -120,7 +120,7 @@ defmodule ExAthena.Chat.Tui.ViewTest do
 
   describe "build_frame/2 — event row rendering" do
     setup do
-      session = Session.new(provider: :ollama, model: "qwen3:8b", mode: :react)
+      session = Session.new(provider: :ollama, model: "qwen3:8b")
       frame = %Frame{width: 80, height: 24}
       {:ok, session: session, frame: frame}
     end
@@ -225,7 +225,7 @@ defmodule ExAthena.Chat.Tui.ViewTest do
 
   describe "build_frame/2 — popup overlay" do
     setup do
-      session = Session.new(provider: :ollama, model: "qwen3:8b", mode: :react)
+      session = Session.new(provider: :ollama, model: "qwen3:8b")
       frame = %Frame{width: 80, height: 24}
       {:ok, session: session, frame: frame}
     end
@@ -255,12 +255,12 @@ defmodule ExAthena.Chat.Tui.ViewTest do
       assert block && block.title =~ "model"
     end
 
-    test "when state.popup is {:mode, ...}, the popup lists modes by inspect/1",
+    test "when state.popup is {:permissions, ...}, the popup lists the levels in words",
          %{session: session, frame: frame} do
       state =
         session
         |> State.new()
-        |> State.open_popup({:mode, [:react, :plan_and_solve, :reflexion]})
+        |> State.open_popup({:permissions, ExAthena.Chat.Permission.levels()})
 
       widgets = View.build_frame(state, frame)
 
@@ -270,10 +270,8 @@ defmodule ExAthena.Chat.Tui.ViewTest do
                  _ -> false
                end)
 
-      assert ":react" in items
-      assert ":plan_and_solve" in items
-      assert ":reflexion" in items
-      assert title =~ "mode"
+      assert items == ["Read only (plan)", "Ask before edits", "Edit freely", "Trusted"]
+      assert title =~ "What the chat may do"
     end
 
     test "no Popup widget when state.popup is nil", %{session: session, frame: frame} do
@@ -291,7 +289,7 @@ defmodule ExAthena.Chat.Tui.ViewTest do
       state =
         session
         |> State.new()
-        |> State.open_popup({:mode, [:react, :plan_and_solve]})
+        |> State.open_popup({:permissions, [:read_only, :ask]})
 
       widgets = View.build_frame(state, frame)
       {%Paragraph{text: text}, _} = find_footer(widgets, frame)
@@ -304,7 +302,7 @@ defmodule ExAthena.Chat.Tui.ViewTest do
 
   describe "build_frame/2 — provider popup" do
     setup do
-      session = Session.new(provider: :ollama, model: "qwen3:8b", mode: :react)
+      session = Session.new(provider: :ollama, model: "qwen3:8b")
       frame = %Frame{width: 80, height: 24}
       {:ok, session: session, frame: frame}
     end
@@ -354,7 +352,7 @@ defmodule ExAthena.Chat.Tui.ViewTest do
 
   describe "build_frame/2 — CellSession snapshot integration" do
     test "the widget list renders without panicking and the header text reaches the buffer" do
-      session = Session.new(provider: :ollama, model: "llama3.1", mode: :react)
+      session = Session.new(provider: :ollama, model: "llama3.1")
       input_ref = ExRatatui.textarea_new()
 
       state =

@@ -5,7 +5,7 @@ defmodule ExAthena.Chat.Commands do
   `parse/1` maps a raw input line (or `:eof`) to one of:
 
     * `{:message, text}` — free-form user prompt for the agent loop.
-    * `{:command, verb, args}` — recognized slash command (`:model`, `:mode`,
+    * `{:command, verb, args}` — recognized slash command (`:model`, `:permissions`,
       `:tools`, `:clear`, `:help`).
     * `:exit` — user wants to leave the session (`/exit`, `/quit`, `/q`, EOF).
     * `:noop` — input was blank.
@@ -25,7 +25,7 @@ defmodule ExAthena.Chat.Commands do
   @exit_verbs ~w(exit quit q)
   @known_verbs %{
     "model" => :model,
-    "mode" => :mode,
+    "permissions" => :permissions,
     "tools" => :tools,
     "clear" => :clear,
     "expand" => :expand,
@@ -77,7 +77,7 @@ defmodule ExAthena.Chat.Commands do
   def verbs do
     canonical = [
       "model",
-      "mode",
+      "permissions",
       "tools",
       "clear",
       "expand",
@@ -105,7 +105,7 @@ defmodule ExAthena.Chat.Commands do
   def descriptions do
     %{
       "/model" => "pick or set the model",
-      "/mode" => "pick or set the runner mode",
+      "/permissions" => "pick how much the chat may do without asking",
       "/tools" => "list available tools",
       "/clear" => "wipe the conversation",
       "/expand" => "show full Nth tool result",
@@ -130,8 +130,9 @@ defmodule ExAthena.Chat.Commands do
 
     Slash commands:
       /model [name]      open the model picker, or set model directly
-      /mode  [name]      open the mode picker, or set mode directly
-                         (modes: react, plan_and_solve, reflexion)
+      /permissions [level]
+                         pick how much the chat may do without asking, or
+                         set it (read_only, ask, edit, trusted)
       /tools             list the tools currently available to the agent
       /clear             wipe the conversation history (new session)
       /expand [N]        show the Nth-most-recent tool result in full
@@ -169,7 +170,7 @@ defmodule ExAthena.Chat.Commands do
     Launch flags (mix athena.chat):
       --provider NAME    ollama, llamacpp, openai, claude, gemini, ...
       --model NAME       initial model (overrides config)
-      --mode NAME        react | plan_and_solve | reflexion
+      --permission LEVEL read_only | ask | edit | trusted
 
     Anything that isn't a slash command is sent to the agent as a user
     message. Tool calls and results stream inline; use /expand N to see

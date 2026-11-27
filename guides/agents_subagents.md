@@ -63,7 +63,7 @@ findings concisely. Do not modify any files.
 | `provider` | Optional. Overrides the parent's `:provider`. |
 | `tools` | Optional. List of tool names. Overrides parent's tools. |
 | `permissions` | Optional. One of `:plan` / `:default` / `:accept_edits` / `:trusted` / `:bypass_permissions`. |
-| `mode` | Optional. `:react` / `:plan_and_solve` / `:reflexion`. Default `:react`. |
+| `mode` | Optional. `:react` or a custom mode module. Default `:react`. |
 | `isolation` | Optional. `:in_process` (default) or `:worktree`. |
 
 The body becomes a system-prompt addendum appended to whatever the
@@ -79,7 +79,7 @@ Three ship in `priv/agents/`:
   `grep`, `web_fetch`. Permissions: `:plan`. The right pick for
   "summarise this codebase" or "find the bug" sub-tasks.
 - **`plan`** — analysis-only with writes restricted to
-  `.exathena/plans/*.md`. Mode: `plan_and_solve`. The right pick for
+  `.exathena/plans/*.md`. Mode: `react`, permissions `plan`. The right pick for
   "produce a written plan I'll review before letting an agent
   execute".
 
@@ -221,7 +221,7 @@ File.write!(".exathena/agents/refactor.md", """
 ---
 name: refactor
 description: Two-phase refactor with planning + execution
-mode: plan_and_solve
+mode: react
 permissions: accept_edits
 isolation: worktree
 ---

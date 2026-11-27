@@ -8,7 +8,7 @@ defmodule Mix.Tasks.Athena.Chat do
   (falls back to `:ollama` when unset). The model is read from the provider's
   config block, e.g. `config :ex_athena, :llamacpp, model: "my-model"`.
 
-  For a full walkthrough — keybindings, mode switching, JSON provider setup,
+  For a full walkthrough — keybindings, permission levels, JSON provider setup,
   and screenshot tour — see the [TUI guide](guides/tui.md).
 
   ## Usage
@@ -16,14 +16,16 @@ defmodule Mix.Tasks.Athena.Chat do
       mix athena.chat
       mix athena.chat --provider llamacpp
       mix athena.chat --provider ollama --model qwen2.5-coder:14b
-      mix athena.chat --mode plan_and_solve
+      mix athena.chat --permission read_only
       mix athena.chat -p ~/projects/my_app
 
   ## Flags
 
     * `--provider NAME` — `:ollama`, `:llamacpp`, `:openai`, etc. (overrides config).
     * `--model NAME`    — initial model (overrides config).
-    * `--mode NAME`     — `react`, `plan_and_solve`, or `reflexion`.
+    * `--permission LEVEL` — how much the chat may do without asking:
+      `read_only` (it shows a plan first), `ask` (the default), `edit`, or
+      `trusted`. See `ExAthena.Chat.Permission`.
     * `--path PATH` (`-p`) — working directory for tools that touch the
       filesystem. `~` is expanded. The chat process does NOT `cd` into
       this path; tools just receive it as their `cwd`.
@@ -39,17 +41,29 @@ defmodule Mix.Tasks.Athena.Chat do
 
   alias ExAthena.Chat.Tui
 
-  @valid_modes ~w(react plan_and_solve reflexion)a
-
   @impl Mix.Task
   def run(argv) do
     Mix.Task.run("app.start", [])
 
     {parsed, _rest, _invalid} =
       OptionParser.parse(argv,
-        strict: [model: :string, mode: :string, provider: :string, path: :string, log: :boolean],
+        strict: [
+          model: :string,
+          permission: :string,
+          mode: :string,
+          provider: :string,
+          path: :string,
+          log: :boolean
+        ],
         aliases: [p: :path]
       )
+
+    if parsed[:mode] do
+      Mix.raise(
+        "--mode was removed: pick how much the chat may do with --permission " <>
+          "read_only | ask | edit | trusted (read_only shows a plan first)"
+      )
+    end
 
     if parsed[:log] do
       path = ExAthena.LogFile.attach!()
@@ -60,7 +74,7 @@ defmodule Mix.Tasks.Athena.Chat do
       []
       |> maybe_put_provider(parsed[:provider])
       |> maybe_put(:model, parsed[:model])
-      |> maybe_put_mode(parsed[:mode])
+      |> maybe_put_permission(parsed[:permission])
       |> maybe_put_path(parsed[:path])
 
     # The TUI is only compiled when the optional :ex_ratatui dep is present.
@@ -90,19 +104,15 @@ defmodule Mix.Tasks.Athena.Chat do
     end
   end
 
-  defp maybe_put_mode(opts, nil), do: opts
+  defp maybe_put_permission(opts, nil), do: opts
 
-  defp maybe_put_mode(opts, raw) when is_binary(raw) do
-    atom = String.to_atom(raw)
+  defp maybe_put_permission(opts, raw) when is_binary(raw) do
+    valid = Enum.map(ExAthena.Chat.Permission.levels(), &Atom.to_string/1)
 
-    if atom in @valid_modes do
-      Keyword.put(opts, :mode, atom)
+    if raw in valid do
+      Keyword.put(opts, :permission, ExAthena.Chat.Permission.parse(raw))
     else
-      Mix.shell().error(
-        "Unknown --mode #{raw}. Valid: " <> Enum.map_join(@valid_modes, ", ", &Atom.to_string/1)
-      )
-
-      opts
+      Mix.raise("Unknown --permission #{raw}. Valid: " <> Enum.join(valid, ", "))
     end
   end
 

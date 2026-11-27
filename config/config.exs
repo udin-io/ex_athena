@@ -35,14 +35,11 @@ config :ex_athena, max_agents_per_run: 24
 # them when running a model with a different context, planning style, or
 # delegation latency. See `ExAthena.Tuning`.
 #
-# config :ex_athena, :orchestrate,
-#   max_planning_turns: 8,             # planning turns before forcing execution
-#   max_turns_without_spawn: 2,        # spawn-less turns before the runtime delegates for you
-#   research_planning_threshold: 4,    # planning turns before nudging toward research
-#   research_escalation_threshold: 6,  # planning turns before the runtime spawns research itself
-#   max_dictated_briefs: 2,            # briefs containing dictated code before warning
-#   max_same_objective: 3,             # repeats of one objective before it is called out
-#   audit_request_chars: 1_500         # request text quoted into the audit prompt
+# config :ex_athena, :chat,
+#   finish_checks: true,               # check the work before the chat says done
+#   small_model_below_b: 8,            # smaller models keep a to-do list and start without helpers
+#   helpers: :auto,                    # :auto | :on | :off
+#   audit_request_chars: 1_500         # request text quoted into the audit check
 #
 # config :ex_athena, :agents,
 #   max_iterations: 50,                # floor on a worker's iteration budget
