@@ -254,6 +254,82 @@ defmodule ExAthena.PermissionsTest do
       end
     end
 
+    # Each of these classified read-only, so a read-only chat ran it with no
+    # approval (issue 322): a deleting, writing or code-running form of an
+    # otherwise read-only command.
+    test "denies the write and run forms of read-only commands" do
+      for cmd <- [
+            "git grep -Orm secret",
+            "git grep --open-files-in-pager=rm secret",
+            "git diff --output=x",
+            "git log --output=x",
+            "git diff --ext-diff",
+            "GIT_EXTERNAL_DIFF=./evil.sh git diff",
+            "LESSOPEN='|sh -c id %s' less f",
+            "cat <(python3 -c 'print(1)')",
+            "find . -fprint0 out",
+            "sort -oout in.txt",
+            "tree -o out",
+            "tree -oout",
+            "uniq in out",
+            "xxd -r a b",
+            "yq -i '.a = 1' f.yml",
+            "less f",
+            "more f",
+            "man ls",
+            "mix xref graph",
+            ~s(find . "-delete"),
+            ~s(git grep "-Orm" secret),
+            ~s(git diff "--output=x"),
+            ~s(sort "-oout" in),
+            "git ls-remote --upload-pack=./evil.sh .",
+            "git ls-remote -u ./evil.sh .",
+            "git reflog delete HEAD@{0}",
+            "git reflog expire --expire=now --all",
+            "rg --pre ./evil.sh foo",
+            "sort --compress-program=./evil.sh -S 1 f",
+            ~s(find . -"delete"),
+            ~s(find . -dele"te"),
+            ~S(find . \-delete),
+            "find . $'-delete'",
+            ~s(rg --p"re" ./evil.sh x),
+            ~s(sort -"o"out in),
+            "find . -dele${X}te",
+            "find . -{delete,print}",
+            "git grep -${X}Orm secret",
+            "git grep --open=./evil.sh secret",
+            "git ls-remote --upl=./evil.sh .",
+            "sort --out=x f",
+            "sort --compress=./evil.sh -S 1 f",
+            "rg --pr ./evil.sh x"
+          ] do
+        assert {:deny, %Denial{code: :phase_gated}} =
+                 Permissions.check(call("bash", %{"command" => cmd}), ctx(:plan), %{}),
+               "expected `#{cmd}` to be denied in plan phase"
+      end
+    end
+
+    test "still allows the read forms of those commands" do
+      for cmd <- [
+            "git grep -n secret",
+            "git diff --stat",
+            "sort in.txt",
+            "sort a | uniq -c",
+            "uniq in.txt",
+            "tree -L 2",
+            "xxd f",
+            "find . -name '*.ex' -print",
+            "git reflog",
+            "git reflog show -5",
+            ~s(git log --format="%H %s" -3),
+            ~s(find . -name "*.ex"),
+            ~s(grep -n "def run" lib/)
+          ] do
+        assert :allow = Permissions.check(call("bash", %{"command" => cmd}), ctx(:plan), %{}),
+               "expected read-only `#{cmd}` to be allowed in plan phase"
+      end
+    end
+
     test "allows read-only compounds, pipes, quoted metacharacters, and null redirects" do
       for cmd <- [
             "git log --oneline | head -5",

@@ -89,8 +89,8 @@ defmodule ExAthena.Tools.Bash do
     cat tac ls dir grep egrep fgrep rg ag ack head tail wc file stat pwd
     tree du df basename dirname realpath readlink which type whereis
     whoami id groups date cal uptime uname hostname printenv echo printf
-    uniq cut tr diff comm column nl od strings hexdump xxd less more
-    man apropos jq yq ps lsof locale arch nproc sw_vers seq expr
+    uniq cut tr diff comm column nl od strings hexdump xxd
+    apropos jq ps lsof locale arch nproc sw_vers seq expr
     md5sum shasum sha256sum cksum true false test
   )
 
@@ -109,11 +109,11 @@ defmodule ExAthena.Tools.Bash do
 
   # mix tasks that only read project state. Excludes compile/test — they
   # execute arbitrary project code and write _build.
-  @mix_readonly_tasks ~w(help deps deps.tree app.tree xref hex.info hex.search hex.outdated)
+  @mix_readonly_tasks ~w(help deps deps.tree app.tree hex.info hex.search hex.outdated)
 
   # find actions that mutate or execute — a `find` carrying any of these is
   # not read-only.
-  @find_mutating_flags ~w(-delete -exec -execdir -ok -okdir -fprint -fprintf -fls)
+  @find_mutating_flags ~w(-delete -exec -execdir -ok -okdir -fprint -fprint0 -fprintf -fls)
 
   @impl true
   def name, do: "bash"
@@ -186,6 +186,18 @@ defmodule ExAthena.Tools.Bash do
       String.contains?(trimmed, "$(") or String.contains?(trimmed, "`") ->
         violation("command substitution (`$(…)` or backticks) can hide writes")
 
+      # The flag checks below read the text with quoted parts blanked out,
+      # while the shell joins quotes back into a word: `"-delete"`,
+      # `-"delete"` and `-dele"te"` all run as `-delete`. So every flag the
+      # shell will see must be written plainly, and `\` and `$'…'`, which
+      # rewrite what follows, are refused outright.
+      hidden_flag?(trimmed) ->
+        violation("a flag written with quotes or escapes cannot be checked")
+
+      # Process substitution runs a command too: `cat <(python3 -c …)`.
+      String.contains?(stripped, "<(") ->
+        violation("process substitution (`<(…)`) runs a command")
+
       # Backstop deny patterns (checked against the quote-stripped command so
       # quoted text — e.g. `grep "rm -rf" lib/` — doesn't false-positive).
       label = matched_write_pattern(stripped) ->
@@ -220,6 +232,24 @@ defmodule ExAthena.Tools.Bash do
   def read_only_violation(_), do: violation("no command was given")
 
   defp violation(reason), do: %{reason: reason, segment: nil}
+
+  # `$` and `{…}` build words when the command runs (`-dele${X}te`,
+  # `-{delete,print}`), so no word can be checked before then.
+  defp hidden_flag?(cmd) do
+    if String.contains?(cmd, ["\\", "$"]) or String.contains?(strip_quoted(cmd), ["{", "}"]) do
+      true
+    else
+      plain = cmd |> String.split(~r/\s+/, trim: true) |> MapSet.new(&flag_key/1)
+
+      cmd
+      |> OptionParser.split()
+      |> Enum.filter(&String.starts_with?(&1, "-"))
+      |> Enum.any?(&(not MapSet.member?(plain, flag_key(&1))))
+    end
+  end
+
+  # `--format="%H"` is checkable: its name is written plainly.
+  defp flag_key(word), do: word |> String.split("=", parts: 2) |> hd()
 
   defp matched_write_pattern(cmd) do
     Enum.find_value(@write_patterns, fn {pattern, label} ->
@@ -263,27 +293,75 @@ defmodule ExAthena.Tools.Bash do
   end
 
   defp segment_read_only?(segment) do
-    tokens =
-      segment
-      |> String.split(~r/\s+/, trim: true)
-      # `FOO=bar cmd` — skip leading environment assignments.
-      |> Enum.drop_while(&Regex.match?(~r/^[A-Za-z_][A-Za-z0-9_]*=/, &1))
-
-    case tokens do
+    case String.split(segment, ~r/\s+/, trim: true) do
       [] ->
         false
 
       [head | rest] ->
-        case Path.basename(head) do
-          "git" -> match?([sub | _] when sub in @git_readonly_subcommands, rest)
-          "gh" -> gh_read_only?(rest)
-          "mix" -> match?([task | _] when task in @mix_readonly_tasks, rest)
-          "find" -> not Enum.any?(rest, &(&1 in @find_mutating_flags))
-          "fd" -> not Enum.any?(rest, &(&1 in ["-x", "--exec", "-X", "--exec-batch"]))
-          "sort" -> "-o" not in rest and "--output" not in rest
-          base -> base in @readonly_commands
-        end
+        # `FOO=bar cmd`: a setting can make a reader run code
+        # (`GIT_EXTERNAL_DIFF`, `LESSOPEN`, `PAGER`), so none is read-only.
+        not env_assignment?(head) and command_read_only?(Path.basename(head), rest)
     end
+  end
+
+  defp env_assignment?(token), do: Regex.match?(~r/^[A-Za-z_][A-Za-z0-9_]*=/, token)
+
+  # `reflog` lists history, but `reflog delete` and `reflog expire` drop it.
+  defp command_read_only?("git", ["reflog" | args]),
+    do: args == [] or hd(args) == "show" or String.starts_with?(hd(args), "-")
+
+  # `ls-remote --upload-pack=<cmd>` (or `-u <cmd>`) runs that program.
+  defp command_read_only?("git", ["ls-remote" | args]),
+    do: not Enum.any?(args, &(&1 == "-u" or guarded_long_flag?(&1, ["--upload-pack"])))
+
+  defp command_read_only?("git", [sub | args]),
+    do: sub in @git_readonly_subcommands and not Enum.any?(args, &git_runs_or_writes?/1)
+
+  defp command_read_only?("git", []), do: false
+  defp command_read_only?("gh", rest), do: gh_read_only?(rest)
+
+  defp command_read_only?("mix", rest),
+    do: match?([task | _] when task in @mix_readonly_tasks, rest)
+
+  defp command_read_only?("find", rest),
+    do: not Enum.any?(rest, &(&1 in @find_mutating_flags))
+
+  defp command_read_only?("fd", rest),
+    do: not Enum.any?(rest, &(&1 in ["-x", "--exec", "-X", "--exec-batch"]))
+
+  # `-o out`, `-oout` and `--output` all write; `sort --compress-program`
+  # runs a program.
+  defp command_read_only?(writer, rest) when writer in ["sort", "tree"] do
+    not Enum.any?(rest, fn arg ->
+      (String.starts_with?(arg, "-o") and not String.starts_with?(arg, "--")) or
+        guarded_long_flag?(arg, ["--output", "--compress-program"])
+    end)
+  end
+
+  # `rg --pre <cmd>` runs a program on every file it searches.
+  defp command_read_only?("rg", rest),
+    do: not Enum.any?(rest, &guarded_long_flag?(&1, ["--pre", "--pre-glob"]))
+
+  # A second file operand is where `uniq` and `xxd` write.
+  defp command_read_only?(two_file, rest) when two_file in ["uniq", "xxd"],
+    do: Enum.count(rest, &(not String.starts_with?(&1, "-"))) <= 1
+
+  defp command_read_only?(base, _rest), do: base in @readonly_commands
+
+  # `git grep -O<cmd>` runs a command on every match, `--output=` writes a
+  # file, and `--ext-diff` runs the configured diff program.
+  defp git_runs_or_writes?(arg) do
+    String.starts_with?(arg, "-O") or
+      guarded_long_flag?(arg, ~w(--open-files-in-pager --output --ext-diff))
+  end
+
+  # A long flag counts when it names a guarded flag in full or in part: git and
+  # sort take any unambiguous prefix (`--open=`, `--out=`, `--comp=`).
+  defp guarded_long_flag?(arg, guarded) do
+    name = flag_key(arg)
+
+    String.starts_with?(name, "--") and String.length(name) > 2 and
+      Enum.any?(guarded, &(String.starts_with?(&1, name) or String.starts_with?(name, &1)))
   end
 
   defp gh_read_only?(["status" | _]), do: true
