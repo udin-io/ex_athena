@@ -100,6 +100,7 @@ defmodule ExAthena.Chat.Tui.State do
             footer: @default_footer,
             prior_log_level: :info,
             run_task: nil,
+            inbox: nil,
             api_key: nil,
             api_key_pending: false,
             pending_message: nil
@@ -137,6 +138,7 @@ defmodule ExAthena.Chat.Tui.State do
           footer: String.t(),
           prior_log_level: atom(),
           run_task: pid() | nil,
+          inbox: pid() | nil,
           api_key: String.t() | nil,
           api_key_pending: boolean(),
           pending_message: String.t() | nil
@@ -167,6 +169,14 @@ defmodule ExAthena.Chat.Tui.State do
   # carries the full end-of-turn text). Run it through the stateful
   # inline <think>...</think> parser so thinking is routed to the right
   # pane in real time — even when a tag is split across chunk boundaries.
+  # A message the person sent mid-run joined the chat (issue 323).
+  def append_loop_event(%__MODULE__{} = state, {:user_message_taken, text})
+      when is_binary(text) do
+    state
+    |> flush_stream()
+    |> append_event({:user, text})
+  end
+
   def append_loop_event(%__MODULE__{} = state, {:content, text}) when is_binary(text) do
     {new_parser, content_chunk, thinking_chunk} = parse_stream_chunk(state.stream_parser, text)
 

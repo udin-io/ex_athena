@@ -284,9 +284,10 @@ if Code.ensure_loaded?(ExRatatui.App) do
           if state.input_ref, do: ExRatatui.textarea_handle_key(state.input_ref, "enter", [])
           {:noreply, state}
 
+        # While a turn runs, a message waits for the run's next turn
+        # (issue 323); commands still wait for the run to end.
         state.loading? ->
-          # Don't submit while a turn is in flight — drop the keystroke.
-          {:noreply, state}
+          queue_message(state)
 
         true ->
           state |> State.close_autocomplete() |> submit_input()
@@ -465,6 +466,7 @@ if Code.ensure_loaded?(ExRatatui.App) do
         |> State.apply_result(result)
         |> State.set_loading(false)
         |> Map.put(:run_task, nil)
+        |> hand_back_unsent()
         |> append_status_row()
         |> maybe_kick_git_diff()
 
@@ -481,6 +483,7 @@ if Code.ensure_loaded?(ExRatatui.App) do
         |> State.flush_stream()
         |> State.set_loading(false)
         |> Map.put(:run_task, nil)
+        |> hand_back_unsent()
         |> State.append_event({:error, "run error: " <> inspect(reason)})
 
       {:noreply, new_state}
@@ -597,10 +600,55 @@ if Code.ensure_loaded?(ExRatatui.App) do
         |> State.reset_history_nav()
         |> update_in_session(&Session.append_user(&1, text))
 
-      extra_opts = if state.api_key, do: [api_key: state.api_key], else: []
+      {:ok, inbox} = Agent.start_link(fn -> [] end)
+      drain = fn -> Agent.get_and_update(inbox, &{&1, []}) end
+
+      extra_opts =
+        [inbox: drain] ++ if(state.api_key, do: [api_key: state.api_key], else: [])
+
       task_pid = Runner.start(state.session, self(), extra_opts)
-      {:noreply, %{state | run_task: task_pid}}
+      {:noreply, %{state | run_task: task_pid, inbox: inbox}}
     end
+
+    defp queue_message(%State{input_ref: ref, inbox: inbox} = state) when is_pid(inbox) do
+      text = ref |> ExRatatui.textarea_get_value() |> to_string() |> String.trim()
+
+      cond do
+        text == "" ->
+          {:noreply, state}
+
+        String.starts_with?(text, "/") ->
+          append_and_noreply(state, {:warning, "Commands wait until the chat finishes."})
+
+        true ->
+          ExRatatui.textarea_set_value(ref, "")
+          Agent.update(inbox, &(&1 ++ [text]))
+          append_and_noreply(state, {:info, "Waiting for the chat to finish its step: " <> text})
+      end
+    end
+
+    defp queue_message(state), do: {:noreply, state}
+
+    # A message the run never took goes back into the box.
+    defp hand_back_unsent(%State{inbox: inbox} = state) when is_pid(inbox) do
+      unsent = Agent.get(inbox, & &1)
+      Agent.stop(inbox)
+      state = %{state | inbox: nil}
+
+      if unsent == [] do
+        state
+      else
+        if state.input_ref,
+          do: ExRatatui.textarea_set_value(state.input_ref, Enum.join(unsent, "\n\n"))
+
+        State.append_event(
+          state,
+          {:info, "Not sent before the chat stopped; it is back in the box."}
+        )
+      end
+    end
+
+    defp hand_back_unsent(state), do: state
 
     defp dispatch_command(:help, _args, state) do
       # Each event row renders as one line, so split the help text and append

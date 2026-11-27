@@ -117,6 +117,104 @@ defmodule ExAthena.Web.RunServerTest do
     send(task, :finish)
   end
 
+  describe "messages sent while the run goes" do
+    test "the run takes a queued message at its next turn" do
+      test_pid = self()
+      counter = :counters.new(1, [:atomics])
+
+      responder = fn request ->
+        :counters.add(counter, 1, 1)
+        n = :counters.get(counter, 1)
+        send(test_pid, {:request, n, Enum.map(request.messages, &to_string(&1.content))})
+
+        if n == 1 do
+          receive do: (:go -> :ok)
+
+          %ExAthena.Response{
+            text: "",
+            tool_calls: [
+              %ExAthena.Messages.ToolCall{
+                id: "t1",
+                name: "todo_write",
+                arguments: %{"todos" => []}
+              }
+            ],
+            finish_reason: :tool_calls,
+            provider: :mock
+          }
+        else
+          %ExAthena.Response{text: "ok", finish_reason: :stop, provider: :mock}
+        end
+      end
+
+      {:ok, _} =
+        RunServer.start_run("s-inbox", %{
+          run_opts: [
+            provider: :mock,
+            mock: [responder: responder],
+            messages: [Messages.user("hi")],
+            tools: [ExAthena.Tools.TodoWrite],
+            memory: false
+          ],
+          assistant_msg_id: "amsg",
+          run_sid: "s-inbox-run",
+          subscriber: self()
+        })
+
+      assert_receive {:request, 1, _}, 2_000
+      assert :ok = RunServer.push_message("s-inbox", "skip the admin login")
+      send(RunServer.whereis("s-inbox") |> task_of(), :go)
+
+      assert_receive {:request, 2, second}, 2_000
+      assert List.last(second) == "skip the admin login"
+      assert_receive {:athena, {:user_message_taken, "skip the admin login"}}, 2_000
+      assert_receive {:athena_done, _}, 2_000
+      refute_received {:athena_unsent, _}
+    end
+
+    test "a message the run never took comes back when it stops" do
+      sid = "s-unsent"
+      _task = blocking_run(sid)
+      {:ok, _} = RunServer.attach(sid, self())
+
+      assert :ok = RunServer.push_message(sid, "one more thing")
+      RunServer.stop_run(sid)
+
+      assert_receive {:athena_unsent, ["one more thing"]}, 2_000
+      assert_receive {:athena_done, _}, 2_000
+    end
+
+    test "a Stop hands back the messages the run took, since its result keeps none" do
+      sid = "s-stop-taken"
+      _task = blocking_run(sid)
+      {:ok, _} = RunServer.attach(sid, self())
+
+      assert :ok = RunServer.push_message(sid, "taken one")
+      # The run drains it; the Stop lands before its taken event does.
+      assert ["taken one"] = GenServer.call(RunServer.whereis(sid), :drain_inbox)
+      assert :ok = RunServer.push_message(sid, "queued one")
+      RunServer.stop_run(sid)
+
+      assert_receive {:athena_unsent, ["taken one", "queued one"]}, 2_000
+    end
+
+    test "past twenty waiting messages the next one is refused" do
+      sid = "s-full"
+      task = blocking_run(sid)
+
+      for n <- 1..20, do: assert(:ok = RunServer.push_message(sid, "m#{n}"))
+      assert {:error, :full} = RunServer.push_message(sid, "one too many")
+
+      send(task, :finish)
+    end
+
+    test "a message to no run is refused" do
+      assert {:error, :not_running} = RunServer.push_message("s-nobody", "hello")
+    end
+  end
+
+  defp task_of(server), do: :sys.get_state(server).task_pid
+
   test "a finished run is no longer attachable (caller loads the saved session)" do
     sid = "s-finished"
     task = blocking_run(sid)
