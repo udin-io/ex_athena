@@ -39,6 +39,24 @@ ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Small models keep a to-do list and start with helpers off**
+  ([#321](https://github.com/udin-io/ex_athena/issues/321)). A small local
+  model got the same tools and prompt as a large one, helper tool included. Now
+  the chat reads each model's size, from its name (`llama3.2:3b`) or from what
+  Ollama reports. Below `config :ex_athena, :chat, small_model_below_b:`
+  (default SMALLB) the chat tells the model to write a to-do list when a task
+  has steps, and leaves out `spawn_agent` and `read_worker_report`. `helpers:
+  :on` keeps helpers for every model, and `helpers: :off` removes them for
+  every model; the web settings show both under Chat. A model whose size
+  cannot be read counts as large. Every top-level chat also gets one more turn
+  when it stops with steps still open on its to-do list, once per request; a
+  chat with no list, and a read-only chat, stop as before.
+- **A run reads its provider's real capabilities on its first call**
+  ([#321](https://github.com/udin-io/ex_athena/issues/321)). Before the
+  provider module had loaded, a run took its static capabilities, so the first
+  chat after a start sized compaction from the 32,768-token fallback instead of
+  the model's real window.
+
 - **Every chat checks its work before it says done**
   ([#320](https://github.com/udin-io/ex_athena/issues/320)). Only Orchestrate
   used to read what a run did before letting it finish. A plain chat could

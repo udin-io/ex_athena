@@ -42,6 +42,60 @@ defmodule ExAthena.ContextWindow do
     end
   end
 
+  @doc """
+  The model's size in billions of parameters as an Ollama server reports it
+  (`/api/show` `details.parameter_size`), or nil.
+
+  Same address and name rules as `lookup/1`: the provider tag comes off the
+  model name, and the base URL falls back to `config :ex_athena, :ollama,
+  base_url:`. A size is cached for the life of the VM; a miss is cached for
+  #{div(60_000, 1000)} s, so a server that is down costs each run nothing past
+  the first. The caller waits at most #{@timeout_ms + 1_000} ms.
+  """
+  @spec params_b(keyword()) :: float() | nil
+  def params_b(opts) do
+    with :ollama <- Keyword.get(opts, :openai_compatible_backend),
+         model_raw when is_binary(model_raw) and model_raw != "" <- Keyword.get(opts, :model) do
+      model = strip_provider_prefix(model_raw, Keyword.get(opts, :req_llm_provider_tag))
+      base_url = resolve_base_url(opts, :ollama)
+      key = {:params_b, base_url, model}
+
+      case ets_lookup(key) do
+        {:ok, entry} ->
+          cached_size(entry) || fetch_size(base_url, model, key)
+
+        :miss ->
+          fetch_size(base_url, model, key)
+      end
+    else
+      _ -> nil
+    end
+  end
+
+  @miss_ttl_ms 60_000
+
+  # {:size, n} never expires; {:miss, at} does, after @miss_ttl_ms.
+  defp cached_size({:size, size}), do: size
+  defp cached_size({:miss, _at}), do: nil
+
+  defp fetch_size(base_url, model, key) do
+    case ets_lookup(key) do
+      {:ok, {:miss, at}} ->
+        if System.monotonic_time(:millisecond) - at < @miss_ttl_ms,
+          do: nil,
+          else: call_fetch_size(base_url, model, key)
+
+      _ ->
+        call_fetch_size(base_url, model, key)
+    end
+  end
+
+  defp call_fetch_size(base_url, model, key) do
+    GenServer.call(__MODULE__, {:fetch_size, base_url, model, key}, @timeout_ms + 1_000)
+  catch
+    :exit, _ -> nil
+  end
+
   @impl GenServer
   def init(_) do
     ensure_table()
@@ -55,6 +109,20 @@ defmodule ExAthena.ContextWindow do
   # race on the same key. The 3 s HTTP timeout is well within the 4 s
   # GenServer call timeout set by the caller.
   @impl GenServer
+  def handle_call({:fetch_size, base_url, model, key}, _from, state) do
+    case ets_lookup(key) do
+      # A caller that queued behind the first one reads its answer.
+      {:ok, {:size, size}} ->
+        {:reply, size, state}
+
+      _ ->
+        size = bounded(fn -> fetch_ollama_size(base_url, model) end)
+        entry = if size, do: {:size, size}, else: {:miss, System.monotonic_time(:millisecond)}
+        :ets.insert(@table, {key, entry})
+        {:reply, size, state}
+    end
+  end
+
   def handle_call({:fetch, backend, base_url, model, key}, _from, state) do
     case ets_lookup(key) do
       {:ok, _} = hit ->
@@ -135,6 +203,37 @@ defmodule ExAthena.ContextWindow do
       {:error, _} ->
         :error
     end
+  end
+
+  # One limit over the whole request: a server that answers a few bytes at a
+  # time would otherwise hold this process, and every lookup behind it.
+  defp bounded(fun) do
+    task = Task.async(fun)
+
+    case Task.yield(task, @timeout_ms) || Task.shutdown(task, :brutal_kill) do
+      {:ok, value} -> value
+      _ -> nil
+    end
+  end
+
+  # A connect that hangs or a redirect elsewhere must not hold a run's start:
+  # one connect limit, one read limit, no redirects, no retries.
+  defp fetch_ollama_size(base_url, model) do
+    case Req.post(strip_openai_suffix(base_url) <> "/api/show",
+           json: %{"model" => model},
+           connect_options: [timeout: @timeout_ms],
+           receive_timeout: @timeout_ms,
+           redirect: false,
+           retry: false
+         ) do
+      {:ok, %Req.Response{status: 200, body: %{"details" => %{"parameter_size" => size}}}} ->
+        ExAthena.ModelSize.parse_size(size)
+
+      _ ->
+        nil
+    end
+  rescue
+    _ -> nil
   end
 
   # `parameters` is Ollama's rendered Modelfile parameter block, one

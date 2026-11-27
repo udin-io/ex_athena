@@ -39,8 +39,10 @@ defmodule ExAthena.Orchestrator.CoordinatorIntegrationTest do
             name: "todo_write",
             arguments: %{
               "todos" => [
-                %{"content" => "read the file", "status" => "in_progress"},
-                %{"content" => "summarize", "status" => "pending"}
+                # Both done: a chat that stops with open steps gets one more
+                # turn (issue 321), which this test is not about.
+                %{"content" => "read the file", "status" => "completed"},
+                %{"content" => "summarize", "status" => "completed"}
               ]
             }
           }

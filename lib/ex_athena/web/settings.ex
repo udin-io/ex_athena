@@ -134,6 +134,26 @@ defmodule ExAthena.Web.Settings do
             "When the chat changed files, it must run a check, run the tests, run the " <>
               "changed code and compare the work with your request before it stops. " <>
               "Each check asks once."
+        },
+        %{
+          key: :small_model_below_b,
+          label: "Small model below (billion parameters)",
+          default: 10,
+          type: :integer,
+          min: 0,
+          help:
+            "A model smaller than this is told to keep a to-do list, and starts " <>
+              "without helpers. A model of unknown size counts as large; 0 treats every model as large."
+        },
+        %{
+          key: :helpers,
+          label: "Helpers",
+          default: :auto,
+          type: :select,
+          options: [:auto, :on, :off],
+          help:
+            "auto: a small model starts without helpers, a larger one may send them. " <>
+              "on: every model may send helpers. off: no model may."
         }
       ]
     },

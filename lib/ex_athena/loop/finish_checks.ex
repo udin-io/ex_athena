@@ -237,9 +237,11 @@ defmodule ExAthena.Loop.FinishChecks do
     end)
   end
 
-  @doc false
-  # The texts `redirect/2` can have written: user-role turns, and the error
-  # results it pairs with a tool call.
+  @doc """
+  The texts in `messages` that `redirect/2` can have written: every user-role
+  text turn, and each error result on a `finish` call. A runtime note is found
+  by the marker it opens with, among these only.
+  """
   @spec runtime_notes([ExAthena.Messages.Message.t()]) :: [String.t()]
   def runtime_notes(messages) do
     # `redirect/2` pairs a note with each call of a turn that halted, and a
@@ -384,6 +386,19 @@ defmodule ExAthena.Loop.FinishChecks do
     |> Enum.with_index()
     |> Enum.reverse()
     |> Enum.find_value(fn {m, i} -> if m == request, do: i end)
+  end
+
+  @doc """
+  The messages of the request a halted state answers: the person's message
+  (as `request_message/1` recorded it) and everything after it. All of the
+  messages when there is no such message.
+  """
+  @spec current_task(State.t()) :: [ExAthena.Messages.Message.t()]
+  def current_task(%State{messages: messages, meta: meta}) do
+    case request_index(messages, meta[:request_message]) do
+      nil -> messages
+      i -> Enum.drop(messages, i)
+    end
   end
 
   # The person's latest message. Project memory and the runtime's own notes

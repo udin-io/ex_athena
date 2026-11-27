@@ -91,7 +91,7 @@ defmodule ExAthena.Providers.ReqLLM do
 
   @impl ExAthena.Provider
   def capabilities(opts) do
-    base = capabilities()
+    base = capabilities() |> put_params_b(opts)
 
     case resolve_llmdb_context(opts) do
       {:ok, context} ->
@@ -102,6 +102,15 @@ defmodule ExAthena.Providers.ReqLLM do
           {:ok, context} -> resolved(base, context)
           :error -> base
         end
+    end
+  end
+
+  # The model's size, for the chat's small-model rules (issue 321). Absent when
+  # unknown, so a caller reads a missing key and nil alike.
+  defp put_params_b(caps, opts) do
+    case ExAthena.ModelSize.lookup(opts) do
+      nil -> caps
+      size -> Map.put(caps, :params_b, size)
     end
   end
 
