@@ -46,6 +46,7 @@ config :ex_athena, max_agents_per_run: 24
 #
 # config :ex_athena, :agents,
 #   max_iterations: 50,                # floor on a worker's iteration budget
+#   max_requested_iterations: 200,     # most turns a model may request for a worker (0 = no ceiling)
 #   max_input_tokens: 0,               # spend ceiling per worker (0 = off, the default)
 #   digest_findings: 3,                # conclusions carried in a handoff digest
 #   result_chars: 64_000,              # cap on the report a worker returns to its parent

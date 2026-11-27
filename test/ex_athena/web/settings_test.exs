@@ -50,6 +50,7 @@ defmodule ExAthena.Web.SettingsTest do
         {{:loop, :tool_timeout_ms}, 120_000},
         {{:loop, :handback_at_percent}, 83},
         {{:agents, :max_iterations}, 50},
+        {{:agents, :max_requested_iterations}, 200},
         {{:agents, :prompt_chars}, 160},
         {{:agents, :timeout_ms}, 1_800_000},
         {{:agents, :max_input_tokens}, 0},

@@ -205,6 +205,17 @@ defmodule ExAthena.Web.Settings do
           help: "Floor on a worker's iteration budget."
         },
         %{
+          key: :max_requested_iterations,
+          label: "Most turns a model can ask for",
+          default: 200,
+          type: :integer,
+          min: 0,
+          help:
+            "The most turns a model can give a worker when it asks for more. A worker " <>
+              "that keeps going then stops on its turns, not only its time budget. " <>
+              "0 sets no limit."
+        },
+        %{
           key: :timeout_ms,
           label: "Time budget (ms)",
           default: 1_800_000,
