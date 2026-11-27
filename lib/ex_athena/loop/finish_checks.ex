@@ -23,6 +23,8 @@ defmodule ExAthena.Loop.FinishChecks do
 
   alias ExAthena.Agents.Quota
   alias ExAthena.Loop.State
+  alias ExAthena.Provenance
+  alias ExAthena.Tools.Bash
   alias ExAthena.Tuning
 
   @audit_request_chars 1_500
@@ -42,49 +44,67 @@ defmodule ExAthena.Loop.FinishChecks do
   spent and the unmet checks are written into its deliverable instead, and
   `:pass` when no check applies, so the caller decides the halt itself.
 
-  Only a `finish` (`halted_reason` `{:submitted, ...}`) is checked: a
-  bare-text stop is the caller's to handle.
+  `voice:` picks who the notes speak to:
+
+    * `:orchestrator` (default) — a coordinator that holds no workspace
+      tools. Only a `finish` (`halted_reason` `{:submitted, ...}`) is checked,
+      the whole transcript is the evidence, and each note asks for a worker.
+    * `:chat` — the one chat, which holds every tool. A plain-text stop is
+      checked as well as a `finish`, and the evidence is the current task
+      alone: everything since the person's latest message. A chat runs many
+      tasks, and each one gets its own checks; a resume with no new message
+      is the same task, so a check it already fired stays fired. A chat that
+      can neither run a command nor send a helper is not checked, since no
+      note could be acted on.
   """
-  @spec run(State.t()) :: {:continue, State.t()} | {:halt, State.t()} | :pass
-  def run(%State{} = halted) do
-    ev = if submitted?(halted), do: evidence(halted), else: nil
+  @spec run(State.t(), keyword()) :: {:continue, State.t()} | {:halt, State.t()} | :pass
+  def run(%State{} = halted, opts \\ []) do
+    voice = Keyword.get(opts, :voice, :orchestrator)
+    ev = if checked?(halted, voice), do: evidence(halted, voice), else: nil
 
     # Every check below asks for ONE more worker. With the allowance spent
     # there is none, so the demand is one the run cannot meet: session
     # 227f7f480afa was told twice to spawn, refused twice, and failed. The
     # checks still matter, so they are named in the deliverable instead —
     # unverified work reported as unverified (issue 216).
-    quota_spent? = ev != nil and Quota.exhausted?(halted.ctx.assigns || %{})
+    quota_spent? =
+      voice == :orchestrator and ev != nil and Quota.exhausted?(halted.ctx.assigns || %{})
 
     cond do
-      quota_spent? ->
-        {:halt, note_unverified(halted, ev)}
+      quota_spent? -> {:halt, note_unverified(halted, ev)}
+      ev == nil -> :pass
+      true -> first_failing(halted, ev, voice)
+    end
+  end
 
+  # In order; the first deficient check that has not fired yet is the one
+  # nudged, so a run meets them one at a time.
+  defp first_failing(halted, ev, voice) do
+    Enum.find_value(checks(), :pass, fn {flag, deficient?, note_args} ->
+      if gate?(halted, ev, flag, deficient?),
+        do: nudge(halted, voice, flag, apply_note(voice, note_args, ev))
+    end)
+  end
+
+  defp apply_note(voice, {kind, args}, ev), do: note(voice, kind, args.(ev))
+
+  defp checks do
+    [
       # Fires on an otherwise CLEAN finish, because that is exactly the shape
       # of the failure: every todo marked completed and a deliverable asserting
       # a build no worker ever ran.
-      gate?(halted, ev, :verify_nudged, &(&1.changed != [] and not &1.acted?)) ->
-        nudge(halted, :verify_nudged, verify_note(ev.changed))
-
+      {:verify_nudged, &(&1.changed != [] and not &1.acted?), {:verify, & &1.changed}},
       # A build proves the code parses; the live failure compiled cleanly and
       # raised on every page load.
-      gate?(halted, ev, :test_nudged, &(&1.source_changed != [] and not &1.tested?)) ->
-        nudge(halted, :test_nudged, test_note(ev.source_changed))
-
+      {:test_nudged, &(&1.source_changed != [] and not &1.tested?), {:test, & &1.source_changed}},
       # A live run tested a private helper it had just written, reported 252
       # passing, and shipped a page that raised on every load.
-      gate?(halted, ev, :coverage_nudged, &(&1.uncovered != [])) ->
-        nudge(halted, :coverage_nudged, coverage_note(ev.uncovered, ev.test_runs))
-
+      {:coverage_nudged, &(&1.uncovered != []), {:coverage, &{&1.uncovered, &1.test_runs}}},
       # A live run was asked for "all records" and shipped a filter on invented
       # column values matching none of them: it compiled, tests passed, the
       # changed code ran. No mechanical check can see a dropped requirement.
-      gate?(halted, ev, :audit_nudged, &(&1.source_changed != [])) ->
-        nudge(halted, :audit_nudged, audit_note(original_request(halted)))
-
-      true ->
-        :pass
-    end
+      {:audit_nudged, &(&1.source_changed != []), {:audit, & &1.request}}
+    ]
   end
 
   @doc """
@@ -155,15 +175,36 @@ defmodule ExAthena.Loop.FinishChecks do
     |> Enum.map(&elem(&1, 1))
   end
 
-  defp gate?(_halted, nil, _flag, _deficient?), do: false
+  defp checked?(halted, :orchestrator), do: submitted?(halted)
+
+  defp checked?(halted, :chat) do
+    (halted.meta[:finish_reason] == :stop or submitted?(halted)) and can_act?(halted) and
+      turn_left?(halted)
+  end
+
+  # A nudge spends one more turn. When the run has none left, the nudge would
+  # turn a clean stop into `:error_max_turns` (or a budget stop), so the run
+  # ends as it stands instead.
+  defp turn_left?(%State{} = s) do
+    not (is_integer(s.max_iterations) and s.iterations + 1 >= s.max_iterations) and
+      not ExAthena.Budget.exceeded?(s.budget, s.max_budget_usd) and
+      not ExAthena.Budget.input_exceeded?(s.budget, s.max_input_tokens)
+  end
+
+  # In the read-only phase nothing could have changed, and without `bash` or
+  # `spawn_agent` the chat has no way to run a check.
+  defp can_act?(%State{ctx: ctx, tool_specs: specs}) do
+    ctx.phase != :plan and
+      Enum.any?(specs || [], &(&1.name in ["bash", "spawn_agent"]))
+  end
 
   defp gate?(halted, ev, flag, deficient?),
     do: halted.mode_state[flag] != true and flag not in ev.fired and deficient?.(ev)
 
-  defp nudge(halted, flag, note) do
+  defp nudge(halted, voice, flag, note) do
     {:continue,
      halted
-     |> redirect(gate_prefix(flag) <> note)
+     |> redirect(gate_prefix(voice, flag) <> note)
      |> Map.put(:halted_reason, nil)
      |> put_in([Access.key(:mode_state), flag], true)
      |> Map.put(:meta, Map.delete(halted.meta, :finish_reason))}
@@ -171,10 +212,60 @@ defmodule ExAthena.Loop.FinishChecks do
 
   # Doubles as the note's own header, so nothing invisible rides along in the
   # prompt or the chat UI just to be read back on the next run.
-  defp gate_prefix(flag), do: "[orchestration runtime: #{@gate_names[flag]} gate] "
+  defp gate_prefix(:orchestrator, flag),
+    do: "[orchestration runtime: #{@gate_names[flag]} gate] "
 
-  defp fired_gates(transcript),
-    do: Enum.filter(Map.keys(@gate_names), &String.contains?(transcript, gate_prefix(&1)))
+  defp gate_prefix(:chat, flag), do: "[chat runtime: #{@gate_names[flag]} check] "
+
+  defp fired_gates(transcript, _messages, :orchestrator),
+    do:
+      Enum.filter(
+        Map.keys(@gate_names),
+        &String.contains?(transcript, gate_prefix(:orchestrator, &1))
+      )
+
+  # Only a note the runtime wrote counts: a user turn or an error tool result
+  # that OPENS with the check's name (`redirect/2` writes exactly those). The
+  # same words inside a file the chat read, a fetched page or a helper's report
+  # would otherwise switch the check off for the whole request.
+  defp fired_gates(_transcript, messages, :chat) do
+    notes = runtime_notes(messages)
+
+    Enum.filter(Map.keys(@gate_names), fn flag ->
+      prefix = gate_prefix(:chat, flag)
+      Enum.any?(notes, &String.starts_with?(&1, prefix))
+    end)
+  end
+
+  @doc false
+  # The texts `redirect/2` can have written: user-role turns, and the error
+  # results it pairs with a tool call.
+  @spec runtime_notes([ExAthena.Messages.Message.t()]) :: [String.t()]
+  def runtime_notes(messages) do
+    # `redirect/2` pairs a note with each call of a turn that halted, and a
+    # turn halts with tool calls only through `finish`, so the note always
+    # sits on the `finish` call's result. Any other tool's own error (an MCP
+    # server's text, a helper's partial report) is not a note.
+    halting_ids =
+      for %{role: :assistant, tool_calls: [_ | _] = calls} <- messages,
+          %{name: "finish", id: id} <- calls,
+          into: MapSet.new(),
+          do: id
+
+    Enum.flat_map(messages, fn
+      %{role: :user, content: c} when is_binary(c) ->
+        [c]
+
+      %{tool_results: [_ | _] = results} ->
+        for %{is_error: true, content: c, tool_call_id: id} <- results,
+            is_binary(c),
+            MapSet.member?(halting_ids, id),
+            do: c
+
+      _ ->
+        []
+    end)
+  end
 
   # What the workers' own tool calls prove about this run.
   #
@@ -182,33 +273,34 @@ defmodule ExAthena.Loop.FinishChecks do
   # worker that ran `mkdir` counts. It exists to make "nothing was checked"
   # impossible to finish through silently. `tested?` is the sharper check —
   # a test run that neither failed nor hid its result behind a pipe (see
-  # `ExAthena.Provenance.command_outcome/3`).
-  defp evidence(state) do
-    transcript = transcript_text(state)
-    events = ExAthena.Provenance.scan(transcript)
-    files = ExAthena.Provenance.changed_files(events)
-    commands = ExAthena.Provenance.commands(events)
+  # `Provenance.command_outcome/3`).
+  defp evidence(state, voice) do
+    {messages, request} = scope(state, voice)
+    transcript = transcript_text(messages)
+    events = own_events(messages, voice) ++ Provenance.scan(footer_text(messages, voice))
+    files = Provenance.changed_files(events)
+    commands = Provenance.commands(events)
 
     not_passing =
-      ExAthena.Provenance.failed_commands(events) ++
-        ExAthena.Provenance.unconfirmed_commands(events)
+      Provenance.failed_commands(events) ++
+        Provenance.unconfirmed_commands(events)
 
-    source_changed = Enum.reject(files, &ExAthena.Provenance.test_file?/1)
+    source_changed = Enum.reject(files, &Provenance.test_file?/1)
 
     test_runs =
-      Enum.filter(commands, &(ExAthena.Provenance.test_command?(&1) and &1 not in not_passing))
+      Enum.filter(commands, &(Provenance.test_command?(&1) and &1 not in not_passing))
 
     tested? = test_runs != []
 
     %{
       changed: files,
       source_changed: source_changed,
-      acted?:
-        Enum.any?(commands, &(not ExAthena.Tools.Bash.read_only_command?(%{"command" => &1}))),
+      acted?: Enum.any?(commands, &(not Bash.read_only_command?(%{"command" => &1}))),
       tested?: tested?,
       test_runs: test_runs,
       # Checks this session has already fired, in this run or an earlier one.
-      fired: fired_gates(transcript),
+      fired: fired_gates(transcript, messages, voice),
+      request: request,
       # Only asked once tests are green: before that, checks 1 and 2 own the
       # conversation and a coverage demand would be noise on top of them.
       uncovered: if(tested?, do: uncovered(source_changed, transcript, state.ctx.cwd), else: [])
@@ -226,14 +318,165 @@ defmodule ExAthena.Loop.FinishChecks do
     end
   end
 
+  # The orchestrator holds no workspace tools, so only its workers' footers
+  # carry evidence. The chat edits and runs commands itself, so its own calls
+  # count too.
+  # Helpers' footers are read only off `spawn_agent` results in the chat: the
+  # chat's own tool output (a file, a command's output, a fetched page) can
+  # hold any text, a forged footer line included.
+  defp footer_text(messages, :orchestrator), do: transcript_text(messages)
+
+  defp footer_text(messages, :chat) do
+    spawn_ids =
+      for %{role: :assistant, tool_calls: [_ | _] = calls} <- messages,
+          %{name: "spawn_agent", id: id} <- calls,
+          into: MapSet.new(),
+          do: id
+
+    messages
+    |> Enum.flat_map(&(&1.tool_results || []))
+    |> Enum.filter(&MapSet.member?(spawn_ids, &1.tool_call_id))
+    |> Enum.map_join("\n", &to_string(&1.content || ""))
+  end
+
+  defp own_events(_messages, :orchestrator), do: []
+  defp own_events(messages, :chat), do: Provenance.events(messages)
+
+  defp scope(%State{messages: messages}, :orchestrator),
+    do: {messages, original_request(messages)}
+
+  defp scope(%State{messages: messages} = state, :chat) do
+    case request_index(messages, state.meta[:request_message]) do
+      nil -> {messages, ""}
+      i -> {Enum.drop(messages, i), request_text(Enum.at(messages, i))}
+    end
+  end
+
+  @doc """
+  The person's message among the ones a caller sent: the last user turn that
+  is neither project memory nor one of the runtime's own notes. Nil when there
+  is none.
+
+  `Loop.run/2` records it before any hook adds messages, because a hook's
+  inject is a user-role turn too and must never stand in for the request.
+  """
+  @spec request_message([ExAthena.Messages.Message.t()]) :: ExAthena.Messages.Message.t() | nil
+  def request_message(messages) do
+    case latest_request_index(messages) do
+      nil -> nil
+      i -> Enum.at(messages, i)
+    end
+  end
+
+  # The recorded request, found again by value. A compaction that rewrote it
+  # leaves the latest human-looking turn as the best answer.
+  defp request_index(messages, nil), do: latest_request_index(messages)
+
+  defp request_index(messages, request) do
+    case last_index(messages, request) do
+      nil -> latest_request_index(messages)
+      i -> i
+    end
+  end
+
+  defp last_index(messages, request) do
+    messages
+    |> Enum.with_index()
+    |> Enum.reverse()
+    |> Enum.find_value(fn {m, i} -> if m == request, do: i end)
+  end
+
+  # The person's latest message. Project memory and the runtime's own notes
+  # are user-role turns too, and neither one starts a task.
+  defp latest_request_index(messages) do
+    messages
+    |> Enum.with_index()
+    |> Enum.reverse()
+    |> Enum.find_value(fn {message, i} -> if human_turn?(message), do: i end)
+  end
+
+  # The person's turns carry no `name`; project memory ("memory"), a hook's
+  # inject ("hook", or the name the hook chose) and skills all do.
+  defp human_turn?(%{role: :user} = message) do
+    Map.get(message, :name) == nil and not runtime_note?(request_text(message))
+  end
+
+  defp human_turn?(_), do: false
+
+  @runtime_prefixes ["[chat runtime", "[orchestration runtime", "[runtime:"]
+
+  defp runtime_note?(text), do: String.starts_with?(text, @runtime_prefixes)
+
+  defp request_text(%{content: content}) when is_binary(content), do: content
+
+  defp request_text(%{content: parts}) when is_list(parts) do
+    parts
+    |> Enum.flat_map(fn
+      %{type: :text, text: text} when is_binary(text) -> [text]
+      _ -> []
+    end)
+    |> Enum.join("\n")
+  end
+
+  defp request_text(_), do: ""
+
   # Worker reports arrive as tool results, so both channels must be scanned.
-  defp transcript_text(%State{messages: messages}) do
+  defp transcript_text(messages) when is_list(messages) do
     messages
     |> Enum.flat_map(fn msg ->
       [to_string(msg.content || "")] ++
         Enum.map(msg.tool_results || [], &to_string(&1.content || ""))
     end)
     |> Enum.join("\n")
+  end
+
+  defp note(:orchestrator, :verify, files), do: verify_note(files)
+  defp note(:orchestrator, :test, files), do: test_note(files)
+  defp note(:orchestrator, :coverage, {files, runs}), do: coverage_note(files, runs)
+  defp note(:orchestrator, :audit, request), do: audit_note(request)
+
+  defp note(:chat, :verify, files) do
+    "You changed " <>
+      Enum.join(files, ", ") <>
+      " but ran no command to check the change. Run this project's build or " <>
+      "test command now (yourself, or through a helper) and read its RAW " <>
+      "output before you say you are done. If this change cannot be checked " <>
+      "by a command, say so plainly in your answer."
+  end
+
+  defp note(:chat, :test, files) do
+    "You changed " <>
+      Enum.join(files, ", ") <>
+      " and no passing test run covers them. A build proves the code parses, " <>
+      "not that it works. Run this project's tests (yourself, or through a helper), and ADD a test for the " <>
+      "changed behaviour if none exists; read the raw output. If this change " <>
+      "cannot be tested, say why in your answer."
+  end
+
+  defp note(:chat, :coverage, {files, runs}) do
+    "A test run exited zero with no failure summary (" <>
+      Enum.join(runs, "; ") <>
+      "), but no test executed " <>
+      Enum.join(files, ", ") <>
+      ". A passing run proves a test exists, not that it covers your change. " <>
+      "Add a test that calls the changed code through its real entry point " <>
+      "(the function or route a caller uses, not a private helper), run the " <>
+      "suite WITH COVERAGE yourself or through a helper " <>
+      "(e.g. `mix test --cover`) and read the table. If " <>
+      "this code cannot be executed by a test, say why in your answer."
+  end
+
+  defp note(:chat, :audit, request) do
+    "Before you answer: nothing has checked the work against the request. " <>
+      "Compiling, passing tests and covered code do not show that you built " <>
+      "what was asked. Yourself, or through a helper given the request below " <>
+      "word for word: list every explicit requirement in it " <>
+      "as a separate item. For each, read the delivered code and mark it MET " <>
+      "or NOT MET with the file and line. Check every literal the code " <>
+      "compares against real data (enum codes, status strings, column " <>
+      "values) by reading the data: a value assumed rather than observed is " <>
+      "NOT MET. Fix anything NOT MET, then answer." <>
+      quoted_request(request)
   end
 
   defp verify_note(files) do
@@ -255,7 +498,7 @@ defmodule ExAthena.Loop.FinishChecks do
   # memory in every session that has one. Skipping those is what makes this the
   # request rather than the conventions (issue 232). "" when the run has no
   # human turn yet — `audit_note/1` then quotes nothing.
-  defp original_request(%State{messages: messages}) do
+  defp original_request(messages) do
     Enum.find_value(messages, "", fn
       %{role: :user, content: content} = message when is_binary(content) ->
         if ExAthena.Memory.memory_message?(message), do: nil, else: content
