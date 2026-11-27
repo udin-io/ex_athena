@@ -49,6 +49,19 @@ Sources:
 
 ---
 
+## Worker limits
+
+A worker ends on the first limit it meets. All four are `config :ex_athena, :agents` keys, and the web settings modal edits them under Workers.
+
+- `timeout_ms`: working time, 30 minutes by default.
+- `max_iterations`: the floor on the turns a model may ask for, 50 by default.
+- `max_requested_iterations`: the most turns a model may ask for through `spawn_agent`, 200 by default, 0 for no ceiling. A host's own `max_iterations` in `spawn_agent_opts` is not a model request and keeps its value.
+- `max_input_tokens`: total input tokens, 0 (off) by default.
+
+Orchestrate mode's top-level run has no turn limit, and this ceiling does not apply to it.
+
+---
+
 ## Agent definitions
 
 An agent lives as a Markdown file with YAML frontmatter:

@@ -39,6 +39,16 @@ ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **A model can ask a worker for at most 200 turns**
+  ([#316](https://github.com/udin-io/ex_athena/issues/316)). `spawn_agent` took
+  any `max_iterations` a model sent: a request for 10,000 turns ran a worker
+  400 turns against a mock provider that never finished. Since #312 turned the
+  worker's token total off, only its 30-minute clock stopped such a worker.
+  A request now stops at `agents.max_requested_iterations`, 200 by default;
+  raise it in `config :ex_athena, :agents` or under Workers in the settings
+  modal, or set 0 for no ceiling. The 50-turn floor, a host's own
+  `max_iterations` and the top-level run of orchestrate mode are unchanged.
+
 - **A worker has no total-token cap unless you set one**
   ([#312](https://github.com/udin-io/ex_athena/issues/312), part of
   [#310](https://github.com/udin-io/ex_athena/issues/310)). Until now a worker
