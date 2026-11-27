@@ -141,6 +141,22 @@ filesystem; mutations are immediately visible to the parent.
 Best for: investigations, summarisations, anything read-only or whose writes the
 parent wants visible immediately.
 
+### Naming the run's working folder
+
+An orchestrator that makes its own worktree (`git worktree add` in a worker's
+shell) calls `set_working_folder` with the path, once. Every worker spawned
+after that, including a step the runtime delegates on its own, starts in that
+folder, its brief ends "Working directory: <that folder>", and its relative
+reads and greps resolve there. The model still passes no `cwd` to `spawn_agent`.
+
+The tool accepts only a folder that `git worktree list --porcelain` of the
+parent's repo shows and that lies inside the confinement roots; anything else
+is refused with an error the model reads, and workers stay where they were.
+A host's `spawn_agent_opts[:cwd]` still wins over it. The journal, transcript
+and sidechain stay under the parent's folder
+([`Agents.RunFolder`](../lib/ex_athena/agents/run_folder.ex)). `:worktree`
+isolation is unchanged: it branches from the parent's own folder.
+
 ### `:worktree`
 
 Source: [`Agents.Worktree.create/2`](../lib/ex_athena/agents/worktree.ex). Calls
