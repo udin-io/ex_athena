@@ -1,6 +1,7 @@
 defmodule ExAthena.Web.Live.ChatLive do
   use Phoenix.LiveView
 
+  alias ExAthena.Chat.Permission
   alias ExAthena.Messages
   alias ExAthena.Messages.ContentPart
   alias ExAthena.Orchestrator.AgentInfo
@@ -25,12 +26,9 @@ defmodule ExAthena.Web.Live.ChatLive do
     {"Gemini", "gemini"},
     {"OpenRouter", "openrouter"}
   ]
-  @modes [
-    {"ReAct", "react"},
-    {"Plan & Solve", "plan_and_solve"},
-    {"Reflexion", "reflexion"},
-    {"Orchestrate", "orchestrate"}
-  ]
+  # How much the chat may do without asking (issue 322), in place of the four
+  # chat modes. See ExAthena.Chat.Permission.
+  @permissions Enum.map(Permission.levels(), &{Permission.label(&1), Atom.to_string(&1)})
 
   # How many diff lines to show before truncating
   @max_diff_lines 300
@@ -71,7 +69,7 @@ defmodule ExAthena.Web.Live.ChatLive do
         provider: provider,
         model: model,
         queue_slots: current_queue_slots(provider),
-        mode: "react",
+        permission: Atom.to_string(Permission.default()),
         available_models: [],
         # Current text in the model search box (server-filtered dropdown) and
         # whether the dropdown is open (focused). When closed the box shows the
@@ -80,7 +78,7 @@ defmodule ExAthena.Web.Live.ChatLive do
         model_open: false,
         models_loading: false,
         providers: @providers,
-        modes: @modes,
+        permissions: @permissions,
         # Conversation
         messages: [],
         pending_images: [],
@@ -820,8 +818,8 @@ defmodule ExAthena.Web.Live.ChatLive do
     {:noreply, assign(socket, model_query: query, model_open: true)}
   end
 
-  def handle_event("set_mode", %{"value" => mode}, socket) do
-    {:noreply, assign(socket, mode: mode)}
+  def handle_event("set_permission", %{"value" => level}, socket) do
+    {:noreply, assign(socket, permission: Atom.to_string(Permission.parse(level)))}
   end
 
   def handle_event("toggle_sessions", _params, socket) do
@@ -1617,14 +1615,22 @@ defmodule ExAthena.Web.Live.ChatLive do
         </div>
 
         <div class="sidebar-section">
-          <label class="field-label">Mode</label>
-          <form phx-change="set_mode">
-            <select class="field-select" name="value">
-              <option :for={{label, val} <- @modes} value={val} selected={@mode == val}>
+          <label class="field-label">What the chat may do</label>
+          <form id="permission-form" phx-change="set_permission" phx-submit="set_permission">
+            <select id="permission-select" class="field-select" name="value">
+              <option
+                :for={{label, val} <- @permissions}
+                value={val}
+                selected={@permission == val}
+              >
                 {label}
               </option>
             </select>
           </form>
+          <div :if={@provider == "claude_code"} class="field-hint">
+            Claude Code runs its own tools, so it cannot ask first: below Trusted it
+            edits without asking.
+          </div>
         </div>
 
         <div class="sidebar-section sidebar-actions">
@@ -1742,7 +1748,9 @@ defmodule ExAthena.Web.Live.ChatLive do
                   <div class="empty-hint">Click + to open a folder</div>
                 <% end %>
               <% else %>
-                <div class="empty-sub">{@provider} · {@mode}</div>
+                <div class="empty-sub">
+                  {@provider} · {Permission.label(Permission.parse(@permission))}
+                </div>
               <% end %>
             </div>
           <% end %>
@@ -3077,7 +3085,7 @@ defmodule ExAthena.Web.Live.ChatLive do
     session_id = socket.assigns.session_id
     provider = socket.assigns.provider
     model = socket.assigns.model
-    mode = socket.assigns.mode
+    permission = Permission.parse(socket.assigns.permission)
     images = socket.assigns.pending_images
     provider_session_id = socket.assigns.provider_session_id
 
@@ -3123,10 +3131,8 @@ defmodule ExAthena.Web.Live.ChatLive do
     run_opts =
       [
         provider: safe_atom(provider, :llamacpp),
-        mode: safe_mode(mode),
         messages: ex_messages,
         tools: ExAthena.Tools.builtins() ++ [ExAthena.Tools.AskUser],
-        permission_mode: :accept_edits,
         # Conclusion summarizer is OFF for local thinking models: exo/Qwen3.5
         # ignore `/no_think` and req_llm's OpenAI path can't forward
         # `enable_thinking: false`, so the micro-call spends its whole budget
@@ -3196,7 +3202,8 @@ defmodule ExAthena.Web.Live.ChatLive do
         assistant_msg_id: assistant_msg_id,
         run_sid: run_sid,
         coordinator: coordinator,
-        subscriber: self()
+        subscriber: self(),
+        permission: permission
       })
 
     {:noreply, push_session_url(socket)}
@@ -3227,8 +3234,21 @@ defmodule ExAthena.Web.Live.ChatLive do
     {:noreply,
      socket
      |> assign(awaiting_question: nil, current_action: "thinking…")
+     |> follow_plan_approval(q, answer)
      |> update(:details_stream, &[detail | &1])}
   end
+
+  # An approved plan moves the chat to the level the person approved it at, so
+  # the next message does not start read only again. Only a plan approval the
+  # runtime asked counts: a question the model wrote can offer the same words.
+  defp follow_plan_approval(socket, %{kind: :plan_approval}, answer) do
+    case Permission.level_after_approval(answer) do
+      nil -> socket
+      level -> assign(socket, permission: Atom.to_string(level))
+    end
+  end
+
+  defp follow_plan_approval(socket, _question, _answer), do: socket
 
   # Open folder and the signed root that /files/download and /files/preview
   # accept for it (issue #269). One function, so a future caller that sets the
@@ -3266,7 +3286,9 @@ defmodule ExAthena.Web.Live.ChatLive do
       model: data.model,
       model_query: "",
       model_open: false,
-      mode: data.mode,
+      # A chat saved before issue 322 stored a mode, not a level; it opens at
+      # the default level.
+      permission: Atom.to_string(Permission.parse(Map.get(data, :permission))),
       messages: data.display_messages,
       pending_images: [],
       ex_messages: data.ex_messages,
@@ -3370,7 +3392,7 @@ defmodule ExAthena.Web.Live.ChatLive do
       cwd: a.cwd,
       provider: a.provider,
       model: a.model,
-      mode: a.mode,
+      permission: a.permission,
       created_at: a.session_created_at,
       updated_at: DateTime.utc_now(),
       display_messages: a.messages,
@@ -3972,17 +3994,6 @@ defmodule ExAthena.Web.Live.ChatLive do
   rescue
     _ -> default
   end
-
-  # Literal atoms, NOT String.to_existing_atom/1: in a dev VM modules load
-  # lazily, so an atom that only lives in another module's literals (e.g.
-  # :orchestrate in Mode.@builtins) may not exist yet when the first send
-  # arrives — to_existing_atom then crashes the run task with :badarg.
-  # Literal clauses guarantee the atoms exist as soon as ChatLive is loaded.
-  defp safe_mode("react"), do: :react
-  defp safe_mode("plan_and_solve"), do: :plan_and_solve
-  defp safe_mode("reflexion"), do: :reflexion
-  defp safe_mode("orchestrate"), do: :orchestrate
-  defp safe_mode(_), do: :react
 
   defp unique_id, do: :crypto.strong_rand_bytes(6) |> Base.encode16(case: :lower)
 

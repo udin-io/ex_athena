@@ -36,6 +36,7 @@ defmodule ExAthena.Web.RunServer do
 
   use GenServer, restart: :temporary
 
+  alias ExAthena.Chat.Permission
   alias ExAthena.Orchestrator.Coordinator
   alias ExAthena.Tuning
   alias ExAthena.Web.Sessions
@@ -71,6 +72,8 @@ defmodule ExAthena.Web.RunServer do
     * `:assistant_msg_id` — id of the assistant turn (for durable persistence).
     * `:run_sid` — the orchestration/Overview scope id (echoed in snapshots).
     * `:coordinator` — optional Coordinator pid for the Overview tab.
+    * `:permission` — optional `ExAthena.Chat.Permission` level. Its
+      approvals ask through this server, like `ask_user`.
   """
   @spec start_run(String.t(), map()) :: {:ok, pid()} | {:error, term()}
   def start_run(session_id, spec) do
@@ -207,6 +210,9 @@ defmodule ExAthena.Web.RunServer do
       run_sid: Map.get(spec, :run_sid),
       coordinator: Map.get(spec, :coordinator),
       run_opts: Map.fetch!(spec, :run_opts),
+      # Every run asks at a level: a run with no `can_use_tool` in the default
+      # phase would let everything through.
+      permission: Map.get(spec, :permission) || Permission.default(),
       task_pid: nil,
       task_ref: nil,
       subscribers: subscribers,
@@ -214,6 +220,7 @@ defmodule ExAthena.Web.RunServer do
       stream_text: "",
       current_action: nil,
       awaiting_question: nil,
+      pending_questions: [],
       # Oldest-first, so a reattaching client replays in wire order.
       events: :queue.new(),
       event_count: 0
@@ -231,6 +238,7 @@ defmodule ExAthena.Web.RunServer do
       |> Keyword.put(:on_event, fn event -> send(server, {:run_event, event}) end)
       |> Keyword.put(:assigns, %{ask_user: server})
       |> put_coordinator(state.coordinator)
+      |> put_permission(state.permission, server)
 
     {:ok, task_pid} =
       Task.start(fn ->
@@ -242,6 +250,24 @@ defmodule ExAthena.Web.RunServer do
 
     ref = Process.monitor(task_pid)
     {:noreply, %{state | task_pid: task_pid, task_ref: ref}}
+  end
+
+  # The level's approvals ask through this server, the same channel `ask_user`
+  # uses, so a question survives a reconnect like any other.
+  defp put_permission(opts, nil, _server), do: opts
+
+  defp put_permission(opts, level, server) do
+    ask = fn question, options, kind ->
+      id = "approval-" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
+
+      case ExAthena.Tools.AskUser.ask(server, id, question, options, %{kind: kind}) do
+        {:ok, answer} -> answer
+        {:error, :host_down} -> :gone
+      end
+    end
+
+    {_ref, permission_opts} = Keyword.pop(Permission.run_opts(level, ask), :level_ref)
+    Keyword.merge(opts, permission_opts)
   end
 
   defp put_coordinator(opts, nil), do: opts
@@ -275,15 +301,23 @@ defmodule ExAthena.Web.RunServer do
 
   @impl GenServer
   def handle_cast({:answer, tool_call_id, answer}, state) do
-    # The asker names itself: a helper asks from its own process.
-    target =
-      case state.awaiting_question do
-        %{reply_to: pid} when is_pid(pid) -> pid
-        _ -> state.task_pid
-      end
+    case state.awaiting_question do
+      # The question on screen. The asker names itself: a helper asks from
+      # its own process.
+      %{tool_call_id: ^tool_call_id} = q ->
+        send(Map.get(q, :reply_to) || state.task_pid, {:athena_user_answer, tool_call_id, answer})
+        {:noreply, next_question(state)}
 
-    if target, do: send(target, {:athena_user_answer, tool_call_id, answer})
-    {:noreply, %{state | awaiting_question: nil, current_action: "thinking…"}}
+      # No question held (a run started before questions named their asker).
+      nil ->
+        if state.task_pid, do: send(state.task_pid, {:athena_user_answer, tool_call_id, answer})
+        {:noreply, %{state | current_action: "thinking…"}}
+
+      # An answer to a question that is not on screen answers nothing: it
+      # would reach the wrong asker under the wrong id.
+      _other ->
+        {:noreply, state}
+    end
   end
 
   # Stop is a termination like any other, so it persists like any other. It
@@ -311,6 +345,16 @@ defmodule ExAthena.Web.RunServer do
     {:stop, :normal, %{state | streaming: false}}
   end
 
+  # Questions wait their turn: a helper and its parent, or two approvals, can
+  # ask at once, and the card shows one at a time.
+  defp next_question(%{pending_questions: [next | rest]} = state) do
+    broadcast(state, {:athena_ask_user, next})
+    %{state | awaiting_question: next, pending_questions: rest, current_action: nil}
+  end
+
+  defp next_question(state),
+    do: %{state | awaiting_question: nil, current_action: "thinking…"}
+
   defp interrupted_result(state) do
     %ExAthena.Result{
       text: state.stream_text,
@@ -333,9 +377,13 @@ defmodule ExAthena.Web.RunServer do
   # so a reconnect mid-pause re-surfaces it, then fan it out.
   @impl GenServer
   def handle_info({:athena_ask_user, question}, state) do
-    state = %{state | awaiting_question: question, current_action: nil}
-    broadcast(state, {:athena_ask_user, question})
-    {:noreply, state}
+    if state.awaiting_question do
+      {:noreply, %{state | pending_questions: state.pending_questions ++ [question]}}
+    else
+      state = %{state | awaiting_question: question, current_action: nil}
+      broadcast(state, {:athena_ask_user, question})
+      {:noreply, state}
+    end
   end
 
   @impl GenServer
@@ -412,7 +460,14 @@ defmodule ExAthena.Web.RunServer do
 
   defp finish(state) do
     Process.send_after(self(), :retire, Tuning.get(:ui, :run_grace_ms, @grace_ms))
-    %{state | streaming: false, current_action: nil, awaiting_question: nil}
+
+    %{
+      state
+      | streaming: false,
+        current_action: nil,
+        awaiting_question: nil,
+        pending_questions: []
+    }
   end
 
   # Accumulate only what a reconnecting client needs to re-render mid-run; the

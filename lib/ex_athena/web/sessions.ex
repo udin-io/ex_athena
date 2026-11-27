@@ -301,7 +301,7 @@ defmodule ExAthena.Web.Sessions do
   defp read_header(path) do
     with {:ok, bin} <- File.read(path),
          data when is_map(data) <- :erlang.binary_to_term(bin) do
-      {:ok, Map.take(data, [:id, :title, :cwd, :provider, :model, :mode, :updated_at])}
+      {:ok, Map.take(data, [:id, :title, :cwd, :provider, :model, :permission, :updated_at])}
     else
       _ -> :error
     end

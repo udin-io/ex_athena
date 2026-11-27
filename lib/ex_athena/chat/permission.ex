@@ -106,6 +106,20 @@ defmodule ExAthena.Chat.Permission do
     ]
   end
 
+  @doc """
+  The level a plan approval's answer moves the chat to, or nil when the answer
+  is not an approval. A front end uses it to move its picker.
+
+      iex> ExAthena.Chat.Permission.level_after_approval("Yes, and edit freely")
+      :edit
+      iex> ExAthena.Chat.Permission.level_after_approval("No, keep planning")
+      nil
+  """
+  @spec level_after_approval(term()) :: level() | nil
+  def level_after_approval(@approve_ask), do: :ask
+  def level_after_approval(@approve_edit), do: :edit
+  def level_after_approval(_), do: nil
+
   @doc "The level a run's `:level_ref` holds now."
   @spec current(:atomics.atomics_ref()) :: level()
   def current(ref), do: Enum.at(@levels, :atomics.get(ref, 1))

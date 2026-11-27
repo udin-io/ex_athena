@@ -87,6 +87,36 @@ defmodule ExAthena.Web.RunServerTest do
     send(task, :finish)
   end
 
+  test "two questions wait their turn, and an answer to one not on screen answers nothing" do
+    sid = "s-two-questions"
+    task = blocking_run(sid)
+    {:ok, _snap} = RunServer.attach(sid, self())
+    server = RunServer.whereis(sid)
+
+    for id <- ["q1", "q2"] do
+      send(
+        server,
+        {:athena_ask_user, %{tool_call_id: id, question: id, options: [], reply_to: self()}}
+      )
+    end
+
+    assert_receive {:athena_ask_user, %{tool_call_id: "q1"}}, 1_000
+    refute_received {:athena_ask_user, %{tool_call_id: "q2"}}
+
+    RunServer.answer(sid, "q2", "early")
+    _ = RunServer.running?(sid)
+    refute_received {:athena_user_answer, _, _}
+
+    RunServer.answer(sid, "q1", "yes")
+    assert_receive {:athena_user_answer, "q1", "yes"}, 1_000
+    assert_receive {:athena_ask_user, %{tool_call_id: "q2"}}, 1_000
+
+    RunServer.answer(sid, "q2", "no")
+    assert_receive {:athena_user_answer, "q2", "no"}, 1_000
+
+    send(task, :finish)
+  end
+
   test "a finished run is no longer attachable (caller loads the saved session)" do
     sid = "s-finished"
     task = blocking_run(sid)
