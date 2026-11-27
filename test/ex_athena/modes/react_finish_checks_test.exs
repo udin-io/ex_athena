@@ -460,12 +460,16 @@ defmodule ExAthena.Modes.ReActFinishChecksTest do
                  }
                )
 
-      assert_received {:start, first}
-      assert_received {:end, ^first}
-      assert_received {:start, second}
-      assert_received {:end, ^second}
-      assert first != second
-      assert Process.info(self(), :messages) |> elem(1) |> Enum.empty?()
+      assert [{:start, a}, {:end, a}, {:start, b}, {:end, b}] = helper_events()
+      assert a != b
+    end
+
+    defp helper_events(acc \\ []) do
+      receive do
+        {kind, _} = event when kind in [:start, :end] -> helper_events([event | acc])
+      after
+        0 -> Enum.reverse(acc)
+      end
     end
 
     test "a host can still send helpers without the brief", %{dir: dir} do
