@@ -60,6 +60,10 @@ defmodule ExAthena.Orchestrator.AgentInfo do
             usage: %{input_tokens: 0, output_tokens: 0},
             cost_usd: nil,
             transcript_tail: [],
+            # Rolling end of the text being written now. The transcript row
+            # stops growing at its character cap, so the live preview reads
+            # this instead.
+            live_tail: nil,
             # Final summary the worker contributed to its parent (or the
             # failure digest of what it learned before stopping).
             result: nil,
@@ -117,11 +121,13 @@ defmodule ExAthena.Orchestrator.AgentInfo do
   def apply_event(%__MODULE__{status: status} = info, _event) when status in @terminal, do: info
 
   def apply_event(info, {:iteration, n}) do
-    %{info | iteration: n, current_action: "thinking…"}
+    %{info | iteration: n, current_action: "thinking…", live_tail: nil}
   end
 
   def apply_event(info, {:content, text}) when is_binary(text) do
-    append_transcript(info, {:content, text})
+    info
+    |> Map.put(:current_action, "writing…")
+    |> append_transcript({:content, text})
   end
 
   def apply_event(info, {:thinking, text}) when is_binary(text) do
@@ -335,6 +341,25 @@ defmodule ExAthena.Orchestrator.AgentInfo do
     todos
   end
 
+  @live_text_chars 200
+
+  @doc """
+  The end of what a running worker is writing right now, for a live preview in
+  the agent panel: its last `#{@live_text_chars}` characters of thinking or
+  reply. `nil` once the worker's last move was a tool call, or when it is no
+  longer running, so a finished worker shows its result instead.
+  """
+  @spec live_text(t()) :: String.t() | nil
+  def live_text(%__MODULE__{status: status, live_tail: tail})
+      when status not in @terminal and is_binary(tail) do
+    case String.trim(tail) do
+      "" -> nil
+      trimmed -> String.slice(trimmed, -@live_text_chars, @live_text_chars)
+    end
+  end
+
+  def live_text(_info), do: nil
+
   # The last two tool calls in the transcript tail are byte-identical
   # (same name + args) — the agent is literally repeating itself.
   defp repeated_tool_call?(info) do
@@ -348,6 +373,8 @@ defmodule ExAthena.Orchestrator.AgentInfo do
   # chunks COALESCE into one chat-like block instead of one row per delta.
   # Tool entries always stand alone (they break a text run).
   defp append_transcript(info, {kind, text}) when kind in [:thinking, :content] do
+    info = %{info | live_tail: roll_live_tail(info.live_tail, text)}
+
     case List.last(info.transcript_tail) do
       {^kind, prev} ->
         merged =
@@ -370,10 +397,14 @@ defmodule ExAthena.Orchestrator.AgentInfo do
 
   defp append_transcript(info, {kind, text}) do
     push_transcript(
-      info,
+      %{info | live_tail: nil},
       {kind,
        truncate(text, Tuning.get(:agents, :transcript_entry_chars, @transcript_entry_max_chars))}
     )
+  end
+
+  defp roll_live_tail(prev, text) do
+    String.slice((prev || "") <> text, -2 * @live_text_chars, 2 * @live_text_chars)
   end
 
   defp push_transcript(info, entry) do
