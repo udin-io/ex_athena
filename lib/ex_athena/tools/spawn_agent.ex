@@ -22,7 +22,8 @@ defmodule ExAthena.Tools.SpawnAgent do
       automatically; explicit args still override.
     * `tools` (optional) — list of tool names to expose to the sub-agent; defaults
       to whatever the parent had (minus PlanMode + SpawnAgent to avoid loops).
-    * `max_iterations` (optional, default 25, floored UP to 25) — worker loop budget.
+    * `max_iterations` (optional, default 50, floored UP to 50, capped at
+      `agents.max_requested_iterations`, default 200) — worker loop budget.
     * `system_prompt` (optional) — system prompt override for the sub-agent.
 
   Workers ALWAYS run in the parent's working directory — there is no
@@ -76,6 +77,9 @@ defmodule ExAthena.Tools.SpawnAgent do
   # worker that runs out hands its progress to a narrower retry instead of
   # burning an hour spinning. Smaller explicit args are floored UP.
   @default_max_iterations 50
+
+  # Most turns a model may request for a worker (0 = no ceiling).
+  @default_max_requested_iterations 200
 
   # Report cap. Was 8_000 chars (~2k tokens), which clipped 15% of live
   # reports — against an orchestrator whose context peaks around 32k in a
@@ -1522,9 +1526,20 @@ defmodule ExAthena.Tools.SpawnAgent do
 
   # Worker iteration caps chosen by the model are floored at the default —
   # live testing showed an orchestrator starving its worker with
-  # max_iterations: 5 (the worker died at error_max_turns mid-task).
-  defp worker_iterations(n) when is_integer(n),
-    do: max(n, Tuning.get(:agents, :max_iterations, @default_max_iterations))
+  # max_iterations: 5 (the worker died at error_max_turns mid-task) — and
+  # capped at `agents.max_requested_iterations` (0 = no ceiling; a ceiling
+  # under the floor acts as the floor; a bad value falls back to the default): with no token
+  # total, a model asking for 10_000 turns would otherwise be stopped only by
+  # the worker's clock. Orchestrate mode's top-level :infinity never passes here.
+  defp worker_iterations(n) when is_integer(n) do
+    floor = Tuning.get(:agents, :max_iterations, @default_max_iterations)
+
+    case Tuning.get(:agents, :max_requested_iterations, @default_max_requested_iterations) do
+      0 -> max(n, floor)
+      ceiling when is_integer(ceiling) and ceiling > 0 -> max(floor, min(n, ceiling))
+      _bad -> max(floor, min(n, @default_max_requested_iterations))
+    end
+  end
 
   defp worker_iterations(_), do: Tuning.get(:agents, :max_iterations, @default_max_iterations)
 
