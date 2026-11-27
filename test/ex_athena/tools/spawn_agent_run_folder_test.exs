@@ -242,6 +242,82 @@ defmodule ExAthena.Tools.SpawnAgentRunFolderTest do
     end
   end
 
+  describe "a worktree-isolated worker" do
+    test "its brief names its own worktree, not the run folder", %{
+      repo: repo,
+      worktree: worktree
+    } do
+      test_pid = self()
+      counter = :counters.new(1, [:atomics])
+
+      parent = fn _req ->
+        :counters.add(counter, 1, 1)
+
+        case :counters.get(counter, 1) do
+          1 ->
+            %Response{
+              text: "worktree ready",
+              tool_calls: [
+                %ToolCall{id: "c0", name: "set_working_folder", arguments: %{"path" => worktree}}
+              ],
+              finish_reason: :tool_calls,
+              provider: :mock
+            }
+
+          2 ->
+            %Response{
+              text: "delegating",
+              tool_calls: [
+                %ToolCall{
+                  id: "c1",
+                  name: "spawn_agent",
+                  arguments: %{"prompt" => "check the files", "agent" => "isolated"}
+                }
+              ],
+              finish_reason: :tool_calls,
+              provider: :mock
+            }
+
+          _ ->
+            %Response{text: "all done", finish_reason: :stop, provider: :mock}
+        end
+      end
+
+      worker = fn req ->
+        brief = req.messages |> Enum.find(&(&1.role == :user)) |> Map.fetch!(:content)
+        [_, folder] = Regex.run(~r/Working directory: (\S+) /, brief)
+        send(test_pid, {:isolated_brief_folder, folder, File.dir?(folder)})
+        %Response{text: "worker report", finish_reason: :stop, provider: :mock}
+      end
+
+      agents = %{
+        "isolated" => %ExAthena.Agents.Definition{
+          name: "isolated",
+          description: "runs in its own worktree",
+          isolation: :worktree
+        }
+      }
+
+      assert {:ok, _} =
+               Loop.run("do the task",
+                 provider: :mock,
+                 mock: [responder: parent],
+                 tools: [SetWorkingFolder, ExAthena.Tools.SpawnAgent],
+                 cwd: repo,
+                 memory: false,
+                 assigns: %{
+                   agents: agents,
+                   spawn_agent_opts: [provider: :mock, mock: [responder: worker], memory: false]
+                 },
+                 max_iterations: 6
+               )
+
+      assert_receive {:isolated_brief_folder, folder, true}
+      refute folder == worktree
+      refute folder == repo
+    end
+  end
+
   describe "an auto-delegated step" do
     # The orchestrator names the worktree and writes todos but never delegates;
     # after two such turns the runtime delegates the first todo itself.
