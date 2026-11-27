@@ -84,7 +84,9 @@ a model, so it renders in an opaque origin with no access to your session.
   without asking (Read only (plan), Ask before edits, Edit freely, Trusted); session list and
   recent projects; live token/cost status block while the model is running.
 - **Messages** (center) — streaming assistant text with inline tool-call blocks
-  showing collapsible output previews.
+  showing collapsible output previews. A message you send while the chat runs
+  shows as waiting until the chat takes it at its next turn; one it never
+  takes goes back into the message box.
 - **Details** (right) — chronological log of every tool call and result,
   thinking blocks, and iteration markers for the current session.
 - **Right panels** (optional, toggled via ⊟ / ± buttons) — color-coded diff

@@ -24,7 +24,9 @@ ask = fn question, options -> MyUI.ask(question, options) end   # returns the an
 ExAthena.run("add rate limiting to the login endpoint", [provider: :ollama] ++ opts)
 ```
 
-The web UI asks through the question card, the terminal UI through a popup. The removed modes return `{:error, {:removed_mode, mode, hint}}` from `ExAthena.run/2`:
+The web UI asks through the question card, the terminal UI through a popup.
+
+A message the person sends while the chat runs reaches it: the front end passes an `:inbox` function, and the loop takes each message at the start of its next turn (or as one more turn when the model has just stopped with text), never between a tool call and its result. The removed modes return `{:error, {:removed_mode, mode, hint}}` from `ExAthena.run/2`:
 
 - `:plan_and_solve` → start with phase `:plan`, and approve the plan.
 - `:reflexion` → the finish checks below stop a run from claiming done without proof.
