@@ -165,24 +165,24 @@ ollama serve &              # if not already running
 ollama pull llama3.1        # any model you like
 
 mix athena.chat
-mix athena.chat --model qwen2.5-coder:14b --mode plan_and_solve
+mix athena.chat --model qwen2.5-coder:14b --permission read_only
 ```
 
 Tokens stream in real time. A pinned status line at the bottom tracks the
-current model, runner mode, iteration count, token usage, and cost. Slash
+current model, permission level, iteration count, token usage, and cost. Slash
 commands switch state without restarting:
 
 | Command | What it does |
 |---|---|
 | `/model` | Live-list the current provider's models and pick one |
-| `/mode` | Switch between `react`, `plan_and_solve`, `reflexion` |
+| `/permissions` | Pick how much the chat may do: read only (plan), ask before edits, edit freely, trusted |
 | `/tools` | Show the tools the agent currently has access to |
 | `/clear` | Wipe conversation history (start a fresh thread) |
 | `/help` | Print the command reference |
 | `/exit` (or Ctrl-D) | Leave |
 
 Defaults: `:ollama` provider, the model in `config :ex_athena, :ollama, :model`,
-`:react` runner, every builtin tool, `permission_mode: :default`.
+`:react` runner, every builtin tool, Ask before edits.
 
 ## Try it: `mix athena.web`
 
@@ -194,7 +194,7 @@ mix athena.web --port 8080      # custom port
 mix athena.web --lan            # expose on your network, gated by a token
 ```
 
-The sidebar lets you switch provider, model, and mode without restarting. Features:
+The sidebar lets you switch provider, model, and what the chat may do without restarting. Features:
 
 | Feature | Description |
 |---|---|
@@ -290,7 +290,7 @@ Servers for other languages (`pyright-langserver`, `rust-analyzer`, `gopls`,
 `typescript-language-server`) are auto-detected on `PATH` when present.
 
 **Agent nesting** depth is capped by `config :ex_athena, max_agent_depth: 5`
-(orchestrate workers may delegate sub-agents up to this depth).
+(helpers may send helpers of their own up to this depth).
 
 **Workspace confinement** keeps tools inside a project. Opt in per run:
 

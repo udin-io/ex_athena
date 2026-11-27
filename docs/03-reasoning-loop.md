@@ -97,7 +97,7 @@ ExAthena.Loop.run("Add a PORT note to the README",
   max_concurrency: 4,
 
   # identity & events
-  mode: :react,                        # :react | :plan_and_solve | :reflexion | module
+  mode: :react,                        # :react | module
   session_id: nil,                     # auto-generated when omitted
   parent_session_id: nil,              # set for subagent runs
   on_event: fn ev -> send(host, {:athena, ev}) end
@@ -282,7 +282,7 @@ Everything a `:on_event` callback can receive ([`lib/ex_athena/loop/events.ex`](
 
 ## Where to go next
 
-- [04 · Modes](04-modes.md) — how ReAct / PlanAndSolve / Reflexion differ on top of this kernel.
+- [04 · The chat](04-modes.md) — the one chat on top of this kernel, and its permission levels.
 - [05 · State & termination](05-state-and-termination.md) — the data the kernel manipulates.
 - [12 · Compaction](12-compaction.md) — the pipeline triggered above.
 - [18 · End-to-end traces](18-end-to-end-traces.md) — see this flowchart play out on real turns.

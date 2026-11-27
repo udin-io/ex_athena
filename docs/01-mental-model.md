@@ -63,8 +63,6 @@ flowchart TD
 
   subgraph S [Strategy — per-turn control flow]
     ReAct[Modes.ReAct]
-    PaS[Modes.PlanAndSolve]
-    Refl[Modes.Reflexion]
   end
 
   subgraph D [Drivers — talk to the world]

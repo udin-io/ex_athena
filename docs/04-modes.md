@@ -1,55 +1,38 @@
-# 04 · Modes — Strategy
+# 04 · The chat and its permission levels
 
-> **What this answers:** how do `:react`, `:plan_and_solve`, `:reflexion` differ at the per-turn level? How would I write a custom mode?
-> **Audience:** consumers picking a mode; contributors writing one.
+> **What this answers:** how does the one chat decide how to work, what does each permission level let it do, and how would I write a custom mode?
+> **Audience:** consumers wiring up a chat; contributors writing a mode.
 
 ---
 
-## The mode plug-in
+## One chat, one setting
 
-```mermaid
-classDiagram
-  class Loop_Mode {
-    <<behaviour>>
-    +init(State) tuple
-    +iterate(State) tuple
-    +productivity_signal(prev, new) boolean
-  }
-  class Modes_ReAct {
-    +init/1
-    +iterate/1
-    +productivity_signal/2
-  }
-  class Modes_PlanAndSolve {
-    +init/1 — sets phase :planning
-    +iterate/1 — branches on phase
-  }
-  class Modes_Reflexion {
-    +init/1 — tracks reflections count
-    +iterate/1 — ReAct turn then critique
-  }
-  Loop_Mode <|.. Modes_ReAct
-  Loop_Mode <|.. Modes_PlanAndSolve
-  Loop_Mode <|.. Modes_Reflexion
-```
+ExAthena used to offer four modes: ReAct, Plan-and-Solve, Reflexion and Orchestrate. Each behaved differently, and none could do what another did mid-chat. Since issue 306 there is one chat, `ExAthena.Modes.ReAct`. The model decides how to work inside it: it writes a to-do list when a task has steps, sends a helper (`spawn_agent`) when a job is big or separate, and checks its work before it says done.
 
-The behaviour is tiny. See [`lib/ex_athena/loop/mode.ex`](../lib/ex_athena/loop/mode.ex). `iterate/1` returns one of three things and the kernel handles everything else (see [03 · Reasoning loop](03-reasoning-loop.md)).
+The one thing a person picks is how much the chat may do without asking. That is the run's `:phase` plus a `can_use_tool` callback, built for you by [`ExAthena.Chat.Permission`](../lib/ex_athena/chat/permission.ex):
+
+- **Read only (plan)** (`:read_only`, phase `:plan`): the chat looks around and changes nothing. It is told to call `plan_mode` with `action: "exit"` and its plan once it has one. The person approves the plan with edits asked or allowed, or tells it to keep planning.
+- **Ask before edits** (`:ask`, the default): every edit and every command that can change something asks Allow or Deny first.
+- **Edit freely** (`:edit`): edits run; commands that can change something still ask.
+- **Trusted** (`:trusted`, phase `:trusted`): everything runs.
+
+Reading and searching files, the to-do list, questions, `finish`, skills and helpers never ask. Below Trusted, every command, web fetch, web search and GitHub call asks, Read only included (where a command that fails the read-only test is refused outright), and the language server asks once per run. A helper is held to its parent's level, since it inherits the parent's phase and callback, and it cannot leave Read only on its own.
 
 ```elixir
-@callback init(State.t()) :: {:ok, State.t()} | {:error, term()}
-@callback iterate(State.t()) ::
-            {:continue, State.t()}        # keep looping
-            | {:halt, State.t()}          # stop; finish_reason must be set
-            | {:error, term()}            # abort; kernel wraps in :error_during_execution
-                                          #   (special: :error_prompt_too_long → reactive compact)
-@callback productivity_signal(State.t(), State.t()) :: boolean()  # optional
+ask = fn question, options -> MyUI.ask(question, options) end   # returns the answer text
+{_ref, opts} = Keyword.pop(ExAthena.Chat.Permission.run_opts(:read_only, ask), :level_ref)
+ExAthena.run("add rate limiting to the login endpoint", [provider: :ollama] ++ opts)
 ```
 
-`atom → module` resolution lives in [`Mode.resolve/1`](../lib/ex_athena/loop/mode.ex#L68): `:react`, `:plan_and_solve`, `:reflexion` map to the built-in modules; anything else is used verbatim, so you can pass `MyApp.MyMode` directly.
+The web UI asks through the question card, the terminal UI through a popup. The removed modes return `{:error, {:removed_mode, mode, hint}}` from `ExAthena.run/2`:
+
+- `:plan_and_solve` → start with phase `:plan`, and approve the plan.
+- `:reflexion` → the finish checks below stop a run from claiming done without proof.
+- `:orchestrate` → every chat can send helpers, under the same limits.
 
 ---
 
-## ReAct (default)
+## The chat (ReAct)
 
 ```mermaid
 stateDiagram-v2
@@ -61,8 +44,9 @@ stateDiagram-v2
   Acting --> Observing: extract == tool calls
   Observing: Permissions check<br/>PreToolUse hook<br/>Tool.execute<br/>PostToolUse hook
   Observing --> Thinking: append tool_results
-  NoTools: Append assistant text<br/>set finish_reason :stop
-  NoTools --> [*]
+  NoTools: Finish checks and open steps<br/>may add one more turn
+  NoTools --> Thinking: a check fired
+  NoTools --> [*]: stop
 ```
 
 Reference implementation in [`lib/ex_athena/modes/react.ex`](../lib/ex_athena/modes/react.ex). Highlights:
@@ -75,69 +59,7 @@ Reference implementation in [`lib/ex_athena/modes/react.ex`](../lib/ex_athena/mo
 - **Small models get a to-do list and no helpers** ([`ReAct.init/1`](../lib/ex_athena/modes/react.ex), [`ModelSize`](../lib/ex_athena/model_size.ex)). The size comes from the model's name or Ollama's `/api/show`. Below `chat.small_model_below_b` billion parameters the top-level chat drops `spawn_agent` and `read_worker_report` and adds a to-do note to the system prompt once; `chat.helpers` (`:auto | :on | :off`) overrides the helper half. A model of unknown size counts as large.
 - **A stop with open steps gets one more turn**: a top-level chat that stops while its own to-do list still has pending items is told to do the next one, once per request. A chat with no list, and a read-only chat, stop as asked.
 - **It checks its work before it says done** ([`Loop.FinishChecks`](../lib/ex_athena/loop/finish_checks.ex)). When a top-level chat stops after changing files, four checks read what its own tool calls and its helpers' reports did: a command ran, a test run passed, a test executed the changed files, and the work was compared with the person's latest message. Each missing check adds one note and one more turn, once per request, a resume included. Helpers are not checked, and `config :ex_athena, :chat, finish_checks: false` turns the checks off.
-
-Use ReAct when: you want the default. It's tuned to handle native and TextTagged tool calls, multiple providers, and parallel safety.
-
----
-
-## Plan-and-Solve
-
-```mermaid
-stateDiagram-v2
-  [*] --> Planning
-  Planning: mode_state.phase = :planning<br/>system prompt addendum<br/>tools withheld<br/>model produces plan text only
-  Planning --> Executing: first iteration completes
-  Executing: same as ReAct cycle
-  Executing --> [*]: finish_reason :stop or kernel cap
-```
-
-Reference: [`lib/ex_athena/modes/plan_and_solve.ex`](../lib/ex_athena/modes/plan_and_solve.ex).
-
-- **One forced planning turn** with no tools attached and a hardcoded planning addendum to the system prompt ([`plan_and_solve.ex:37`](../lib/ex_athena/modes/plan_and_solve.ex#L37)).
-- Subsequent turns fall through to the ReAct cycle.
-- `mode_state[:phase]` switches `:planning → :executing` after the first turn.
-
-Use Plan-and-Solve when: small / weak models that tend to take an action before reasoning, or tasks where you'd like an explicit plan in the message history for downstream review.
-
-Cross-link: [`guides/getting_started.md`](../guides/getting_started.md) covers wiring it up.
-
----
-
-## Reflexion
-
-```mermaid
-stateDiagram-v2
-  [*] --> Attempt
-  Attempt: ReAct iteration
-  Attempt --> Halted: ReAct returns :halt
-  Attempt --> Critique: ReAct returns :continue<br/>reflections < max
-  Attempt --> Continue: reflections >= max<br/>skip critique
-  Critique: Inject synthetic reflection prompt<br/>provider critiques last turn<br/>append critique to history<br/>++ reflections
-  Critique --> Attempt
-  Continue --> Attempt
-  Halted --> [*]
-```
-
-Reference: [`lib/ex_athena/modes/reflexion.ex`](../lib/ex_athena/modes/reflexion.ex).
-
-- Each ReAct turn is followed by a self-critique provider call (one extra inference per iteration).
-- Hard-capped at **3 reflections** ([`@hard_cap`](../lib/ex_athena/modes/reflexion.ex#L40)) — beyond that, the research shows degeneration-of-thought.
-- Configurable via `meta.max_reflections` (clamped to `@hard_cap`).
-- Roughly **3× cost** of bare ReAct — reserve for correctness-critical tasks.
-
-Use Reflexion when: structured extraction at the edge of a model's ability, fact-checking, or any flow where catching mistakes once costs less than a wrong final answer.
-
----
-
-## Decision matrix
-
-| Mode | Best for | Cost | Tools allowed turn 1? | Notes |
-|---|---|---|---|---|
-| `:react` | General coding agents, chat | 1× | Yes | Default. |
-| `:plan_and_solve` | Small models, plan-visible workflows | 1× (turn 1 cheap — no tools) | **No** | Forces a planning turn. |
-| `:reflexion` | Correctness-critical | ~3× | Yes | Hard cap of 3 reflections. |
-
-You can also pass a module: `mode: MyApp.CustomMode`.
+- **Helpers in every chat**: a top-level chat briefs each helper with an objective, the expected output, tool guidance and boundaries (missing parts get defaults), and appends the worker contract to its prompt. Helpers run one at a time, nest at most two deep, count against `max_agents_per_run`, and send back a summarised report. See [13 · Agents and subagents](13-agents-and-subagents.md).
 
 ---
 
@@ -194,5 +116,5 @@ The 200-line `ReAct` module is the reference — copy and modify.
 - **`mode_state` is yours**: anything mode-specific (phase, counters, intermediate plans) goes there. The kernel doesn't touch it.
 - **No tool-call termination**: convention is that `Modes.ReAct` sets `:stop` when `tool_calls == []`. Custom modes are free to halt on different signals (e.g. a plan was produced and you treat that as terminal).
 - **Provider errors → `{:error, …}`**: let the kernel wrap them as `:error_during_execution`. The one exception is "prompt too long" — return `{:error, :error_prompt_too_long}` so the kernel can attempt reactive compaction.
-- **Productivity signal is advisory**: if your mode's notion of "progress" differs (e.g. Reflexion considers a self-critique productive even with the same tool fingerprint), implement `productivity_signal/2` and the kernel will defer to you.
+- **Productivity signal is advisory**: if your mode's notion of "progress" differs (e.g. a mode that counts a review turn as progress even with the same tool fingerprint), implement `productivity_signal/2` and the kernel will defer to you.
 - **Hot-path discipline**: `iterate/1` runs in the caller's process. Heavy work (e.g. running a subagent) is fine but must complete before the next iteration starts. Async fan-out belongs in tools, not in the mode itself.
