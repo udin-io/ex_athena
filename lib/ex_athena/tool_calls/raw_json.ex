@@ -23,7 +23,9 @@ defmodule ExAthena.ToolCalls.RawJson do
 
   alias ExAthena.Messages.ToolCall
 
-  @fence_regex ~r/\A\s*```(?:json)?\s*\n(.*?)\n\s*```\s*\z/s
+  # One block only: the capture may not hold a fence line, or two blocks with
+  # prose between them would read as one call.
+  @fence_regex ~r/\A\s*```(?:json)?\s*\n((?:(?!\n\s*```).)*?)\n\s*```\s*\z/s
 
   @doc "Extract tool calls from assistant text. Always returns `{:ok, list}`."
   @spec parse(String.t()) :: {:ok, [ToolCall.t()]}
@@ -32,7 +34,13 @@ defmodule ExAthena.ToolCalls.RawJson do
     {:ok, scan_all(text, 0, [])}
   end
 
-  defp strip_markdown_fence(text) do
+  @doc """
+  The text inside one markdown code fence that wraps the whole of `text`
+  (` ```json ` or a bare ` ``` `), trimmed; `text` itself when it is not
+  wrapped that way.
+  """
+  @spec strip_markdown_fence(String.t()) :: String.t()
+  def strip_markdown_fence(text) do
     case Regex.run(@fence_regex, text, capture: :all_but_first) do
       [inner] -> String.trim(inner)
       nil -> text

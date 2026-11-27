@@ -26,6 +26,14 @@ ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A tool call sent as one fenced JSON block now runs**
+  ([#321](https://github.com/udin-io/ex_athena/issues/321)). qwen2.5-coder on
+  Ollama sends no native tool call; its whole answer is the call inside a
+  `` ```json `` fence. The rescue for calls written as text looked only for a
+  message starting with `{`, so each call read as a final answer and the chat
+  ended having done nothing. A fenced message that holds only the call is now
+  read as the call; prose that quotes one is still an answer.
+
 - **You can now see what a worker is writing while it writes**
   ([#311](https://github.com/udin-io/ex_athena/issues/311)). A worker's
   thinking and reply already reached the run's coordinator word by word, but

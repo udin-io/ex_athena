@@ -108,6 +108,9 @@ defmodule ExAthena.ToolCalls do
       text
       |> String.replace(~r/<think>.*?<\/think>/s, "")
       |> String.trim()
+      # qwen2.5-coder on Ollama sends its whole call as one ```json block
+      # (issue 321): the message is still the JSON, just fenced.
+      |> RawJson.strip_markdown_fence()
 
     String.starts_with?(stripped, ["{", "["]) and
       String.contains?(stripped, ~s("name")) and String.contains?(stripped, ~s("arguments"))
