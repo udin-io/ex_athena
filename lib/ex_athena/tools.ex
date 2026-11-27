@@ -39,6 +39,7 @@ defmodule ExAthena.Tools do
     ExAthena.Tools.PlanMode,
     ExAthena.Tools.SpawnAgent,
     ExAthena.Tools.ReadWorkerReport,
+    ExAthena.Tools.SetWorkingFolder,
     ExAthena.Tools.Lsp,
     ExAthena.Tools.Skill,
     ExAthena.Tools.Finish

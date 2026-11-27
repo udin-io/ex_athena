@@ -201,7 +201,7 @@ defmodule ExAthena.Modes.Orchestrate do
   # names a tool the orchestrator does not have, which is what happened in
   # session 66f4204cd532: two unknown-tool errors, then the work done from
   # the one-line descriptions (#247).
-  @orchestrator_tools ~w(todo_write spawn_agent finish ask_user read_worker_report skill)
+  @orchestrator_tools ~w(todo_write spawn_agent finish ask_user read_worker_report skill set_working_folder)
 
   # Exploration during planning is bounded — after this many planning turns
   # the runtime forces the transition to execution with what is known.

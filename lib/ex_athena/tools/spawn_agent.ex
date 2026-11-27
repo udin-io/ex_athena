@@ -25,10 +25,13 @@ defmodule ExAthena.Tools.SpawnAgent do
     * `max_iterations` (optional, default 25, floored UP to 25) — worker loop budget.
     * `system_prompt` (optional) — system prompt override for the sub-agent.
 
-  Workers ALWAYS run in the parent's working directory — there is no
-  model-facing cwd arg (models passed junk paths and workers explored the
-  wrong project). Hosts may still override via
-  `ctx.assigns[:spawn_agent_opts][:cwd]`.
+  Workers run in the parent's working directory — there is no model-facing
+  cwd arg (models passed junk paths and workers explored the wrong project).
+  Hosts may override via `ctx.assigns[:spawn_agent_opts][:cwd]`. An
+  orchestrator that made a git worktree names it once with
+  `ExAthena.Tools.SetWorkingFolder`, which accepts only a worktree of the
+  parent's repo inside the confinement roots (`ExAthena.Agents.RunFolder`);
+  every worker after that starts there.
 
   Inherits the parent's provider / model / permissions unless overridden in
   `ctx.assigns[:spawn_agent_opts]`.
@@ -58,6 +61,7 @@ defmodule ExAthena.Tools.SpawnAgent do
     Deadline,
     Journal,
     Quota,
+    RunFolder,
     Sidechain,
     Summariser,
     Transcript,
@@ -451,7 +455,6 @@ defmodule ExAthena.Tools.SpawnAgent do
   defp do_execute(args, prompt, ctx, deadline, timeout, {agent_def, base_opts}) do
     now = System.monotonic_time(:millisecond)
     wait_counter = Deadline.new_counter()
-    prompt = compose_worker_prompt(prompt, args, ctx.cwd)
 
     sub_id = "subagent_" <> (:crypto.strong_rand_bytes(6) |> Base.url_encode64(padding: false))
 
@@ -488,6 +491,9 @@ defmodule ExAthena.Tools.SpawnAgent do
     # sub-loop so the sub-loop's `:cwd` becomes the worktree path. Falls back
     # to the parent's cwd transparently if any safety check fails.
     {sub_opts, isolation_info} = apply_isolation(agent_def, sub_opts, ctx)
+
+    # After isolation, so the brief names the folder the worker really starts in.
+    prompt = compose_worker_prompt(prompt, args, Keyword.fetch!(sub_opts, :cwd))
 
     # After isolation, so the journal stats the directory the worker really
     # runs in; the FILE stays under our cwd, because a worktree worker's own
@@ -1165,8 +1171,10 @@ defmodule ExAthena.Tools.SpawnAgent do
         "#{f |> String.replace("_", " ") |> String.capitalize()}: #{v}"
       end)
 
-    # Pin the worker to the parent's project explicitly — paths in the brief
-    # are relative to it, and the worker must never wander elsewhere.
+    # Pin the worker to the folder it really starts in — paths in the brief
+    # are relative to it, and the worker must never wander elsewhere. That is
+    # the run's named folder when the orchestrator set one, so the brief never
+    # names a second place.
     brief = append_cwd_line(brief, cwd)
 
     composed =
@@ -1562,7 +1570,9 @@ defmodule ExAthena.Tools.SpawnAgent do
       end
 
     selected
-    |> Enum.reject(&(&1 in ["plan_mode", "spawn_agent", "read_worker_report"]))
+    |> Enum.reject(
+      &(&1 in ["plan_mode", "spawn_agent", "read_worker_report", "set_working_folder"])
+    )
     |> Enum.filter(&MapSet.member?(known, &1))
     |> maybe_grant("todo_write", true)
     |> maybe_grant("spawn_agent", child_can_nest?)
@@ -1590,10 +1600,12 @@ defmodule ExAthena.Tools.SpawnAgent do
     # Workers ALWAYS run in the parent's project directory. A model-facing
     # cwd arg used to exist here — live testing showed models passing junk
     # paths and workers exploring the wrong project entirely. Host-level
-    # overrides via spawn_agent_opts[:cwd] still win (put_new below).
+    # overrides via spawn_agent_opts[:cwd] still win (put_new below), then the
+    # folder the orchestrator named with `set_working_folder` (validated against
+    # `git worktree list`), then the parent's own.
     base_opts =
       (ctx.assigns[:spawn_agent_opts] || [])
-      |> Keyword.put_new(:cwd, ctx.cwd)
+      |> Keyword.put_new_lazy(:cwd, fn -> RunFolder.get(ctx.assigns) || ctx.cwd end)
 
     case Map.get(args, "agent") do
       nil ->
