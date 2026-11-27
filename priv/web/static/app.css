@@ -2310,6 +2310,17 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 
 .ov-agent-prompt { font-size: 12px; color: var(--muted); }
 .ov-agent-action { font-size: 12px; color: var(--accent); }
+.ov-agent-live {
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 
 .ov-todos { display: flex; flex-direction: column; gap: 2px; }
 

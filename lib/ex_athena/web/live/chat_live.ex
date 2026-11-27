@@ -3,6 +3,7 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   alias ExAthena.Messages
   alias ExAthena.Messages.ContentPart
+  alias ExAthena.Orchestrator.AgentInfo
   alias ExAthena.Web.FileLinks
   alias ExAthena.Web.Markdown
   alias ExAthena.Web.Sessions
@@ -145,7 +146,7 @@ defmodule ExAthena.Web.Live.ChatLive do
         # Agent id (as string) whose focus view is open in Overview; nil = tree.
         overview_focus: nil,
         # Expanded Overview sections ("task:<id>", "transcript:<agent>").
-        # Server-owned: the 100 ms snapshot patches would strip a native
+        # Server-owned: the 250 ms snapshot patches would strip a native
         # <details open> the user toggled client-side.
         ov_expanded: MapSet.new(),
         # Expanded chat thinking blocks (keyed by detail entry id) — same
@@ -1187,7 +1188,7 @@ defmodule ExAthena.Web.Live.ChatLive do
     end
   end
 
-  # Batched orchestration snapshots (≤ ~10/s) from the run's coordinator.
+  # Batched orchestration snapshots (≤ ~4/s) from the run's coordinator.
   # Scoped to the current run — late updates from a previous run are dropped.
   def handle_info({:orchestrator_update, sid, snapshot}, socket) do
     if sid == socket.assigns.orchestrator_sid do
@@ -2782,8 +2783,12 @@ defmodule ExAthena.Web.Live.ChatLive do
   # and what it's doing right now — with any sub-agents IT spawned nested and
   # indented below. Deliberately minimal: no result/sub-todo detail here, that
   # lives in the click-through agent_focus view.
-  defp agent_tree_node(assigns) do
-    assigns = assign(assigns, :children, Map.get(assigns.by_parent, assigns.agent.id, []))
+  @doc false
+  def agent_tree_node(assigns) do
+    assigns =
+      assigns
+      |> assign(:children, Map.get(assigns.by_parent, assigns.agent.id, []))
+      |> assign(:live_text, AgentInfo.live_text(assigns.agent))
 
     ~H"""
     <div class="ov-task-worker">
@@ -2800,6 +2805,7 @@ defmodule ExAthena.Web.Live.ChatLive do
       </div>
 
       <div :if={@agent.current_action} class="ov-agent-action">⚡ {@agent.current_action}</div>
+      <div :if={@live_text} class="ov-agent-live">{@live_text}</div>
 
       <div :if={@children != []} class="ov-agent-children">
         <.agent_tree_node :for={child <- @children} agent={child} by_parent={@by_parent} />
@@ -3458,7 +3464,7 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   Prefers the coordinator's own state over this LiveView's assign, then applies
   the run's `Result` to close it out. The assign is only ever as fresh as the
-  last batched `{:orchestrator_update, _, _}`, and that 100 ms flush loses the
+  last batched `{:orchestrator_update, _, _}`, and that 250 ms flush loses the
   race against the completion save below — so the terminal snapshot never
   reached disk and a reopened session showed a finished run still running.
   """
@@ -3938,7 +3944,7 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   # GPU gate pressure for the Overview header. Computed on coordinator
-  # updates (≤ ~10/s) — never inside render.
+  # updates (≤ ~4/s) — never inside render.
   defp gpu_stats(provider) when is_binary(provider) do
     atom = safe_atom(provider, :llamacpp)
 

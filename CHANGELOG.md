@@ -7,6 +7,19 @@ ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Fixed
+
+- **You can now see what a worker is writing while it writes**
+  ([#311](https://github.com/udin-io/ex_athena/issues/311)). A worker's
+  thinking and reply already reached the run's coordinator word by word, but
+  the Overview's agent tree showed only "thinking…" or the tool name, and the
+  text appeared only after you opened the worker and its turn had ended. Each
+  running worker now shows the last 200 characters of what it is writing under
+  its name, and its status reads "writing…" while it replies. The coordinator
+  now batches updates every 250 ms instead of 100 ms, so a streaming local
+  model sends the browser about 4 updates a second, not 10. What a worker runs
+  and reports does not change.
+
 ### Changed
 
 - **A worker has no total-token cap unless you set one**
