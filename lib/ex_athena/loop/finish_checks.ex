@@ -82,6 +82,13 @@ defmodule ExAthena.Loop.FinishChecks do
   end
 
   @doc """
+  The checks' in-run flags cleared, so each check may fire again. The loop
+  calls it when the person sends a message mid-run, since the request grew.
+  """
+  @spec rearm(map()) :: map()
+  def rearm(mode_state), do: Map.drop(mode_state, Map.keys(@gate_names))
+
+  @doc """
   Deliver a runtime note while keeping the transcript valid.
 
   When the last assistant turn made tool calls (e.g. `finish`), the note is the
@@ -223,8 +230,10 @@ defmodule ExAthena.Loop.FinishChecks do
       tested?: tested?,
       test_runs: test_runs,
       # Checks this session has already fired, in this run or an earlier one.
-      fired: fired_gates(messages),
-      request: request,
+      # Only notes since the person last wrote: a message sent mid-run (issue
+      # 323) can add to the request, so a check already met may be owed again.
+      fired: fired_gates(since_latest_person_message(messages)),
+      request: Enum.join([request | List.wrap(state.meta[:later_requests])], "\n\nThen: "),
       # Only asked once tests are green: before that, checks 1 and 2 own the
       # conversation and a coverage demand would be noise on top of them.
       uncovered: if(tested?, do: uncovered(source_changed, transcript, state.ctx.cwd), else: [])
@@ -256,6 +265,13 @@ defmodule ExAthena.Loop.FinishChecks do
     |> Enum.flat_map(&(&1.tool_results || []))
     |> Enum.filter(&MapSet.member?(spawn_ids, &1.tool_call_id))
     |> Enum.map_join("\n", &to_string(&1.content || ""))
+  end
+
+  defp since_latest_person_message(messages) do
+    case latest_request_index(messages) do
+      nil -> messages
+      i -> Enum.drop(messages, i)
+    end
   end
 
   defp scope(%State{messages: messages} = state) do

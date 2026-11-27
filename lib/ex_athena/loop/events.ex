@@ -33,6 +33,9 @@ defmodule ExAthena.Loop.Events do
       the `{:ok, %{llm:, ui:}}` shape; the LLM-facing string still
       flows through `:tool_result`.
     * `{:iteration, n}` — a new iteration is starting.
+    * `{:user_message_taken, text}` — a message the person sent while the
+      run was going joined the chat as their next turn (the `:inbox` option
+      of `ExAthena.Loop.run/2`).
     * `{:compaction, %{before:, after:, reason:}}` — context compacted.
     * `{:max_tokens_escalation, %{from:, to:, output_tokens:,
       reasoning_tokens:}}` — the previous turn was output-starved (the
@@ -88,6 +91,7 @@ defmodule ExAthena.Loop.Events do
                required(:payload) => map()
              }}
           | {:iteration, non_neg_integer()}
+          | {:user_message_taken, String.t()}
           | {:compaction,
              %{
                required(:before) => integer(),
