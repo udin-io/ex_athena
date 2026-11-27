@@ -426,12 +426,20 @@ defmodule ExAthena.Modes.ReActFinishChecksTest do
       test_pid = self()
 
       worker = fn request ->
-        brief = request.messages |> List.first() |> Map.get(:content) |> to_string()
-        tag = if brief =~ "routes", do: :routes, else: :tests
-        send(test_pid, {:start, tag})
-        Process.sleep(50)
-        send(test_pid, {:end, tag})
-        says("Found it.")
+        prompt = to_string(request.system_prompt)
+
+        # A test elsewhere may switch the report summariser on, and it asks
+        # the same mock; only the helpers' own turns are counted.
+        if prompt =~ "transcript of an agent's run" or prompt =~ "summaries of consecutive" do
+          says("Summary.")
+        else
+          brief = Enum.map_join(request.messages, "\n", &to_string(&1.content))
+          tag = if brief =~ "routes", do: :routes, else: :tests
+          send(test_pid, {:start, tag})
+          Process.sleep(50)
+          send(test_pid, {:end, tag})
+          says("Found it.")
+        end
       end
 
       assert {:ok, _} =
