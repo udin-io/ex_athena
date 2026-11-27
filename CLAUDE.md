@@ -133,14 +133,31 @@ faults that repeat when the work is re-issued.
 
 ## Adding a builtin tool
 
-Two edits, and the second is easy to forget:
+Three edits, and the last two are easy to forget:
 
 1. The module, implementing `ExAthena.Tool`.
 2. `@builtins` in `lib/ex_athena/tools.ex`.
+3. Its place in `ExAthena.Chat.Permission`. A tool that is not in
+   `Permissions.readonly_tools/0` or the never-ask list asks the person at
+   every level below Trusted. A tool in `readonly_tools/0` never asks, so one
+   that reaches the network, runs code or starts a process also goes in
+   `@ask_always` there: `web_fetch`, `web_search`, `gh` and `lsp` sit there
+   for that reason (issue 322).
 
-If the tool is orchestrator-scoped, also add it to the reject list AND a
-`maybe_grant/3` line in `SpawnAgent.resolve_tools/3` — otherwise every worker
-inherits it from the default ceiling and carries it as dead schema.
+If the tool is only for a parent that sends helpers, also add it to the
+reject list AND a `maybe_grant/3` line in `SpawnAgent.resolve_tools/3` —
+otherwise every worker inherits it from the default ceiling and carries it as
+dead schema.
+
+## The read-only command check is a backstop, not a gate
+
+`ExAthena.Tools.Bash.read_only_command?/1` reads a command's words, and the
+shell builds words it cannot see. Four review rounds on issue 322 each found a
+new way past it (a flag split by quotes, `$X`, `{a,b}`, a shortened long
+flag). So the read-only phase refuses what fails it, and the chat's levels
+still ask before every command below Trusted. Never make a command run without
+an approval because it passes this check; extend the check when a new form
+turns up, with a test per form in `test/ex_athena/permissions_test.exs`.
 
 ## Gemini does not go straight through req_llm
 
