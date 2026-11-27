@@ -281,10 +281,25 @@ defmodule ExAthena.Orchestrator.CoordinatorTest do
       Coordinator.notify(pid, :main, {:iteration, 1})
       Coordinator.notify(pid, :main, {:iteration, 2})
 
-      # Both notifies fold into ONE batched update (100 ms flush).
+      # Both notifies fold into ONE batched update (250 ms flush).
       assert_receive {:orchestrator_update, ^sid, update}, 1_000
       assert update.main.iteration == 2
       refute_received {:orchestrator_update, ^sid, _}
+
+      GenServer.stop(pid)
+    end
+
+    test "a burst of streamed words reaches a subscriber at most every 250 ms" do
+      sid = unique_sid()
+      {:ok, pid} = Coordinator.start_for(sid)
+      {:ok, _} = Coordinator.subscribe(sid, self())
+
+      Coordinator.notify(pid, "w1", {:content, "one "})
+      refute_receive {:orchestrator_update, ^sid, _}, 150
+
+      Coordinator.notify(pid, "w1", {:content, "two"})
+      assert_receive {:orchestrator_update, ^sid, update}, 1_000
+      assert [%{transcript_tail: [{:content, "one two"}]}] = update.agents
 
       GenServer.stop(pid)
     end

@@ -310,4 +310,61 @@ defmodule ExAthena.Orchestrator.AgentInfoTest do
       assert hd(info.todos).status == :completed
     end
   end
+
+  describe "live_text/1" do
+    test "shows the end of the reply a running worker is writing" do
+      info =
+        Enum.reduce(["alpha ", "beta ", "gamma"], new(), fn chunk, acc ->
+          AgentInfo.apply_event(acc, {:content, chunk})
+        end)
+
+      assert AgentInfo.live_text(info) == "alpha beta gamma"
+      assert info.current_action == "writing…"
+    end
+
+    test "shows thinking while the model is still thinking" do
+      info = AgentInfo.apply_event(new(), {:thinking, "reading the file first"})
+      assert AgentInfo.live_text(info) == "reading the file first"
+    end
+
+    test "keeps only the last 200 characters" do
+      info = AgentInfo.apply_event(new(), {:content, String.duplicate("a", 500) <> "END"})
+      text = AgentInfo.live_text(info)
+      assert String.length(text) == 200
+      assert String.ends_with?(text, "END")
+    end
+
+    test "keeps following the newest text after the transcript row hits its cap" do
+      info =
+        Enum.reduce(1..500, new(), fn i, acc ->
+          AgentInfo.apply_event(acc, {:content, "word#{i} "})
+        end)
+
+      # about 3,400 characters in the row so far; push well past the 4,000 cap
+      info =
+        Enum.reduce(501..900, info, fn i, acc ->
+          AgentInfo.apply_event(acc, {:content, "word#{i} "})
+        end)
+
+      assert AgentInfo.live_text(info) =~ "word900"
+    end
+
+    test "is nil after a tool call, with no text yet, and once the worker has finished" do
+      assert AgentInfo.live_text(new()) == nil
+
+      info = AgentInfo.apply_event(new(), {:content, "plan"})
+
+      with_tool =
+        AgentInfo.apply_event(
+          info,
+          {:tool_call, %ToolCall{id: "1", name: "read", arguments: %{}}}
+        )
+
+      assert AgentInfo.live_text(with_tool) == nil
+
+      assert AgentInfo.live_text(
+               AgentInfo.apply_event(info, {:done, %ExAthena.Result{finish_reason: :stop}})
+             ) == nil
+    end
+  end
 end

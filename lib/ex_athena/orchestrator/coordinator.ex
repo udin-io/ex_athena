@@ -25,7 +25,7 @@ defmodule ExAthena.Orchestrator.Coordinator do
   `{:orchestrator_update, session_id, snapshot}` via plain `send/2`
   (Phoenix.PubSub only exists under `mix athena.web`; send keeps the
   coordinator host-agnostic). Event ingest marks the state dirty and
-  arms a 100 ms flush timer — hosts see at most ~10 snapshots/s no matter
+  arms a 250 ms flush timer — hosts see at most ~4 snapshots/s no matter
   how fast deltas arrive (per-delta fan-out freezes LiveView sockets).
 
   ## Run lifecycle
@@ -41,7 +41,7 @@ defmodule ExAthena.Orchestrator.Coordinator do
   alias ExAthena.Orchestrator.AgentInfo
   alias ExAthena.Result
 
-  @flush_ms 100
+  @flush_ms 250
   @default_retention_ms 5 * 60 * 1000
   @registry ExAthena.Orchestrator.Registry
   @supervisor ExAthena.Orchestrator.Supervisor
