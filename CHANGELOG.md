@@ -44,6 +44,18 @@ minor version. Nobody has published it yet.
 
 ### Added
 
+- **A message you send while the chat runs reaches it**
+  ([#323](https://github.com/udin-io/ex_athena/issues/323)). The web UI
+  dropped a message typed during a run, and the terminal UI ignored Enter
+  until the run ended, so the only way to correct a chat heading the wrong way
+  was to stop it. Now the message shows as waiting, and joins the chat as your
+  next turn when the chat finishes the step it is on. One that lands as the
+  chat stops gives it one more turn, and one the run never took goes back into
+  the message box. A message sent mid-run joins the request the finish checks
+  read, so they may ask again and the audit quotes it. From code, pass
+  `ExAthena.run/2` an `:inbox` function; the loop emits
+  `{:user_message_taken, text}` for each message it takes.
+
 - **An orchestrator can name the folder its workers start in**
   ([#309](https://github.com/udin-io/ex_athena/issues/309)). When the
   orchestrator made a git worktree with `git worktree add`, ExAthena never knew:

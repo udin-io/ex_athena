@@ -299,6 +299,11 @@ defmodule ExAthena.Web.Layouts do
                 this.handleEvent("focus-chat-input", () => {
                   setTimeout(() => this.el.focus(), 0)
                 })
+                // A message the run never took comes back to the composer.
+                this.handleEvent("restore-chat-input", ({text}) => {
+                  this.el.value = this.el.value ? text + "\n\n" + this.el.value : text
+                  setTimeout(() => this.el.focus(), 0)
+                })
               }
             },
 

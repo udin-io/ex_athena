@@ -221,6 +221,7 @@ defmodule ExAthena.Web.Live.ChatLive do
           awaiting_question: snap.awaiting_question,
           pending_assistant_msg_id: snap.pending_assistant_msg_id
         )
+        |> show_waiting(Map.get(snap, :waiting_messages, []))
         |> replay_run_events(snap)
         |> resubscribe_coordinator(snap.run_sid)
         # The autosave timer died with the previous LiveView pid — restart it
@@ -507,12 +508,20 @@ defmodule ExAthena.Web.Live.ChatLive do
 
     cond do
       # A run is paused on an `ask_user` question — route this as the answer
-      # back into the blocked tool instead of starting a new run.
-      socket.assigns.awaiting_question != nil and text != "" ->
+      # back into the blocked tool instead of starting a new run. An approval
+      # is answered only by its buttons: text typed while one waits is a
+      # message for the chat, never an "Allow".
+      socket.assigns.awaiting_question != nil and text != "" and
+          not approval?(socket.assigns.awaiting_question) ->
         socket |> follow_new_output() |> answer_question(text)
 
       text == "" and socket.assigns.pending_images == [] ->
         {:noreply, socket}
+
+      # A message typed while the chat runs reaches the run (issue 323): it
+      # shows as waiting until the run takes it at its next turn.
+      socket.assigns.streaming and text != "" ->
+        {:noreply, queue_message(socket, text)}
 
       socket.assigns.streaming ->
         {:noreply, socket}
@@ -1213,6 +1222,20 @@ defmodule ExAthena.Web.Live.ChatLive do
      |> assign(awaiting_question: question, current_action: nil)
      |> update(:details_stream, &[detail | &1])
      |> push_event("focus-chat-input", %{})}
+  end
+
+  # Messages the run never took (or took, then lost to a Stop): off the
+  # thread, back into the composer.
+  def handle_info({:athena_unsent, texts}, socket) do
+    messages =
+      Enum.reject(socket.assigns.messages, fn m ->
+        Map.get(m, :waiting) == true or (Map.get(m, :mid_run) == true and m.text in texts)
+      end)
+
+    {:noreply,
+     socket
+     |> assign(messages: messages)
+     |> push_event("restore-chat-input", %{text: Enum.join(texts, "\n\n")})}
   end
 
   def handle_info({:athena_done, _result}, %{assigns: %{streaming: false}} = socket),
@@ -1954,7 +1977,7 @@ defmodule ExAthena.Web.Live.ChatLive do
               class="input-textarea"
               name="text"
               placeholder={input_placeholder(@cwd, @awaiting_question)}
-              disabled={(@streaming and is_nil(@awaiting_question)) or is_nil(@cwd)}
+              disabled={is_nil(@cwd)}
               phx-hook="SubmitOnEnter"
             ></textarea>
             <button
@@ -2252,8 +2275,13 @@ defmodule ExAthena.Web.Live.ChatLive do
     assigns = assign(assigns, :msg_images, Map.get(assigns.msg, :images, []))
 
     ~H"""
-    <div class="msg msg--user">
-      <div class="msg-role">you</div>
+    <div class={["msg msg--user", Map.get(@msg, :waiting) && "msg--waiting"]}>
+      <div class="msg-role">
+        you
+        <span :if={Map.get(@msg, :waiting)} class="msg-waiting">
+          waiting for the chat to finish its step
+        </span>
+      </div>
       <%= if @msg_images != [] do %>
         <div class="msg-images">
           <img :for={src <- @msg_images} src={src} class="msg-image" alt="attached image" />
@@ -3075,6 +3103,10 @@ defmodule ExAthena.Web.Live.ChatLive do
     |> update(:details_stream, &[detail | &1])
   end
 
+  def apply_event(socket, {:user_message_taken, text}) do
+    update(socket, :messages, &mark_taken(&1, text))
+  end
+
   def apply_event(socket, _other), do: socket
 
   # ---------------------------------------------------------------------------
@@ -3250,6 +3282,65 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   defp follow_plan_approval(socket, _question, _answer), do: socket
 
+  defp approval?(%{kind: kind}) when kind in [:approval, :plan_approval], do: true
+  defp approval?(_question), do: false
+
+  defp queue_message(socket, text) do
+    case ExAthena.Web.RunServer.push_message(socket.assigns.session_id, text) do
+      :ok ->
+        msg = %{
+          id: unique_id(),
+          role: :user,
+          text: text,
+          images: [],
+          tool_events: [],
+          status: nil,
+          waiting: true,
+          mid_run: true
+        }
+
+        update(socket, :messages, &(&1 ++ [msg]))
+
+      {:error, :full} ->
+        push_event(socket, "restore-chat-input", %{text: text})
+
+      # The run ended between the keystroke and the push: give the text back.
+      {:error, :not_running} ->
+        push_event(socket, "restore-chat-input", %{text: text})
+    end
+  end
+
+  # The oldest waiting message with this text is the one the run took.
+  # After a reconnect, the messages the run has not taken yet show as waiting.
+  defp show_waiting(socket, []), do: socket
+
+  defp show_waiting(socket, texts) do
+    shown = for %{waiting: true, text: t} <- socket.assigns.messages, do: t
+
+    waiting =
+      Enum.map(texts -- shown, fn text ->
+        %{
+          id: unique_id(),
+          role: :user,
+          text: text,
+          images: [],
+          tool_events: [],
+          status: nil,
+          waiting: true,
+          mid_run: true
+        }
+      end)
+
+    update(socket, :messages, &(&1 ++ waiting))
+  end
+
+  defp mark_taken(messages, text) do
+    case Enum.find_index(messages, &(Map.get(&1, :waiting) == true and &1.text == text)) do
+      nil -> messages
+      i -> List.update_at(messages, i, &Map.delete(&1, :waiting))
+    end
+  end
+
   # Open folder and the signed root that /files/download and /files/preview
   # accept for it (issue #269). One function, so a future caller that sets the
   # cwd cannot leave the links pointing at the previous project.
@@ -3395,7 +3486,8 @@ defmodule ExAthena.Web.Live.ChatLive do
       permission: a.permission,
       created_at: a.session_created_at,
       updated_at: DateTime.utc_now(),
-      display_messages: a.messages,
+      # A message still waiting is not sent yet; the file never says it was.
+      display_messages: Enum.reject(a.messages, &(Map.get(&1, :waiting) == true)),
       ex_messages: a.ex_messages,
       provider_session_id: a.provider_session_id,
       tool_uis: a.tool_uis,

@@ -150,6 +150,8 @@ others.
 - **Messages** (left, flex height) — streaming assistant text, tool-call blocks with inline output previews.
 - **Details** (right pane) — Timeline tab shows the full tool argument / result for every call; Changes tab shows `git diff HEAD` refreshed after each tool result.
 - **Input** — multiline textarea. `Enter` sends; `Shift+Enter` inserts a newline.
+  While the chat runs, `Enter` queues the message for its next turn; a message
+  it never takes goes back into the box when the run ends.
 - **Footer** — context-sensitive keyboard hints.
 
 ## Model and permission pickers

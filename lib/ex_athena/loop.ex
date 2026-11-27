@@ -74,6 +74,13 @@ defmodule ExAthena.Loop do
       tool execution.
     * `:max_concurrency` (default 4) — `Task.async_stream` concurrency
       cap for parallel-safe tool calls in a single iteration.
+    * `:inbox` — a zero-arity function returning the texts the person sent
+      while the run was going, oldest first, and forgetting them. The loop
+      calls it at the start of each turn and once more when the model stops
+      with text: each text joins the chat as the person's next turn and emits
+      `{:user_message_taken, text}`, and one taken at the stop gives the run
+      one more turn. It is never called between a tool call and its result,
+      and helpers get none.
     * `:on_event` — `(ExAthena.Loop.Events.t -> term)` callback for
       streaming. Events are flat tuples (`{:content, text}`,
       `{:tool_call, tc}`, `{:tool_result, tr}`, `{:iteration, n}`,
@@ -211,6 +218,8 @@ defmodule ExAthena.Loop do
   defp iterate(%State{} = state) do
     Events.emit(state.on_event, {:iteration, state.iterations})
 
+    # The inbox is read only once the turn will run: a hook halt leaves its
+    # messages there, for the front end to hand back.
     case run_pre_iteration_hook(state) do
       {:halt, reason} ->
         state
@@ -218,13 +227,15 @@ defmodule ExAthena.Loop do
         |> set_finish_reason(:error_halted)
 
       {:ok, state} ->
+        state = take_inbox(state)
+
         case state.mode.iterate(state) do
           {:continue, new_state} ->
             new_state = update_progress_tracking(state, new_state)
             loop(%{new_state | iterations: new_state.iterations + 1})
 
           {:halt, new_state} ->
-            new_state
+            continue_on_inbox(new_state)
 
           {:error, :error_prompt_too_long} ->
             handle_prompt_too_long(state)
@@ -241,6 +252,59 @@ defmodule ExAthena.Loop do
             |> set_finish_reason(:error_during_execution)
         end
     end
+  end
+
+  # ── Messages sent while the run goes (issue 323) ─────────────────
+
+  # A message that lands as the chat stops with text starts one more turn,
+  # when the run has one left. After a `finish` or an error the message stays
+  # in the inbox, for the front end to send again.
+  defp continue_on_inbox(%State{} = state) do
+    with :stop <- state.meta[:finish_reason],
+         true <- turn_left?(state),
+         [_ | _] = taken <- drain_inbox(state) do
+      state =
+        state
+        |> append_person_messages(taken)
+        |> Map.update!(:meta, &Map.delete(&1, :finish_reason))
+
+      loop(%{state | iterations: state.iterations + 1})
+    else
+      _ -> state
+    end
+  end
+
+  defp turn_left?(%State{max_iterations: max, iterations: n}),
+    do: not (is_integer(max) and n + 1 >= max)
+
+  defp take_inbox(%State{} = state) do
+    case drain_inbox(state) do
+      [] -> state
+      taken -> append_person_messages(state, taken)
+    end
+  end
+
+  defp drain_inbox(%State{meta: %{inbox: inbox}}) when is_function(inbox, 0) do
+    inbox.()
+    |> List.wrap()
+    |> Enum.filter(&(is_binary(&1) and String.trim(&1) != ""))
+  end
+
+  defp drain_inbox(_state), do: []
+
+  # Each text joins as the person's own turn, and the finish checks treat it
+  # as part of the request: they may ask again, and the audit quotes it.
+  defp append_person_messages(%State{} = state, texts) do
+    Enum.reduce(texts, state, fn text, acc ->
+      Events.emit(acc.on_event, {:user_message_taken, text})
+
+      %{
+        acc
+        | messages: acc.messages ++ [ExAthena.Messages.user(text)],
+          meta: Map.update(acc.meta, :later_requests, [text], &(&1 ++ [text])),
+          mode_state: ExAthena.Loop.FinishChecks.rearm(acc.mode_state || %{})
+      }
+    end)
   end
 
   # The window the provider reports, or nil. Only a window the provider
@@ -298,7 +362,7 @@ defmodule ExAthena.Loop do
               loop(%{new_state | iterations: new_state.iterations + 1})
 
             {:halt, new_state} ->
-              new_state
+              continue_on_inbox(new_state)
 
             {:error, _reason} ->
               state |> set_finish_reason(:error_prompt_too_long)
@@ -347,7 +411,7 @@ defmodule ExAthena.Loop do
             loop(%{new_state | iterations: new_state.iterations + 1})
 
           {:halt, new_state} ->
-            new_state
+            continue_on_inbox(new_state)
 
           {:error, {:error_thinking_starved, info2, %State{} = folded_state}} ->
             terminate_thinking_starved(folded_state, Map.put(info2, :escalated_cap, new_cap))
@@ -987,6 +1051,7 @@ defmodule ExAthena.Loop do
           # The message this run answers, so the chat's finish checks scope to
           # it and never to a message a hook added (see Loop.FinishChecks).
           |> Map.put(:request_message, request_message)
+          |> Map.put(:inbox, inbox_opt(opts, parent_session_id))
       }
 
       _ =
@@ -1059,6 +1124,16 @@ defmodule ExAthena.Loop do
       assigns
     end
   end
+
+  # Helpers get no inbox: a message is for the chat the person talks to.
+  defp inbox_opt(opts, nil) do
+    case Keyword.get(opts, :inbox) do
+      fun when is_function(fun, 0) -> fun
+      _ -> nil
+    end
+  end
+
+  defp inbox_opt(_opts, _parent), do: nil
 
   defp validate_mode({:error, _} = removed), do: removed
   defp validate_mode(_mode), do: :ok

@@ -44,6 +44,10 @@ defmodule ExAthena.Web.RunServer do
   @registry ExAthena.Web.RunRegistry
   @supervisor ExAthena.Web.RunSupervisor
 
+  # Messages may wait while a run goes; past this many the next one goes back
+  # to the composer.
+  @max_waiting_messages 20
+
   # Keep the finished server alive briefly so a reconnect landing right after
   # completion can still see the (non-streaming) snapshot before it retires.
   @grace_ms 60_000
@@ -155,6 +159,20 @@ defmodule ExAthena.Web.RunServer do
     end
   end
 
+  @doc """
+  Queue a message the person sent while the run goes (issue 323). The run
+  takes it at its next turn and emits `{:user_message_taken, text}`; any
+  message still queued when the run ends comes back as
+  `{:athena_unsent, texts}`, so the composer can offer it again.
+  """
+  @spec push_message(String.t(), String.t()) :: :ok | {:error, :not_running | :full}
+  def push_message(session_id, text) when is_binary(text) do
+    case whereis(session_id) do
+      nil -> {:error, :not_running}
+      pid -> call_or(pid, {:push_message, text}, {:error, :not_running})
+    end
+  end
+
   @doc "Route a user's `ask_user` answer back into the blocked run."
   @spec answer(String.t(), String.t(), String.t()) :: :ok
   def answer(session_id, tool_call_id, answer) do
@@ -221,6 +239,11 @@ defmodule ExAthena.Web.RunServer do
       current_action: nil,
       awaiting_question: nil,
       pending_questions: [],
+      # Messages the person sent mid-run, oldest first, not yet taken.
+      inbox: [],
+      # Messages the run took, so a Stop (whose result carries no messages)
+      # can hand them back rather than show them as sent.
+      taken: [],
       # Oldest-first, so a reattaching client replays in wire order.
       events: :queue.new(),
       event_count: 0
@@ -239,6 +262,7 @@ defmodule ExAthena.Web.RunServer do
       |> Keyword.put(:assigns, %{ask_user: server})
       |> put_coordinator(state.coordinator)
       |> put_permission(state.permission, server)
+      |> Keyword.put(:inbox, fn -> drain_inbox(server) end)
 
     {:ok, task_pid} =
       Task.start(fn ->
@@ -270,11 +294,36 @@ defmodule ExAthena.Web.RunServer do
     Keyword.merge(opts, permission_opts)
   end
 
+  # Called from the run's own process. A server that is gone has nothing left
+  # to hand over.
+  defp drain_inbox(server) do
+    # No time limit: the server never waits on the run, and a late reply
+    # after a timeout would drop the messages it had already handed over.
+    GenServer.call(server, :drain_inbox, :infinity)
+  catch
+    :exit, _ -> []
+  end
+
   defp put_coordinator(opts, nil), do: opts
   defp put_coordinator(opts, coordinator), do: Keyword.put(opts, :coordinator, coordinator)
 
   @impl GenServer
   def handle_call(:running?, _from, state), do: {:reply, state.streaming, state}
+
+  def handle_call({:push_message, _text}, _from, %{streaming: true, inbox: inbox} = state)
+      when length(inbox) >= @max_waiting_messages,
+      do: {:reply, {:error, :full}, state}
+
+  def handle_call({:push_message, text}, _from, %{streaming: true} = state),
+    do: {:reply, :ok, %{state | inbox: state.inbox ++ [text]}}
+
+  def handle_call({:push_message, _text}, _from, state),
+    do: {:reply, {:error, :not_running}, state}
+
+  # What the run takes counts as taken at once, so a Stop that lands before
+  # the run's `:user_message_taken` event still hands it back.
+  def handle_call(:drain_inbox, _from, state),
+    do: {:reply, state.inbox, %{state | inbox: [], taken: state.taken ++ state.inbox}}
 
   @impl GenServer
   def handle_call({:attach, pid}, _from, state) do
@@ -340,7 +389,10 @@ defmodule ExAthena.Web.RunServer do
     )
 
     # Same message a completed run broadcasts, so an attached LiveView renders
-    # and saves its richer version through the one path it already has.
+    # and saves its richer version through the one path it already has. A
+    # stopped run's result carries no messages, so the ones it took go back
+    # too.
+    hand_back_unsent(%{state | inbox: state.taken ++ state.inbox})
     broadcast(state, {:athena_done, result})
     {:stop, :normal, %{state | streaming: false}}
   end
@@ -354,6 +406,10 @@ defmodule ExAthena.Web.RunServer do
 
   defp next_question(state),
     do: %{state | awaiting_question: nil, current_action: "thinking…"}
+
+  # A message the run never took goes back to the person, not into the void.
+  defp hand_back_unsent(%{inbox: []}), do: :ok
+  defp hand_back_unsent(state), do: broadcast(state, {:athena_unsent, state.inbox})
 
   defp interrupted_result(state) do
     %ExAthena.Result{
@@ -396,12 +452,14 @@ defmodule ExAthena.Web.RunServer do
       terminal_snapshot(state, result)
     )
 
+    hand_back_unsent(state)
     broadcast(state, {:athena_done, result})
     {:noreply, finish(state)}
   end
 
   @impl GenServer
   def handle_info({:run_error, reason}, state) do
+    hand_back_unsent(state)
     broadcast(state, {:athena_error, reason})
     {:noreply, finish(state)}
   end
@@ -522,6 +580,7 @@ defmodule ExAthena.Web.RunServer do
       stream_text: state.stream_text,
       current_action: state.current_action,
       awaiting_question: state.awaiting_question,
+      waiting_messages: state.inbox,
       pending_assistant_msg_id: state.assistant_msg_id,
       run_sid: state.run_sid,
       # Structural events so far, oldest-first. A LiveView that reconnects
