@@ -27,7 +27,9 @@ defmodule ExAthena.Tools.PlanMode do
 
   @impl true
   def description,
-    do: "Request a transition between plan (read-only) and default (read+write) phases."
+    do:
+      "Request a transition between plan (read-only) and default (read+write) phases. " <>
+        "In a read-only chat, call it with action exit and your plan once you have one."
 
   @impl true
   def schema do
@@ -35,7 +37,13 @@ defmodule ExAthena.Tools.PlanMode do
       type: "object",
       properties: %{
         action: %{type: "string", enum: ["enter", "exit"]},
-        reason: %{type: "string"}
+        reason: %{type: "string"},
+        plan: %{
+          type: "string",
+          description:
+            "With exit: the plan you want approved, one step per line. " <>
+              "The person reads it before anything changes."
+        }
       },
       required: ["action"]
     }

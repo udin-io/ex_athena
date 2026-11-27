@@ -73,6 +73,7 @@ defmodule ExAthena.Modes.ReAct do
       state
       |> drop_helpers(helpers_on?(small?))
       |> add_todo_note(small?)
+      |> add_plan_note()
     else
       state
     end
@@ -107,12 +108,32 @@ defmodule ExAthena.Modes.ReAct do
   end
 
   defp add_todo_note(state, false), do: state
+  defp add_todo_note(state, true), do: append_system(state, @todo_note)
 
-  defp add_todo_note(%State{request_template: template} = state, true) do
+  # Issue 322. A chat pinned read-only is the plan step: it looks around, then
+  # shows a plan the person approves before anything changes. Only when the
+  # chat holds `plan_mode`, which carries the plan to the approval.
+  @plan_note """
+  ## Read only
+  This chat is read only: look around with the read-only tools and change
+  nothing. When you have a plan, call plan_mode with action "exit" and the plan
+  in `plan`, one step per line. The person approves it before anything
+  changes; if they ask you to keep planning, refine it and ask again.\
+  """
+
+  defp add_plan_note(%State{ctx: %{phase: :plan}} = state) do
+    if Tools.find(state.tool_specs, "plan_mode"),
+      do: append_system(state, @plan_note),
+      else: state
+  end
+
+  defp add_plan_note(state), do: state
+
+  defp append_system(%State{request_template: template} = state, note) do
     prompt =
       case template.system_prompt do
-        p when p in [nil, ""] -> @todo_note
-        p -> p <> "\n\n" <> @todo_note
+        p when p in [nil, ""] -> note
+        p -> p <> "\n\n" <> note
       end
 
     %{state | request_template: %{template | system_prompt: prompt}}
