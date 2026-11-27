@@ -316,9 +316,16 @@ back. The parent stays in `:accept_edits` and applies the edits.
 
 ## Contributor notes
 
-- **`SpawnAgent` is `parallel_safe?: true`**: a parent can spawn multiple
-  subagents concurrently. They run in separate processes (the Loop is reentrant)
-  under `Task.async_stream`.
+- **`SpawnAgent` is `parallel_safe?: false`**: a parent's helpers run one at
+  a time, in the order the model asked for them, and the parent waits for each
+  report before its next turn.
+- **Every top-level chat briefs its helpers.** `Loop.run/2` turns on
+  `assigns[:strict_spawn]` and the worker contract
+  (`ExAthena.Agents.WorkerContract`) for a run at depth 0. A brief that leaves
+  out the expected output, the tool guidance or the boundaries gets a default
+  for each, and every helper's system prompt ends with the contract. A host
+  turns either off by setting `strict_spawn: false` or
+  `subagent_prompt_suffix: ""` in `assigns`.
 - **No infinite nesting**: the parent's `parent_session_id` becomes the
   subagent's grandparent if it itself spawns. Two rails bound the tree.
   `max_agent_depth` (default 2: orchestrator → worker → helper) caps how

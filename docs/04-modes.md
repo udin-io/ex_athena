@@ -72,6 +72,7 @@ Reference implementation in [`lib/ex_athena/modes/react.ex`](../lib/ex_athena/mo
 - **Parallel tool calls**: read-only tools batch via [`Loop.Parallel.run/3`](../lib/ex_athena/loop/parallel.ex); mutating tools (`parallel_safe?: false`) serialize. See [07 · Tools](07-tools.md).
 - **Mistake-counter reset**: any successful tool execution in a turn resets `consecutive_mistakes` to 0 ([`react.ex:118`](../lib/ex_athena/modes/react.ex#L118)).
 - **No tool calls = `:stop`**: model returned plain text → final turn.
+- **It checks its work before it says done** ([`Loop.FinishChecks`](../lib/ex_athena/loop/finish_checks.ex)). When a top-level chat stops after changing files, four checks read what its own tool calls and its helpers' reports did: a command ran, a test run passed, a test executed the changed files, and the work was compared with the person's latest message. Each missing check adds one note and one more turn, once per request, a resume included. Helpers are not checked, and `config :ex_athena, :chat, finish_checks: false` turns the checks off.
 
 Use ReAct when: you want the default. It's tuned to handle native and TextTagged tool calls, multiple providers, and parallel safety.
 
