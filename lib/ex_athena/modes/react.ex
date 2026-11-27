@@ -41,7 +41,82 @@ defmodule ExAthena.Modes.ReAct do
   alias ExAthena.Tools.Skill, as: SkillTool
 
   @impl true
-  def init(%State{} = state), do: {:ok, state}
+  def init(%State{} = state), do: {:ok, small_model_rules(state)}
+
+  # Issue 321. A small local model picks the right tool about 3 times in 4,
+  # and sending a helper well is a harder call than picking a tool. So in the
+  # top-level chat, below `chat.small_model_below_b` billion parameters, the
+  # helper tools start off and the model is told to keep a to-do list.
+  # `chat.helpers` overrides the first half: `:on` keeps helpers for every
+  # model, `:off` removes them for every model. A model of unknown size counts
+  # as large. The note goes in the system prompt once, so the prompt prefix
+  # stays the same turn to turn and a local server's prompt cache holds.
+  @helper_tools ~w(spawn_agent read_worker_report)
+
+  # From bench/small_models.exs (docs/design/306-small-models.md, measured
+  # 2026-11-27): helpers were sent in every run at 9.7B and 14.8B, in 1 of 3 at
+  # 4B and never at 3.2B.
+  @small_model_below_b 8
+
+  @todo_note """
+  ## Keep a to-do list
+  When a task takes more than one step, call todo_write before you start, with
+  one item per step. Mark an item in_progress when you start it and completed
+  when it is done, and always send the whole list. A question you can answer
+  in one step needs no list.\
+  """
+
+  defp small_model_rules(%State{} = state) do
+    if top_chat?(state) do
+      small? = small_model?(state)
+
+      state
+      |> drop_helpers(helpers_on?(small?))
+      |> add_todo_note(small?)
+    else
+      state
+    end
+  end
+
+  defp small_model?(%State{capabilities: caps}) do
+    case Map.get(caps || %{}, :params_b) do
+      size when is_number(size) ->
+        size < Tuning.get(:chat, :small_model_below_b, @small_model_below_b)
+
+      _ ->
+        false
+    end
+  end
+
+  defp helpers_on?(small?) do
+    case Tuning.get(:chat, :helpers, :auto) do
+      :on -> true
+      :off -> false
+      _auto -> not small?
+    end
+  end
+
+  defp drop_helpers(state, true), do: state
+
+  defp drop_helpers(state, false) do
+    %{
+      state
+      | tool_specs: Enum.reject(state.tool_specs, &(&1.name in @helper_tools)),
+        meta: Map.put(state.meta, :helpers_off?, true)
+    }
+  end
+
+  defp add_todo_note(state, false), do: state
+
+  defp add_todo_note(%State{request_template: template} = state, true) do
+    prompt =
+      case template.system_prompt do
+        p when p in [nil, ""] -> @todo_note
+        p -> p <> "\n\n" <> @todo_note
+      end
+
+    %{state | request_template: %{template | system_prompt: prompt}}
+  end
 
   @impl true
   def productivity_signal(prev_state, new_state) do
@@ -112,10 +187,10 @@ defmodule ExAthena.Modes.ReAct do
   # only at the top: a helper's report carries what it ran, and the chat
   # reads that.
   defp check_finish({:halt, %State{} = halted} = halt) do
-    if chat_checked?(halted) do
-      case FinishChecks.run(halted, voice: :chat) do
-        :pass -> halt
-        decided -> decided
+    if top_chat?(halted) do
+      with :pass <- finish_checks(halted),
+           :pass <- open_steps(halted) do
+        halt
       end
     else
       halt
@@ -124,11 +199,74 @@ defmodule ExAthena.Modes.ReAct do
 
   defp check_finish(other), do: other
 
-  defp chat_checked?(%State{mode: mode} = state) do
+  defp top_chat?(%State{mode: mode} = state) do
     mode == __MODULE__ and not worker?(state) and
-      Map.get(state.ctx.assigns || %{}, :agent_depth, 0) == 0 and
-      Tuning.get(:chat, :finish_checks, true) == true
+      Map.get(state.ctx.assigns || %{}, :agent_depth, 0) == 0
   end
+
+  defp finish_checks(halted) do
+    if Tuning.get(:chat, :finish_checks, true) == true,
+      do: FinishChecks.run(halted, voice: :chat),
+      else: :pass
+  end
+
+  # A chat that stops with steps still open on its own to-do list usually
+  # narrated the next step instead of taking it (issue 321; Orchestrate's
+  # pending-todo nudge, moved here). Once per request, so the second stop is
+  # final. A chat with no list is answering a question and is left alone, and
+  # in the read-only phase an open list IS the plan it stops to show.
+  @open_steps_marker "[chat runtime: open steps]"
+
+  defp open_steps(%State{} = halted) do
+    pending = pending_todos(halted)
+
+    cond do
+      pending == [] or halted.ctx.phase == :plan ->
+        :pass
+
+      not (halted.meta[:finish_reason] == :stop or FinishChecks.submitted?(halted)) ->
+        :pass
+
+      open_steps_nudged?(halted) ->
+        :pass
+
+      true ->
+        note =
+          @open_steps_marker <>
+            " You stopped with steps still open on your to-do list: " <>
+            Enum.map_join(pending, "; ", &todo_content/1) <>
+            ". Do the next one now. If the task is truly done, or a step cannot be " <>
+            "done, mark the list to match and say so in your answer."
+
+        {:continue,
+         halted
+         |> FinishChecks.redirect(note)
+         |> Map.put(:halted_reason, nil)
+         |> Map.update!(:mode_state, &Map.put(&1 || %{}, :open_steps_nudged, true))
+         |> Map.put(:meta, Map.delete(halted.meta, :finish_reason))}
+    end
+  end
+
+  defp open_steps_nudged?(halted) do
+    (halted.mode_state || %{})[:open_steps_nudged] == true or
+      halted
+      |> FinishChecks.current_task()
+      |> FinishChecks.runtime_notes()
+      |> Enum.any?(&String.starts_with?(&1, @open_steps_marker))
+  end
+
+  defp pending_todos(state) do
+    Enum.filter(state.meta[:todos] || [], fn todo ->
+      todo_field(todo, :status) in [nil, "pending", "in_progress"]
+    end)
+  end
+
+  defp todo_content(todo), do: to_string(todo_field(todo, :content))
+
+  defp todo_field(todo, key) when is_map(todo),
+    do: Map.get(todo, key) || Map.get(todo, to_string(key))
+
+  defp todo_field(_todo, _key), do: nil
 
   defp do_iterate(%State{} = state, request, handback?) do
     {stream_cb, counters} = stream_callback(state)
@@ -1101,6 +1239,10 @@ defmodule ExAthena.Modes.ReAct do
     can_delegate? = Tools.find(state.tool_specs, "spawn_agent") != nil
 
     cond do
+      name in @helper_tools and state.meta[:helpers_off?] == true ->
+        "helpers are switched off for this chat, so '#{name}' is not available. " <>
+          "Do this step yourself with the tools you have."
+
       known_builtin? and can_delegate? ->
         "tool '#{name}' is not available to you — delegate this step to a worker " <>
           "via spawn_agent instead (workers have the full toolset)."

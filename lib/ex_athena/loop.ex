@@ -790,8 +790,12 @@ defmodule ExAthena.Loop do
     tool_specs = opts |> Tools.resolve() |> normalize_tool_list()
 
     with :ok <- validate_tools(tool_specs) do
+      # `function_exported?/3` does not load a module, so before the
+      # provider's first call it answered false and the run lost the
+      # model's real window and size.
       capabilities =
-        if function_exported?(provider_mod, :capabilities, 1) do
+        if Code.ensure_loaded?(provider_mod) and
+             function_exported?(provider_mod, :capabilities, 1) do
           provider_mod.capabilities(opts)
         else
           provider_mod.capabilities()

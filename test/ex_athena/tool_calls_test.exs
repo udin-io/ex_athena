@@ -198,6 +198,39 @@ defmodule ExAthena.ToolCallsTest do
                ToolCalls.extract(response, %{native_tool_calls: true})
     end
 
+    # What qwen2.5-coder:14b sends through Ollama: the whole message is one
+    # fenced call, and no native tool_calls.
+    test "falls back to RawJson when the whole message is one ```json block" do
+      response = %{
+        tool_calls: nil,
+        text:
+          "```json\n{\n  \"name\": \"edit\",\n  \"arguments\": {\"path\": \"lib/a.ex\"}\n}\n```"
+      }
+
+      assert {:ok, [%ToolCall{name: "edit", arguments: %{"path" => "lib/a.ex"}}]} =
+               ToolCalls.extract(response, %{native_tool_calls: true})
+    end
+
+    test "two fenced blocks with prose between them are an answer, not a call" do
+      response = %{
+        tool_calls: nil,
+        text:
+          "```json\n{\"name\": \"bash\", \"arguments\": {\"command\": \"rm -rf build\"}}\n```\n" <>
+            "That is how a call looks. Do not run it.\n```json\n{}\n```"
+      }
+
+      assert {:ok, []} = ToolCalls.extract(response, %{native_tool_calls: true})
+    end
+
+    test "prose that quotes a fenced call is still an answer, not a call" do
+      response = %{
+        tool_calls: nil,
+        text: "Call it like this:\n```json\n{\"name\": \"edit\", \"arguments\": {}}\n```"
+      }
+
+      assert {:ok, []} = ToolCalls.extract(response, %{native_tool_calls: true})
+    end
+
     test "TextTagged tier still wins over RawJson when fence is present" do
       response = %{
         tool_calls: nil,

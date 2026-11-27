@@ -26,6 +26,14 @@ ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **A tool call sent as one fenced JSON block now runs**
+  ([#321](https://github.com/udin-io/ex_athena/issues/321)). qwen2.5-coder on
+  Ollama sends no native tool call; its whole answer is the call inside a
+  `` ```json `` fence. The rescue for calls written as text looked only for a
+  message starting with `{`, so each call read as a final answer and the chat
+  ended having done nothing. A fenced message that holds only the call is now
+  read as the call; prose that quotes one is still an answer.
+
 - **You can now see what a worker is writing while it writes**
   ([#311](https://github.com/udin-io/ex_athena/issues/311)). A worker's
   thinking and reply already reached the run's coordinator word by word, but
@@ -38,6 +46,25 @@ ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   and reports does not change.
 
 ### Changed
+
+- **Small models keep a to-do list and start with helpers off**
+  ([#321](https://github.com/udin-io/ex_athena/issues/321)). A small local
+  model got the same tools and prompt as a large one, helper tool included. Now
+  the chat reads each model's size, from its name (`llama3.2:3b`) or from what
+  Ollama reports. Below `config :ex_athena, :chat, small_model_below_b:`
+  (default 8, from a run on four local models in
+  `docs/design/306-small-models.md`) the chat tells the model to write a to-do list when a task
+  has steps, and leaves out `spawn_agent` and `read_worker_report`. `helpers:
+  :on` keeps helpers for every model, and `helpers: :off` removes them for
+  every model; the web settings show both under Chat. A model whose size
+  cannot be read counts as large. Every top-level chat also gets one more turn
+  when it stops with steps still open on its to-do list, once per request; a
+  chat with no list, and a read-only chat, stop as before.
+- **A run reads its provider's real capabilities on its first call**
+  ([#321](https://github.com/udin-io/ex_athena/issues/321)). Before the
+  provider module had loaded, a run took its static capabilities, so the first
+  chat after a start sized compaction from the 32,768-token fallback instead of
+  the model's real window.
 
 - **Every chat checks its work before it says done**
   ([#320](https://github.com/udin-io/ex_athena/issues/320)). Only Orchestrate
