@@ -119,12 +119,12 @@ defmodule ExAthena.Permissions do
                           "cannot be done in a read-only phase."
   # `todo_write` is deliberately NOT here: it mutates session bookkeeping
   # (the todo list), never the workspace/filesystem, so it stays allowed in
-  # the read-only `:plan` phase (see check_phase/4). Orchestrate planning and
+  # the read-only `:plan` phase (see check_phase/4). A read-only chat and
   # read-only `explore` workers both need it to record their plan.
   #
   # Session-control tools: they interact with the host/session (asking the
-  # user a question, ending the run), never the workspace — orchestrate's
-  # planning turns need both, so they stay allowed in `:plan`.
+  # user a question, ending the run), never the workspace — a read-only
+  # chat needs both, so they stay allowed in `:plan`.
   @session_tools ~w(todo_write ask_user finish)
   # `:accept_edits` auto-allows file edits + every read-only tool,
   # but still falls through to the callback for everything else
@@ -223,7 +223,7 @@ defmodule ExAthena.Permissions do
         check_plan_mode(args, opts)
 
       # Session bookkeeping / host interaction, not a workspace mutation —
-      # safe in read-only investigation. Lets orchestrate planning + read-only
+      # safe in read-only investigation. Lets a read-only chat and read-only
       # workers record their plan (todo_write), ask the user (ask_user), and
       # end the run (finish) without tripping the phase gate.
       name in @session_tools ->

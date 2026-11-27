@@ -81,7 +81,7 @@ defmodule ExAthena.Agents.Quota do
   `ExAthena.Tools.SpawnAgent` returns the first refusal `:uncounted` — the
   allowance running out is a fact about the run, not a mistake by the model
   that asked. A model that asks again after being told no IS making one, and
-  in orchestrate mode (`max_iterations: :infinity`) the mistake counter is the
+  in a run with `max_iterations: :infinity` the mistake counter is the
   only turn-based guard left once every slot is spent.
   """
   @spec record_refusal(map()) :: :first | :repeat

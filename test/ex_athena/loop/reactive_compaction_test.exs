@@ -304,25 +304,6 @@ defmodule ExAthena.Loop.ReactiveCompactionTest do
            "expected the provider to be retried once after compacting the existing context"
   end
 
-  test "PlanAndSolve recovers from a context-length error during the planning phase" do
-    counter = :counters.new(1, [:atomics])
-
-    {:ok, %Result{} = result} =
-      Loop.run("hi",
-        provider: OverflowThenRecoverProvider,
-        counter: counter,
-        tools: [],
-        mode: ExAthena.Modes.PlanAndSolve,
-        memory: false,
-        skills: %{}
-      )
-
-    assert result.finish_reason == :stop
-
-    assert :counters.get(counter, 1) >= 2,
-           "expected the planning call to be retried after compacting the existing context"
-  end
-
   test "with reactive compaction disabled, prompt-too-long terminates immediately" do
     responder = fn _req ->
       %Response{text: "x", finish_reason: :stop, provider: :mock}

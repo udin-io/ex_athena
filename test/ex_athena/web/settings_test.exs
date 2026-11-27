@@ -33,7 +33,7 @@ defmodule ExAthena.Web.SettingsTest do
     test "reports the built-in default for every field when nothing is saved" do
       values = Settings.values()
 
-      assert values[{:orchestrate, :max_planning_turns}] == 8
+      assert values[{:chat, :audit_request_chars}] == 1_500
       assert values[{:agents, :result_chars}] == 64_000
       assert values[{:web, :max_retained_events}] == 2_000
     end
@@ -76,8 +76,8 @@ defmodule ExAthena.Web.SettingsTest do
 
   describe "save/1" do
     test "applies immediately — Tuning sees the new value without a restart" do
-      assert {:ok, _} = Settings.save(%{"orchestrate.max_planning_turns" => "20"})
-      assert Tuning.get(:orchestrate, :max_planning_turns, 8) == 20
+      assert {:ok, _} = Settings.save(%{"chat.audit_request_chars" => "2000"})
+      assert Tuning.get(:chat, :audit_request_chars, 1_500) == 2000
     end
 
     test "persists so the value survives a restart", %{path: path} do
@@ -112,9 +112,9 @@ defmodule ExAthena.Web.SettingsTest do
     end
 
     test "rejects a non-numeric value for a numeric field and names the field" do
-      assert {:error, errors} = Settings.save(%{"orchestrate.max_planning_turns" => "twelve"})
-      assert errors[{:orchestrate, :max_planning_turns}] =~ "number"
-      assert Tuning.get(:orchestrate, :max_planning_turns, 8) == 8
+      assert {:error, errors} = Settings.save(%{"chat.audit_request_chars" => "twelve"})
+      assert errors[{:chat, :audit_request_chars}] =~ "number"
+      assert Tuning.get(:chat, :audit_request_chars, 1_500) == 1_500
     end
 
     test "rejects a value below the field's minimum" do
@@ -125,20 +125,20 @@ defmodule ExAthena.Web.SettingsTest do
     test "a rejected field does not stop the valid ones from being written" do
       assert {:error, _} =
                Settings.save(%{
-                 "orchestrate.max_planning_turns" => "20",
+                 "chat.audit_request_chars" => "2000",
                  "agents.result_chars" => "nope"
                })
 
-      assert Tuning.get(:orchestrate, :max_planning_turns, 8) == 20
+      assert Tuning.get(:chat, :audit_request_chars, 1_500) == 2000
       assert Tuning.get(:agents, :result_chars, 64_000) == 64_000
     end
 
     # A form posts whatever the page contained; app env is global process
     # state, so anything not in the schema must never reach it.
     test "ignores keys the schema does not declare" do
-      assert {:ok, _} = Settings.save(%{"orchestrate.evil_key" => "1", "nope.other" => "2"})
+      assert {:ok, _} = Settings.save(%{"chat.evil_key" => "1", "nope.other" => "2"})
 
-      refute Keyword.has_key?(Application.get_env(:ex_athena, :orchestrate, []), :evil_key)
+      refute Keyword.has_key?(Application.get_env(:ex_athena, :chat, []), :evil_key)
       assert Application.get_env(:ex_athena, :nope) == nil
     end
 
@@ -153,10 +153,10 @@ defmodule ExAthena.Web.SettingsTest do
 
   describe "reset/0" do
     test "clears saved overrides and returns every field to its default", %{path: path} do
-      {:ok, _} = Settings.save(%{"orchestrate.max_planning_turns" => "20"})
+      {:ok, _} = Settings.save(%{"chat.audit_request_chars" => "2000"})
       assert :ok = Settings.reset()
 
-      assert Tuning.get(:orchestrate, :max_planning_turns, 8) == 8
+      assert Tuning.get(:chat, :audit_request_chars, 1_500) == 1_500
       refute File.exists?(path)
     end
   end
@@ -164,13 +164,13 @@ defmodule ExAthena.Web.SettingsTest do
   describe "load/0" do
     test "is a no-op when no settings file exists" do
       assert :ok = Settings.load()
-      assert Tuning.get(:orchestrate, :max_planning_turns, 8) == 8
+      assert Tuning.get(:chat, :audit_request_chars, 1_500) == 1_500
     end
 
     test "survives a corrupt settings file rather than crashing boot", %{path: path} do
       File.write!(path, "{not json")
       assert :ok = Settings.load()
-      assert Tuning.get(:orchestrate, :max_planning_turns, 8) == 8
+      assert Tuning.get(:chat, :audit_request_chars, 1_500) == 1_500
     end
   end
 
@@ -178,7 +178,7 @@ defmodule ExAthena.Web.SettingsTest do
   # schema entry, so it was configurable in principle and invisible in the UI.
   # This scans the source for literal Tuning.get(:ns, :key, …) calls and holds
   # the schema to them. (Modules resolving through a local helper — the
-  # `tuning/2` in orchestrate, `budget_opt/3` in loop — are covered by their
+  # `budget_opt/3` in loop — are covered by their
   # own tests instead.)
   describe "schema coverage" do
     test "every key wired to Tuning has a field in the modal" do

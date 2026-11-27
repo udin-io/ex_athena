@@ -92,24 +92,13 @@ defmodule ExAthena.Tools.SpawnAgentQuotaTest do
       assert refused.content =~ "allowance"
     end
 
-    # With orchestrate's `max_iterations: :infinity`, the mistake counter is
-    # the only turn-based guard left once every slot is spent. Asking again
+    # In a run with `max_iterations: :infinity`, the mistake counter is the
+    # only turn-based guard left once every slot is spent. Asking again
     # after being told no is what it is for.
     test "asking again after being refused does count", %{dir: dir} do
       assert {:ok, result} = run(dir, 3, %{max_agents_per_run: 1})
 
       assert result.finish_reason == :error_consecutive_mistakes
-    end
-
-    test "tells a delegate-only caller to finish, never to do the work itself",
-         %{dir: dir} do
-      assert {:ok, result} = run(dir, 2, %{max_agents_per_run: 1, delegate_only: true})
-
-      [_spawned, refused] = spawn_results(result)
-
-      assert refused.content =~ "finish now"
-      assert refused.content =~ "unverified"
-      refute refused.content =~ "yourself"
     end
 
     test "tells a caller with its own tools to do the work itself", %{dir: dir} do
@@ -119,61 +108,6 @@ defmodule ExAthena.Tools.SpawnAgentQuotaTest do
 
       assert refused.content =~ "Do the remaining work yourself"
     end
-  end
-
-  # `delegate_only` describes the CALLER, so it must not ride down to a worker
-  # that holds read, write and bash tools. (`strict_spawn` cannot carry this:
-  # workers inherit it.)
-  test "a worker does not inherit the caller's delegate-only wording", %{dir: dir} do
-    # Turn 1: delegate (refused, the parent took the only slot).
-    # Turn 2: report the refusal verbatim, so the parent can see it.
-    worker_that_delegates = fn req ->
-      last_result =
-        req.messages
-        |> Enum.flat_map(fn
-          %{role: :tool, tool_results: trs} when is_list(trs) -> trs
-          _ -> []
-        end)
-        |> List.last()
-
-      case last_result do
-        nil ->
-          %Response{
-            text: "delegating my own step",
-            tool_calls: [
-              %ToolCall{id: "w1", name: "spawn_agent", arguments: %{"prompt" => "sub-step"}}
-            ],
-            finish_reason: :tool_calls,
-            provider: :mock
-          }
-
-        result ->
-          %Response{text: to_string(result.content), finish_reason: :stop, provider: :mock}
-      end
-    end
-
-    assert {:ok, result} =
-             Loop.run("coordinate the work",
-               provider: :mock,
-               mock: [responder: parent_responder(1)],
-               tools: [ExAthena.Tools.SpawnAgent],
-               cwd: dir,
-               memory: false,
-               max_iterations: 20,
-               assigns: %{
-                 max_agents_per_run: 1,
-                 delegate_only: true,
-                 spawn_agent_opts: [
-                   provider: :mock,
-                   mock: [responder: worker_that_delegates],
-                   memory: false
-                 ]
-               }
-             )
-
-    [spawned] = spawn_results(result)
-
-    assert spawned.content =~ "Do the remaining work yourself"
   end
 
   describe "the allowance in every result" do

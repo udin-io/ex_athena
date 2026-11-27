@@ -48,8 +48,8 @@ defmodule ExAthena.Web.RunServer do
   @grace_ms 60_000
 
   # Structural events are retained so a LiveView that reconnects mid-run can
-  # rebuild the window it missed. Bounded as a runaway backstop: an orchestrate
-  # run is uncapped by design, and the oldest events are the least useful to a
+  # rebuild the window it missed. Bounded as a runaway backstop: a run with
+  # `max_iterations: :infinity` has no turn cap, and the oldest events are the least useful to a
   # reattaching client, so the cap drops from the front.
   @max_retained_events 2_000
 

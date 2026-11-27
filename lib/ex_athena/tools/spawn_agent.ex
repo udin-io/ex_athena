@@ -156,7 +156,7 @@ defmodule ExAthena.Tools.SpawnAgent do
     }
   end
 
-  # Task brief for strict spawns (orchestrate mode). NOTHING is rejected —
+  # Task brief for strict spawns (every top-level chat). NOTHING is rejected —
   # live testing showed every rejection class just burns turns (small models
   # repeat the identical invalid call verbatim instead of repairing). Every
   # missing field gets a runtime default; the brief is enrichment when the
@@ -344,28 +344,15 @@ defmodule ExAthena.Tools.SpawnAgent do
   # only turn-based guard is the mistake counter. Asking AGAIN after being
   # told no is a mistake, and that is what still bounds a model which keeps
   # calling: `Quota.record_refusal/1` counts them.
-  #
-  # The advice depends on what the caller can do. An orchestrator holds no
-  # read or write tools, so "do the remaining work yourself" is an
-  # instruction it cannot follow — it sent session 227f7f480afa in circles.
   defp quota_refusal(assigns) do
     text =
       "not started: this run has already spawned its full allowance of " <>
         "#{Quota.limit(assigns)} workers (#{allowance_text(Quota.limit(assigns), Quota.limit(assigns))}). " <>
-        advice(assigns)
+        "Do the remaining work yourself, or finish with what you already have."
 
     case Quota.record_refusal(assigns) do
       :first -> {:error, :uncounted, text}
       :repeat -> {:error, text}
-    end
-  end
-
-  defp advice(assigns) do
-    if Map.get(assigns, :delegate_only, false) do
-      "You hold no tools to do this step with, so finish now with what you " <>
-        "already have and name in your deliverable which checks are unverified."
-    else
-      "Do the remaining work yourself, or finish with what you already have."
     end
   end
 
@@ -421,7 +408,7 @@ defmodule ExAthena.Tools.SpawnAgent do
 
   # A `:budget_handback` worker took the success path, which is the point: the
   # parent reads its own account of itself. But success is also what the
-  # orchestrate evidence gates, `any_tool_success?` and the Coordinator count,
+  # chat's finish checks, `any_tool_success?` and the Coordinator count,
   # and by that reckoning a worker that ran out of clock now looks like one
   # that finished. So the runtime says it did not, above the report.
   #
@@ -1198,16 +1185,10 @@ defmodule ExAthena.Tools.SpawnAgent do
   # typist into a reviewer.
   @dictated_code_lines 8
 
-  @doc """
-  Whether a brief carries a dictated implementation rather than an outcome.
-
-  The orchestrator holds no read tools, so code it writes into a brief was
-  composed without seeing the target file. Used both here (to tell the worker
-  to reconcile it) and by the orchestrate mode (to steer the orchestrator back
-  to describing outcomes).
-  """
-  @spec dictated_code?(String.t() | nil) :: boolean()
-  def dictated_code?(prompt),
+  # Whether a brief carries a dictated implementation rather than an outcome:
+  # code a parent wrote into a brief may have been composed without seeing the
+  # target file, so the worker is told to reconcile it.
+  defp dictated_code?(prompt),
     do:
       fenced_code_lines(prompt) >= Tuning.get(:agents, :dictated_code_lines, @dictated_code_lines)
 
@@ -1289,8 +1270,6 @@ defmodule ExAthena.Tools.SpawnAgent do
       |> Map.put(:todo_writer, todo_writer)
       |> Map.put(:agent_depth, child_depth)
       |> Map.put(:current_agent_id, sub_id)
-      # Describes the CALLER, not the tree: a worker holds real tools.
-      |> Map.put(:delegate_only, false)
 
     sub_opts
     |> Keyword.put(:on_event, tagged_on_event)
@@ -1302,8 +1281,6 @@ defmodule ExAthena.Tools.SpawnAgent do
       (ctx.assigns || %{})
       |> Map.put(:agent_depth, child_depth)
       |> Map.put(:current_agent_id, sub_id)
-      # Describes the CALLER, not the tree: a worker holds real tools.
-      |> Map.put(:delegate_only, false)
 
     Keyword.put(sub_opts, :assigns, sub_assigns)
   end
@@ -1365,8 +1342,8 @@ defmodule ExAthena.Tools.SpawnAgent do
   # not scored by the loop (see `ExAthena.Tool`'s execute contract). Session
   # 5906635b743d died on `error_consecutive_mistakes` after three workers were
   # cut off, with all four of its deliverables already complete on disk;
-  # orchestrate mode sets `max_iterations: :infinity`, so that counter was the
-  # only turn-based guard it had.
+  # its run had `max_iterations: :infinity`, so that counter was the only
+  # turn-based guard it had.
   #
   # A worker that hallucinated, went in circles, or could not produce parseable
   # output keeps counting: re-delegating the same brief reproduces the fault,
@@ -1538,7 +1515,7 @@ defmodule ExAthena.Tools.SpawnAgent do
   # capped at `agents.max_requested_iterations` (0 = no ceiling; a ceiling
   # under the floor acts as the floor; a bad value falls back to the default): with no token
   # total, a model asking for 10_000 turns would otherwise be stopped only by
-  # the worker's clock. Orchestrate mode's top-level :infinity never passes here.
+  # the worker's clock. A top-level run's :infinity never passes here.
   defp worker_iterations(n) when is_integer(n) do
     floor = Tuning.get(:agents, :max_iterations, @default_max_iterations)
 

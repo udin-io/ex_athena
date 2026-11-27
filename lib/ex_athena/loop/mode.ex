@@ -3,9 +3,10 @@ defmodule ExAthena.Loop.Mode do
   Pluggable control-flow strategy for the agent loop.
 
   Modes decide *what to do each turn*. The kernel handles everything else —
-  tool dispatch, permissions, hooks, events, accounting. Modes sit on top
-  and shape the iteration: ReAct is "infer → tool → loop", Plan-and-Solve
-  is "plan once → execute many", Reflexion adds a self-critique pass.
+  tool dispatch, permissions, hooks, events, accounting. The one builtin,
+  `ExAthena.Modes.ReAct`, is the chat: "infer → tool → loop", with the model
+  choosing when to plan, keep a to-do list or send a helper. How much it may
+  do without asking is the run's `:phase`, not its mode (issue 322).
 
   ## Writing a mode
 
@@ -27,8 +28,10 @@ defmodule ExAthena.Loop.Mode do
 
   ## Atom shortcuts
 
-  `:react`, `:plan_and_solve`, `:reflexion` resolve to the builtin modules.
-  Any other atom or a module reference is used verbatim.
+  `:react` resolves to `ExAthena.Modes.ReAct`. `:plan_and_solve`,
+  `:reflexion` and `:orchestrate` were removed in issue 322 and resolve to an
+  error that names what replaces each one. Any other atom or a module
+  reference is used verbatim.
   """
 
   alias ExAthena.Loop.State
@@ -64,19 +67,29 @@ defmodule ExAthena.Loop.Mode do
 
   @optional_callbacks [productivity_signal: 2]
 
-  @builtins %{
-    react: ExAthena.Modes.ReAct,
-    plan_and_solve: ExAthena.Modes.PlanAndSolve,
-    reflexion: ExAthena.Modes.Reflexion,
-    orchestrate: ExAthena.Modes.Orchestrate
+  @removed %{
+    plan_and_solve:
+      "the :plan_and_solve mode was removed; start the run with phase: :plan " <>
+        "and the chat shows a plan for approval before it changes anything",
+    reflexion:
+      "the :reflexion mode was removed; the chat's finish checks stop a run " <>
+        "from claiming done without proof (ExAthena.Loop.FinishChecks)",
+    orchestrate:
+      "the :orchestrate mode was removed; every chat can send helpers with " <>
+        "spawn_agent, under the same limits"
   }
 
-  @doc "Resolve an atom shortcut or module to the Mode module."
-  @spec resolve(atom() | module()) :: module()
-  def resolve(mode) when is_atom(mode) do
-    case Map.fetch(@builtins, mode) do
-      {:ok, module} -> module
-      :error -> mode
-    end
-  end
+  @doc """
+  Resolve an atom shortcut or module to the Mode module.
+
+  Returns `{:error, {:removed_mode, mode, hint}}` for a mode issue 322
+  removed, `hint` saying what replaces it.
+  """
+  @spec resolve(atom() | module()) :: module() | {:error, {:removed_mode, atom(), String.t()}}
+  def resolve(:react), do: ExAthena.Modes.ReAct
+
+  def resolve(mode) when is_map_key(@removed, mode),
+    do: {:error, {:removed_mode, mode, Map.fetch!(@removed, mode)}}
+
+  def resolve(mode) when is_atom(mode), do: mode
 end

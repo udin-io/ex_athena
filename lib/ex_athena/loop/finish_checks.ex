@@ -21,7 +21,6 @@ defmodule ExAthena.Loop.FinishChecks do
   drop the note but not the flag.
   """
 
-  alias ExAthena.Agents.Quota
   alias ExAthena.Loop.State
   alias ExAthena.Provenance
   alias ExAthena.Tools.Bash
@@ -37,56 +36,31 @@ defmodule ExAthena.Loop.FinishChecks do
   }
 
   @doc """
-  Run the checks on a halted state.
+  Run the checks on a halted chat.
 
   Returns `{:continue, state}` when a check fires (the note is appended and
-  the halt is undone), `{:halt, state}` when the run's worker allowance is
-  spent and the unmet checks are written into its deliverable instead, and
-  `:pass` when no check applies, so the caller decides the halt itself.
+  the halt is undone), and `:pass` when none applies, so the caller decides
+  the halt itself.
 
-  `voice:` picks who the notes speak to:
-
-    * `:orchestrator` (default) — a coordinator that holds no workspace
-      tools. Only a `finish` (`halted_reason` `{:submitted, ...}`) is checked,
-      the whole transcript is the evidence, and each note asks for a worker.
-    * `:chat` — the one chat, which holds every tool. A plain-text stop is
-      checked as well as a `finish`, and the evidence is the current task
-      alone: everything since the person's latest message. A chat runs many
-      tasks, and each one gets its own checks; a resume with no new message
-      is the same task, so a check it already fired stays fired. A chat that
-      can neither run a command nor send a helper is not checked, since no
-      note could be acted on.
+  A plain-text stop is checked as well as a `finish`, and the evidence is the
+  current request alone: the person's message and everything after it. A chat
+  answers many requests, and each gets its own checks; a resume with no new
+  message is the same request, so a check it already fired stays fired. A
+  chat that can neither run a command nor send a helper, or has no turn left,
+  is not checked, since no note could be acted on.
   """
-  @spec run(State.t(), keyword()) :: {:continue, State.t()} | {:halt, State.t()} | :pass
-  def run(%State{} = halted, opts \\ []) do
-    voice = Keyword.get(opts, :voice, :orchestrator)
-    ev = if checked?(halted, voice), do: evidence(halted, voice), else: nil
-
-    # Every check below asks for ONE more worker. With the allowance spent
-    # there is none, so the demand is one the run cannot meet: session
-    # 227f7f480afa was told twice to spawn, refused twice, and failed. The
-    # checks still matter, so they are named in the deliverable instead —
-    # unverified work reported as unverified (issue 216).
-    quota_spent? =
-      voice == :orchestrator and ev != nil and Quota.exhausted?(halted.ctx.assigns || %{})
-
-    cond do
-      quota_spent? -> {:halt, note_unverified(halted, ev)}
-      ev == nil -> :pass
-      true -> first_failing(halted, ev, voice)
-    end
+  @spec run(State.t()) :: {:continue, State.t()} | :pass
+  def run(%State{} = halted) do
+    if checked?(halted), do: first_failing(halted, evidence(halted)), else: :pass
   end
 
   # In order; the first deficient check that has not fired yet is the one
   # nudged, so a run meets them one at a time.
-  defp first_failing(halted, ev, voice) do
-    Enum.find_value(checks(), :pass, fn {flag, deficient?, note_args} ->
-      if gate?(halted, ev, flag, deficient?),
-        do: nudge(halted, voice, flag, apply_note(voice, note_args, ev))
+  defp first_failing(halted, ev) do
+    Enum.find_value(checks(), :pass, fn {flag, deficient?, {kind, args}} ->
+      if gate?(halted, ev, flag, deficient?), do: nudge(halted, flag, note(kind, args.(ev)))
     end)
   end
-
-  defp apply_note(voice, {kind, args}, ev), do: note(voice, kind, args.(ev))
 
   defp checks do
     [
@@ -135,49 +109,7 @@ defmodule ExAthena.Loop.FinishChecks do
       match?({:submitted, _, _}, halted.halted_reason)
   end
 
-  # The deliverable is what the caller reads; a runtime note anywhere else is
-  # not part of the answer. Appended, never substituted — the run's own words
-  # stay first.
-  defp note_unverified(halted, ev) do
-    case unverified(ev) do
-      [] ->
-        halted
-
-      checks ->
-        {deliverable, source} = submitted_payload(halted)
-
-        note =
-          "\n\n[orchestration runtime] UNVERIFIED — the run's worker allowance " <>
-            "(#{Quota.limit(halted.ctx.assigns || %{})}) was spent, so these checks did not run:\n" <>
-            Enum.map_join(checks, "\n", &("- " <> &1))
-
-        %{halted | halted_reason: {:submitted, to_string(deliverable) <> note, source}}
-    end
-  end
-
-  # `finish` halts with `{:submitted, payload, source}` (issue 263); a
-  # `{:submitted, payload}` halt raised elsewhere is the same signal without a
-  # named argument, and both end the run the same way.
-  defp submitted_payload(%{halted_reason: {:submitted, payload, source}}), do: {payload, source}
-  defp submitted_payload(%{halted_reason: {:submitted, payload}}), do: {payload, nil}
-
-  # One line per check that is still deficient, in the checks' own order.
-  defp unverified(ev) do
-    [
-      {ev.changed != [] and not ev.acted?,
-       "no command was run to check " <> Enum.join(ev.changed, ", ")},
-      {ev.source_changed != [] and not ev.tested?,
-       "no test run covered " <> Enum.join(ev.source_changed, ", ")},
-      {ev.uncovered != [], "no test executed " <> Enum.join(ev.uncovered, ", ")},
-      {ev.source_changed != [], "the delivered work was not audited against the original request"}
-    ]
-    |> Enum.filter(&elem(&1, 0))
-    |> Enum.map(&elem(&1, 1))
-  end
-
-  defp checked?(halted, :orchestrator), do: submitted?(halted)
-
-  defp checked?(halted, :chat) do
+  defp checked?(halted) do
     (halted.meta[:finish_reason] == :stop or submitted?(halted)) and can_act?(halted) and
       turn_left?(halted)
   end
@@ -201,10 +133,10 @@ defmodule ExAthena.Loop.FinishChecks do
   defp gate?(halted, ev, flag, deficient?),
     do: halted.mode_state[flag] != true and flag not in ev.fired and deficient?.(ev)
 
-  defp nudge(halted, voice, flag, note) do
+  defp nudge(halted, flag, note) do
     {:continue,
      halted
-     |> redirect(gate_prefix(voice, flag) <> note)
+     |> redirect(gate_prefix(flag) <> note)
      |> Map.put(:halted_reason, nil)
      |> put_in([Access.key(:mode_state), flag], true)
      |> Map.put(:meta, Map.delete(halted.meta, :finish_reason))}
@@ -212,28 +144,17 @@ defmodule ExAthena.Loop.FinishChecks do
 
   # Doubles as the note's own header, so nothing invisible rides along in the
   # prompt or the chat UI just to be read back on the next run.
-  defp gate_prefix(:orchestrator, flag),
-    do: "[orchestration runtime: #{@gate_names[flag]} gate] "
-
-  defp gate_prefix(:chat, flag), do: "[chat runtime: #{@gate_names[flag]} check] "
-
-  defp fired_gates(transcript, _messages, :orchestrator),
-    do:
-      Enum.filter(
-        Map.keys(@gate_names),
-        &String.contains?(transcript, gate_prefix(:orchestrator, &1))
-      )
+  defp gate_prefix(flag), do: "[chat runtime: #{@gate_names[flag]} check] "
 
   # Only a note the runtime wrote counts: a user turn or an error tool result
   # that OPENS with the check's name (`redirect/2` writes exactly those). The
   # same words inside a file the chat read, a fetched page or a helper's report
   # would otherwise switch the check off for the whole request.
-  defp fired_gates(_transcript, messages, :chat) do
+  defp fired_gates(messages) do
     notes = runtime_notes(messages)
 
     Enum.filter(Map.keys(@gate_names), fn flag ->
-      prefix = gate_prefix(:chat, flag)
-      Enum.any?(notes, &String.starts_with?(&1, prefix))
+      Enum.any?(notes, &String.starts_with?(&1, gate_prefix(flag)))
     end)
   end
 
@@ -269,17 +190,18 @@ defmodule ExAthena.Loop.FinishChecks do
     end)
   end
 
-  # What the workers' own tool calls prove about this run.
+  # What the chat's own tool calls, and its helpers' reports, prove about the
+  # current request.
   #
   # `acted?` is a FLOOR, not a proof: any non-read-only command clears it, so a
-  # worker that ran `mkdir` counts. It exists to make "nothing was checked"
+  # chat that ran `mkdir` counts. It exists to make "nothing was checked"
   # impossible to finish through silently. `tested?` is the sharper check —
   # a test run that neither failed nor hid its result behind a pipe (see
   # `Provenance.command_outcome/3`).
-  defp evidence(state, voice) do
-    {messages, request} = scope(state, voice)
+  defp evidence(state) do
+    {messages, request} = scope(state)
     transcript = transcript_text(messages)
-    events = own_events(messages, voice) ++ Provenance.scan(footer_text(messages, voice))
+    events = Provenance.events(messages) ++ Provenance.scan(footer_text(messages))
     files = Provenance.changed_files(events)
     commands = Provenance.commands(events)
 
@@ -301,7 +223,7 @@ defmodule ExAthena.Loop.FinishChecks do
       tested?: tested?,
       test_runs: test_runs,
       # Checks this session has already fired, in this run or an earlier one.
-      fired: fired_gates(transcript, messages, voice),
+      fired: fired_gates(messages),
       request: request,
       # Only asked once tests are green: before that, checks 1 and 2 own the
       # conversation and a coverage demand would be noise on top of them.
@@ -320,15 +242,10 @@ defmodule ExAthena.Loop.FinishChecks do
     end
   end
 
-  # The orchestrator holds no workspace tools, so only its workers' footers
-  # carry evidence. The chat edits and runs commands itself, so its own calls
-  # count too.
-  # Helpers' footers are read only off `spawn_agent` results in the chat: the
-  # chat's own tool output (a file, a command's output, a fetched page) can
-  # hold any text, a forged footer line included.
-  defp footer_text(messages, :orchestrator), do: transcript_text(messages)
-
-  defp footer_text(messages, :chat) do
+  # Helpers' footers are read only off `spawn_agent` results: the chat's own
+  # tool output (a file, a command's output, a fetched page) can hold any
+  # text, a forged footer line included.
+  defp footer_text(messages) do
     spawn_ids =
       for %{role: :assistant, tool_calls: [_ | _] = calls} <- messages,
           %{name: "spawn_agent", id: id} <- calls,
@@ -341,13 +258,7 @@ defmodule ExAthena.Loop.FinishChecks do
     |> Enum.map_join("\n", &to_string(&1.content || ""))
   end
 
-  defp own_events(_messages, :orchestrator), do: []
-  defp own_events(messages, :chat), do: Provenance.events(messages)
-
-  defp scope(%State{messages: messages}, :orchestrator),
-    do: {messages, original_request(messages)}
-
-  defp scope(%State{messages: messages} = state, :chat) do
+  defp scope(%State{messages: messages} = state) do
     case request_index(messages, state.meta[:request_message]) do
       nil -> {messages, ""}
       i -> {Enum.drop(messages, i), request_text(Enum.at(messages, i))}
@@ -418,7 +329,7 @@ defmodule ExAthena.Loop.FinishChecks do
 
   defp human_turn?(_), do: false
 
-  @runtime_prefixes ["[chat runtime", "[orchestration runtime", "[runtime:"]
+  @runtime_prefixes ["[chat runtime", "[runtime:"]
 
   defp runtime_note?(text), do: String.starts_with?(text, @runtime_prefixes)
 
@@ -435,7 +346,8 @@ defmodule ExAthena.Loop.FinishChecks do
 
   defp request_text(_), do: ""
 
-  # Worker reports arrive as tool results, so both channels must be scanned.
+  # Helper reports and command output arrive as tool results, so both channels
+  # are read.
   defp transcript_text(messages) when is_list(messages) do
     messages
     |> Enum.flat_map(fn msg ->
@@ -445,12 +357,7 @@ defmodule ExAthena.Loop.FinishChecks do
     |> Enum.join("\n")
   end
 
-  defp note(:orchestrator, :verify, files), do: verify_note(files)
-  defp note(:orchestrator, :test, files), do: test_note(files)
-  defp note(:orchestrator, :coverage, {files, runs}), do: coverage_note(files, runs)
-  defp note(:orchestrator, :audit, request), do: audit_note(request)
-
-  defp note(:chat, :verify, files) do
+  defp note(:verify, files) do
     "You changed " <>
       Enum.join(files, ", ") <>
       " but ran no command to check the change. Run this project's build or " <>
@@ -459,7 +366,7 @@ defmodule ExAthena.Loop.FinishChecks do
       "by a command, say so plainly in your answer."
   end
 
-  defp note(:chat, :test, files) do
+  defp note(:test, files) do
     "You changed " <>
       Enum.join(files, ", ") <>
       " and no passing test run covers them. A build proves the code parses, " <>
@@ -468,7 +375,7 @@ defmodule ExAthena.Loop.FinishChecks do
       "cannot be tested, say why in your answer."
   end
 
-  defp note(:chat, :coverage, {files, runs}) do
+  defp note(:coverage, {files, runs}) do
     "A test run exited zero with no failure summary (" <>
       Enum.join(runs, "; ") <>
       "), but no test executed " <>
@@ -481,7 +388,7 @@ defmodule ExAthena.Loop.FinishChecks do
       "this code cannot be executed by a test, say why in your answer."
   end
 
-  defp note(:chat, :audit, request) do
+  defp note(:audit, request) do
     "Before you answer: nothing has checked the work against the request. " <>
       "Compiling, passing tests and covered code do not show that you built " <>
       "what was asked. Yourself, or through a helper given the request below " <>
@@ -494,55 +401,11 @@ defmodule ExAthena.Loop.FinishChecks do
       quoted_request(request)
   end
 
-  defp verify_note(files) do
-    "Workers changed " <>
-      Enum.join(files, ", ") <>
-      " but no command was run to check them — a completed todo is your own " <>
-      "claim, not evidence. Spawn ONE worker whose brief is to run this " <>
-      "project's build/test command and report its RAW output, then call " <>
-      "finish. If this task genuinely cannot be checked by a command, call " <>
-      "finish again and say so in the deliverable."
-  end
-
-  # The human's FIRST turn, verbatim. The audit must run against what was
-  # actually asked, never the run's own restatement of it — a paraphrase is
-  # where the dropped requirement went missing in the first place.
-  #
-  # `ExAthena.Memory` injects each AGENTS.md / CLAUDE.md file as a user-role
-  # message in FRONT of the prompt, so "the first user message" is the project
-  # memory in every session that has one. Skipping those is what makes this the
-  # request rather than the conventions (issue 232). "" when the run has no
-  # human turn yet — `audit_note/1` then quotes nothing.
-  defp original_request(messages) do
-    Enum.find_value(messages, "", fn
-      %{role: :user, content: content} = message when is_binary(content) ->
-        if ExAthena.Memory.memory_message?(message), do: nil, else: content
-
-      _ ->
-        nil
-    end)
-  end
-
-  defp audit_note(request) do
-    "Before finishing: nothing has checked the " <>
-      "delivered work against the ORIGINAL request. Compiling, passing tests " <>
-      "and covered code do not show that you built what was asked. Spawn ONE " <>
-      "worker to audit it. Give that worker the request below VERBATIM and " <>
-      "tell it to: list every explicit requirement as a separate item; for " <>
-      "each, read the actual delivered code and state MET or NOT MET with the " <>
-      "file and line as evidence; and check every literal value the code " <>
-      "compares against real data (enum codes, status strings, column values) " <>
-      "by querying or reading the data — a value that was assumed rather than " <>
-      "observed is NOT MET. It must actively look for requirements that were " <>
-      "narrowed, widened or dropped. Fix anything NOT MET, then finish." <>
-      quoted_request(request)
-  end
-
   # No human turn, no quotation: an empty "ORIGINAL REQUEST:" heading invites
   # the model to fill it in from the nearest text it can see, which is the
-  # project memory `original_request/1` skips.
+  # project memory `request_message/1` skips.
   defp quoted_request(request) do
-    limit = Tuning.get(:orchestrate, :audit_request_chars, @audit_request_chars)
+    limit = Tuning.get(:chat, :audit_request_chars, @audit_request_chars)
 
     if String.trim(request) == "" do
       ""
@@ -554,33 +417,5 @@ defmodule ExAthena.Loop.FinishChecks do
 
       "\n\nORIGINAL REQUEST:\n" <> body
     end
-  end
-
-  # States what the runtime observed — a command, its exit code, the absence of
-  # a failure summary — and never "the suite is green". Session 227f7f480afa's
-  # orchestrator repeated that sentence in its deliverable over 4 failing tests.
-  defp coverage_note(files, test_runs) do
-    "A test run exited zero with no failure summary " <>
-      "in its output (" <>
-      Enum.join(test_runs, "; ") <>
-      "), but no test executed " <>
-      Enum.join(files, ", ") <>
-      " — a passing run proves a test EXISTS, not that it covers your " <>
-      "change. Spawn ONE worker to add a test that calls the changed code " <>
-      "through its real entry point (the function or route a caller actually " <>
-      "uses, not a private helper), run the suite WITH COVERAGE " <>
-      "(e.g. `mix test --cover`), and paste the coverage table plus the raw " <>
-      "test output. Then call finish. If this code genuinely cannot be " <>
-      "executed by a test, call finish again and say why."
-  end
-
-  defp test_note(files) do
-    "Workers changed " <>
-      Enum.join(files, ", ") <>
-      " and no test run covered them — a build proves the code parses, not " <>
-      "that it works. Spawn ONE worker to run this project's test suite, and " <>
-      "to ADD a test exercising the changed behaviour if none does; it must " <>
-      "report the raw output. Then call finish. If this change genuinely " <>
-      "cannot be tested, call finish again and say why in the deliverable."
   end
 end

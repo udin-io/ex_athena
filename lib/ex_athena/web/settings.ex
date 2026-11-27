@@ -154,78 +154,14 @@ defmodule ExAthena.Web.Settings do
           help:
             "auto: a small model starts without helpers, a larger one may send them. " <>
               "on: every model may send helpers. off: no model may."
-        }
-      ]
-    },
-    %{
-      ns: :orchestrate,
-      title: "Orchestration",
-      blurb: "When the orchestrator stops planning and starts delegating.",
-      fields: [
-        %{
-          key: :max_planning_turns,
-          label: "Max planning turns",
-          default: 8,
-          type: :integer,
-          min: 1,
-          help: "Planning turns before execution is forced."
-        },
-        %{
-          key: :max_turns_without_spawn,
-          label: "Turns before auto-delegate",
-          default: 2,
-          type: :integer,
-          min: 0,
-          help: "Spawn-less turns with pending todos before the runtime delegates for you."
-        },
-        %{
-          key: :research_planning_threshold,
-          label: "Research nudge after",
-          default: 4,
-          type: :integer,
-          min: 1,
-          help: "Planning turns before the orchestrator is nudged toward research."
-        },
-        %{
-          key: :research_escalation_threshold,
-          label: "Research escalation after",
-          default: 6,
-          type: :integer,
-          min: 1,
-          help: "Planning turns before the runtime spawns a research worker itself."
-        },
-        %{
-          key: :max_dictated_briefs,
-          label: "Dictated briefs before warning",
-          default: 2,
-          type: :integer,
-          min: 1,
-          help: "Briefs containing dictated code before the orchestrator is told to stop."
-        },
-        %{
-          key: :max_same_objective,
-          label: "Repeats of one objective",
-          default: 3,
-          type: :integer,
-          min: 1,
-          help: "Times the same objective may be delegated before it is called out."
-        },
-        %{
-          key: :repeat_key_chars,
-          label: "Repeat-detection key length",
-          default: 120,
-          type: :integer,
-          min: 20,
-          help:
-            "Leading characters of an objective compared when detecting a repeated delegation."
         },
         %{
           key: :audit_request_chars,
-          label: "Audit request chars",
+          label: "Request quoted in the audit check",
           default: 1_500,
           type: :integer,
           min: 100,
-          help: "How much of the original request is quoted into the audit prompt."
+          help: "How much of your request the chat is shown when it checks its work against it."
         }
       ]
     },
@@ -692,29 +628,6 @@ defmodule ExAthena.Web.Settings do
           type: :integer,
           min: 1000,
           help: "Per-request deadline."
-        }
-      ]
-    },
-    %{
-      ns: :modes,
-      title: "Modes",
-      blurb: nil,
-      fields: [
-        %{
-          key: :max_reflections,
-          label: "reflexion: max reflections",
-          default: 3,
-          type: :integer,
-          min: 1,
-          help: "Reflect-and-retry rounds in reflexion mode."
-        },
-        %{
-          key: :reflections_hard_cap,
-          label: "reflexion: hard cap",
-          default: 3,
-          type: :integer,
-          min: 1,
-          help: "Ceiling a caller-supplied reflection count is clamped to."
         }
       ]
     },
