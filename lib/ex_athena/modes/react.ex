@@ -53,6 +53,11 @@ defmodule ExAthena.Modes.ReAct do
   # stays the same turn to turn and a local server's prompt cache holds.
   @helper_tools ~w(spawn_agent read_worker_report)
 
+  # From bench/small_models.exs (docs/design/306-small-models.md, measured
+  # 2026-11-27): helpers were sent in every run at 9.7B and 14.8B, in 1 of 3 at
+  # 4B and never at 3.2B.
+  @small_model_below_b 8
+
   @todo_note """
   ## Keep a to-do list
   When a task takes more than one step, call todo_write before you start, with
@@ -75,8 +80,11 @@ defmodule ExAthena.Modes.ReAct do
 
   defp small_model?(%State{capabilities: caps}) do
     case Map.get(caps || %{}, :params_b) do
-      size when is_number(size) -> size < Tuning.get(:chat, :small_model_below_b, 10)
-      _ -> false
+      size when is_number(size) ->
+        size < Tuning.get(:chat, :small_model_below_b, @small_model_below_b)
+
+      _ ->
+        false
     end
   end
 

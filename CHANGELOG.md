@@ -52,7 +52,8 @@ ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   model got the same tools and prompt as a large one, helper tool included. Now
   the chat reads each model's size, from its name (`llama3.2:3b`) or from what
   Ollama reports. Below `config :ex_athena, :chat, small_model_below_b:`
-  (default SMALLB) the chat tells the model to write a to-do list when a task
+  (default 8, from a run on four local models in
+  `docs/design/306-small-models.md`) the chat tells the model to write a to-do list when a task
   has steps, and leaves out `spawn_agent` and `read_worker_report`. `helpers:
   :on` keeps helpers for every model, and `helpers: :off` removes them for
   every model; the web settings show both under Chat. A model whose size

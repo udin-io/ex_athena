@@ -138,7 +138,7 @@ defmodule ExAthena.Web.Settings do
         %{
           key: :small_model_below_b,
           label: "Small model below (billion parameters)",
-          default: 10,
+          default: 8,
           type: :integer,
           min: 0,
           help:

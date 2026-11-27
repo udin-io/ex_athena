@@ -99,6 +99,16 @@ defmodule ExAthena.Modes.ReActSmallModelTest do
     refute prompt =~ @todo_note
   end
 
+  # The default comes from the small-model run: helpers worked at 9.7B, not
+  # at 4B (docs/design/306-small-models.md).
+  test "by default a 7B model is small and a 9.7B model is not", %{dir: dir} do
+    {seven, _} = first_request(dir, sized(7.0))
+    {nine, _} = first_request(dir, sized(9.7))
+
+    refute "spawn_agent" in seven
+    assert "spawn_agent" in nine
+  end
+
   test "the size where a model counts as small is a setting", %{dir: dir} do
     Application.put_env(:ex_athena, :chat, small_model_below_b: 2)
     {names, prompt} = first_request(dir, sized(3.0))
