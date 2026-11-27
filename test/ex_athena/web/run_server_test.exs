@@ -67,6 +67,26 @@ defmodule ExAthena.Web.RunServerTest do
     assert_receive {:athena_done, %{text: "final answer"}}, 2_000
   end
 
+  # A helper runs in its own process, so an answer sent to the top-level run
+  # never reached the helper that asked.
+  test "an answer goes to the process that asked, a helper included" do
+    sid = "s-reply-to"
+    task = blocking_run(sid)
+
+    send(
+      RunServer.whereis(sid),
+      {:athena_ask_user, %{tool_call_id: "q1", question: "Go?", options: [], reply_to: self()}}
+    )
+
+    # A cast after the question reaches the server only once it is handled.
+    _ = RunServer.running?(sid)
+    RunServer.answer(sid, "q1", "yes")
+
+    assert_receive {:athena_user_answer, "q1", "yes"}, 2_000
+
+    send(task, :finish)
+  end
+
   test "a finished run is no longer attachable (caller loads the saved session)" do
     sid = "s-finished"
     task = blocking_run(sid)

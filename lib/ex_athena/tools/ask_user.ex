@@ -69,31 +69,50 @@ defmodule ExAthena.Tools.AskUser do
            "best judgement instead of asking"}
 
       true ->
-        wait_for_answer(host, ctx.tool_call_id, question, options)
+        case ask(host, ctx.tool_call_id, question, options) do
+          # Phrase the result so even a small local model cannot miss that the
+          # question has been RESOLVED — a bare answer string was read as
+          # "still waiting" and stalled runs.
+          {:ok, answer} ->
+            {:ok,
+             ~s(The user answered: "#{answer}"\n) <>
+               "Act on this answer now; do not ask again."}
+
+          {:error, :host_down} ->
+            {:error, "the user session ended before answering the question"}
+        end
     end
   end
 
-  defp wait_for_answer(host, tool_call_id, question, options) do
+  @doc """
+  Put a question to the person through `host` and wait for the answer.
+
+  Sends `{:athena_ask_user, %{tool_call_id:, question:, options:, reply_to:}}`
+  to `host` and blocks until `{:athena_user_answer, id, answer}` arrives.
+  `reply_to` is the asking process, so a host can answer a helper that runs in
+  its own process, not only the top-level run. Returns `{:ok, answer}`, or
+  `{:error, :host_down}` when the host exits first. `extra` rides in the
+  payload: `ExAthena.Chat.Permission` asks for approvals through here with a
+  `kind:`, so a host can tell a plan approval from a question the model
+  wrote.
+  """
+  @spec ask(pid(), String.t() | nil, String.t(), [String.t()], map()) ::
+          {:ok, String.t()} | {:error, :host_down}
+  def ask(host, id, question, options, extra \\ %{}) when is_pid(host) do
     ref = Process.monitor(host)
 
-    send(
-      host,
-      {:athena_ask_user, %{tool_call_id: tool_call_id, question: question, options: options}}
-    )
+    payload =
+      Map.merge(extra, %{tool_call_id: id, question: question, options: options, reply_to: self()})
+
+    send(host, {:athena_ask_user, payload})
 
     receive do
-      {:athena_user_answer, ^tool_call_id, answer} ->
+      {:athena_user_answer, ^id, answer} ->
         Process.demonitor(ref, [:flush])
-
-        # Phrase the result so even a small local model cannot miss that the
-        # question has been RESOLVED — a bare answer string was read as
-        # "still waiting" and stalled runs.
-        {:ok,
-         ~s(The user answered: "#{answer}"\n) <>
-           "Act on this answer now; do not ask again."}
+        {:ok, answer}
 
       {:DOWN, ^ref, :process, ^host, _reason} ->
-        {:error, "the user session ended before answering the question"}
+        {:error, :host_down}
     end
   end
 end

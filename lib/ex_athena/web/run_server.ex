@@ -275,7 +275,14 @@ defmodule ExAthena.Web.RunServer do
 
   @impl GenServer
   def handle_cast({:answer, tool_call_id, answer}, state) do
-    if state.task_pid, do: send(state.task_pid, {:athena_user_answer, tool_call_id, answer})
+    # The asker names itself: a helper asks from its own process.
+    target =
+      case state.awaiting_question do
+        %{reply_to: pid} when is_pid(pid) -> pid
+        _ -> state.task_pid
+      end
+
+    if target, do: send(target, {:athena_user_answer, tool_call_id, answer})
     {:noreply, %{state | awaiting_question: nil, current_action: "thinking…"}}
   end
 
