@@ -881,6 +881,7 @@ defmodule ExAthena.Loop do
         # run's counter (put_new). Seeding it in SpawnAgent instead would give
         # every branch its own allowance and cap nothing.
         |> ExAthena.Agents.Quota.install()
+        |> ExAthena.Agents.RunFolder.install()
         |> wire_coordinator(coordinator)
         |> maybe_put_subagent_suffix(Keyword.get(opts, :subagent_prompt_suffix))
 

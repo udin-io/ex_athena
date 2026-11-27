@@ -7,6 +7,23 @@ ExAthena adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## Unreleased
 
+### Added
+
+- **An orchestrator can name the folder its workers start in**
+  ([#309](https://github.com/udin-io/ex_athena/issues/309)). When the
+  orchestrator made a git worktree with `git worktree add`, ExAthena never knew:
+  every worker still started in the main checkout, and its brief ended with
+  "Working directory: <main checkout> ... never work outside it" under the
+  orchestrator's own "cd to the worktree". A worker's relative grep found
+  nothing, and an auto-delegated "run the full suite" step ran the suite three
+  times on `main`. The orchestrator now has a `set_working_folder` tool. Call
+  it once with the worktree's path and every later worker, auto-delegated steps
+  included, starts there, with a brief that names that folder alone. The tool
+  accepts only a folder that `git worktree list` of the run's repo shows and that
+  lies inside the confinement roots; anything else is refused with an error the
+  model reads. `spawn_agent` still takes no `cwd` from the model, and a host's
+  `spawn_agent_opts[:cwd]` still wins. A run that never calls it behaves as before.
+
 ### Fixed
 
 - **You can now see what a worker is writing while it writes**

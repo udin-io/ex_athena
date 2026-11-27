@@ -571,7 +571,9 @@ defmodule ExAthena.Modes.OrchestrateTest do
     # report off disk and cannot inspect the codebase, so it does not
     # reopen that hole (#235).
     assert Enum.sort(names) ==
-             Enum.sort(~w(todo_write spawn_agent finish ask_user read_worker_report skill))
+             Enum.sort(
+               ~w(todo_write spawn_agent finish ask_user read_worker_report skill set_working_folder)
+             )
   end
 
   test "auto-delegation: pending todos + 2 spawn-less turns → the runtime spawns the worker",
