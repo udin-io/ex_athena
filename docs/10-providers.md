@@ -238,8 +238,13 @@ The notes the loop adds after the last tool result (the progress ledger, the
 phase, budget and research notes) change every call by design. They stay cheap
 only while they are short. Once they pass the checkpoint's distance from the
 end, the checkpoint falls inside text the next call drops: in a probe with
-about 1,200 tokens of notes, four calls in a row cached nothing. Issue 330
-tracks that limit.
+1,570 bytes of notes, four calls in a row cached nothing. So the ledger takes
+only the room the other notes leave in 1,200 bytes (about 400 tokens of text
+full of paths and numbers), dropping its oldest conclusions first and always
+keeping the newest. With 1,157 bytes of notes the same probe's cached count
+grew every call. Near a budget's end the wrap-up note alone takes 972 bytes,
+so the notes can still pass the cap there. A host's chat-params hook that
+injects a message on every call adds to the same notes, outside the cap.
 
 ---
 
