@@ -20,7 +20,7 @@ defmodule ExAthena.Web.RunServerTest do
   # A run whose provider blocks until the test sends `:finish`, so the run is
   # deterministically "in flight" while we attach/inspect. The responder runs
   # inside the run Task, so `self()` there is the task pid we unblock.
-  defp blocking_run(session_id, assistant_msg_id \\ "amsg", coordinator \\ nil) do
+  defp blocking_run(session_id, assistant_msg_id \\ "amsg", coordinator \\ nil, extra \\ %{}) do
     test_pid = self()
 
     responder = fn _request ->
@@ -38,16 +38,22 @@ defmodule ExAthena.Web.RunServerTest do
     end
 
     {:ok, _pid} =
-      RunServer.start_run(session_id, %{
-        run_opts: [
-          provider: :mock,
-          mock: [responder: responder],
-          messages: [Messages.user("hi")]
-        ],
-        assistant_msg_id: assistant_msg_id,
-        run_sid: "#{session_id}-run-#{assistant_msg_id}",
-        coordinator: coordinator
-      })
+      RunServer.start_run(
+        session_id,
+        Map.merge(
+          %{
+            run_opts: [
+              provider: :mock,
+              mock: [responder: responder],
+              messages: [Messages.user("hi")]
+            ],
+            assistant_msg_id: assistant_msg_id,
+            run_sid: "#{session_id}-run-#{assistant_msg_id}",
+            coordinator: coordinator
+          },
+          extra
+        )
+      )
 
     assert_receive {:run_task, task}, 2_000
     task
@@ -342,6 +348,33 @@ defmodule ExAthena.Web.RunServerTest do
       assert_receive {:athena_done, _}, 2_000
     end
 
+    # Issue 351: a reattaching browser rebuilds the run from this history, so
+    # each entry keeps the moment it arrived. Without it the replayed rows
+    # would all carry the moment of the reattach.
+    test "each retained event keeps when it arrived, counted from the run's start" do
+      sid = "s-retain-times"
+      started_mono = System.monotonic_time(:millisecond) - 1_000
+      started_at = DateTime.add(DateTime.utc_now(), -1, :second)
+
+      task =
+        blocking_run(sid, "amsg", nil, %{started_mono: started_mono, started_at: started_at})
+
+      emit(sid, {:thinking, "let me "})
+      emit(sid, {:thinking, "look"})
+      emit(sid, {:tool_call, tool_call("c1", "read")})
+
+      assert {:ok, snap} = RunServer.attach(sid, self())
+
+      assert snap.started_at == started_at
+      assert snap.started_mono == started_mono
+      assert length(snap.event_at) == length(snap.events)
+      assert Enum.all?(snap.event_at, &(is_integer(&1) and &1 >= 1_000))
+      assert snap.event_at == Enum.sort(snap.event_at)
+
+      send(task, :finish)
+      assert_receive {:athena_done, _}, 2_000
+    end
+
     test "history is capped so a long run cannot grow without bound" do
       sid = "s-retain-cap"
       task = blocking_run(sid)
@@ -351,6 +384,7 @@ defmodule ExAthena.Web.RunServerTest do
       assert {:ok, snap} = RunServer.attach(sid, self())
 
       assert length(snap.events) == RunServer.max_retained_events()
+      assert length(Map.get(snap, :event_at, [])) == RunServer.max_retained_events()
       # The cap drops the OLDEST events — the recent past is what a
       # reattaching client needs to rebuild its view.
       assert List.last(snap.events) == {:iteration, RunServer.max_retained_events() + 25}

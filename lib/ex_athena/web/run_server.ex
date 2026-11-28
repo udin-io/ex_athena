@@ -260,9 +260,16 @@ defmodule ExAthena.Web.RunServer do
       # Messages the run took, so a Stop (whose result carries no messages)
       # can hand them back rather than show them as sent.
       taken: [],
-      # Oldest-first, so a reattaching client replays in wire order.
+      # Oldest-first, so a reattaching client replays in wire order. Each
+      # entry is `{at, event}`: milliseconds since the run started, so a
+      # replayed row keeps the moment it happened (issue 351).
       events: :queue.new(),
-      event_count: 0
+      event_count: 0,
+      # The run's start. The LiveView that starts the run passes both, so its
+      # own clock and this one agree; the wall-clock one places the run in its
+      # session.
+      started_mono: Map.get(spec, :started_mono) || System.monotonic_time(:millisecond),
+      started_at: Map.get(spec, :started_at) || DateTime.utc_now()
     }
 
     {:ok, state, {:continue, :start_run}}
@@ -570,10 +577,12 @@ defmodule ExAthena.Web.RunServer do
   # blob at the other end, which is not what the run looked like. Merging each
   # contiguous run of deltas into one entry costs one entry per segment —
   # exactly what the UI renders anyway.
+  # A coalesced entry keeps the time of its first delta: that is when the
+  # segment began.
   defp retain(state, {kind, text} = event) when kind in [:content, :thinking] do
     case :queue.out_r(state.events) do
-      {{:value, {^kind, prev}}, rest} ->
-        %{state | events: :queue.in({kind, prev <> text}, rest)}
+      {{:value, {at, {^kind, prev}}}, rest} ->
+        %{state | events: :queue.in({at, {kind, prev <> text}}, rest)}
 
       _ ->
         append(state, event)
@@ -585,11 +594,13 @@ defmodule ExAthena.Web.RunServer do
   # `:queue` keeps both ends O(1): this runs on every event of every run, so a
   # list with `++` (O(n) per append) would make long runs quadratic.
   defp append(state, event) do
+    entry = {System.monotonic_time(:millisecond) - state.started_mono, event}
+
     if state.event_count >= max_retained_events() do
       {_dropped, trimmed} = :queue.out(state.events)
-      %{state | events: :queue.in(event, trimmed)}
+      %{state | events: :queue.in(entry, trimmed)}
     else
-      %{state | events: :queue.in(event, state.events), event_count: state.event_count + 1}
+      %{state | events: :queue.in(entry, state.events), event_count: state.event_count + 1}
     end
   end
 
@@ -598,6 +609,8 @@ defmodule ExAthena.Web.RunServer do
   defp tool_name(_), do: nil
 
   defp snapshot(state) do
+    retained = :queue.to_list(state.events)
+
     %{
       streaming: state.streaming,
       stream_text: state.stream_text,
@@ -608,7 +621,11 @@ defmodule ExAthena.Web.RunServer do
       run_sid: state.run_sid,
       # Structural events so far, oldest-first. A LiveView that reconnects
       # mid-run replays these to rebuild the window it was not there for.
-      events: :queue.to_list(state.events)
+      events: Enum.map(retained, &elem(&1, 1)),
+      # When each of those arrived, in ms since `started_mono`.
+      event_at: Enum.map(retained, &elem(&1, 0)),
+      started_mono: state.started_mono,
+      started_at: state.started_at
     }
   end
 end
