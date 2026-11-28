@@ -8,25 +8,14 @@ defmodule ExAthena.Checkpoint do
   where `<sha>` is the SHA-256 of the absolute file path and
   `<version>` increments on each edit.
 
-  `rewind/3` restores files (and optionally truncates the JSONL
-  session log) to the state at a given event UUID.
+  Each version also lists, in `<version>.calls`, the tool calls that took
+  it, so `restore_files/4` can tell which versions belong to steps a rewind
+  drops (`ExAthena.Chats.rewind/3`).
 
   Adapted from Claude Code's `~/.claude/file-history/<session_id>/`
   layout. The 30-day TTL is enforced at boot by
   `ExAthena.Storage.Sweeper`, and is settable in the settings modal.
-
-  ## Modes
-
-    * `:code_and_history` — restore files to checkpoint AND truncate
-      the session log to the chosen UUID.
-    * `:history_only` — restore session log only; leave files as-is
-      (useful when files have evolved since but you want to drop the
-      conversation context).
   """
-
-  require Logger
-
-  alias ExAthena.Sessions.Stores.Jsonl
 
   @history_subdir ".exathena/file-history"
 
@@ -38,12 +27,24 @@ defmodule ExAthena.Checkpoint do
 
   Idempotent: if the file's contents match the most-recent
   checkpoint version exactly, the existing version is reused (no
-  duplicate write).
+  duplicate write). `tool_call_id`, when given, is added to the
+  version's call list either way.
   """
-  @spec snapshot(String.t(), String.t(), String.t()) ::
+  @spec snapshot(String.t(), String.t(), String.t(), String.t() | nil) ::
           {:ok, %{version: non_neg_integer(), path: String.t()}}
           | {:error, term()}
-  def snapshot(cwd, session_id, file_path) when is_binary(file_path) do
+  def snapshot(cwd, session_id, file_path, tool_call_id \\ nil) when is_binary(file_path) do
+    with {:ok, %{version: version, path: dir}} = ok <-
+           read_and_snapshot(cwd, session_id, file_path) do
+      if is_binary(tool_call_id) and tool_call_id != "" do
+        File.write!(Path.join(dir, "#{version}.calls"), tool_call_id <> "\n", [:append])
+      end
+
+      ok
+    end
+  end
+
+  defp read_and_snapshot(cwd, session_id, file_path) do
     case File.read(file_path) do
       {:ok, body} ->
         do_snapshot(cwd, session_id, file_path, body)
@@ -66,25 +67,65 @@ defmodule ExAthena.Checkpoint do
   end
 
   @doc """
-  Rewind a session.
+  Put back each file that the dropped tool calls of a chat changed.
 
-    * `mode = :code_and_history` — restore each file's contents to its
-      most-recent checkpoint at-or-before `to_uuid`, AND truncate the
-      session JSONL to that uuid.
-    * `mode = :history_only` — only truncate the JSONL.
+  `keep_calls` holds the ids of the tool calls the chat keeps. For every file
+  with saved versions, the first version that a call outside `keep_calls`
+  snapshot is the file as it was before that call ran; that version is
+  written back, or the file is removed when it did not exist then. A version
+  recorded without a call id cannot be placed and is never chosen.
 
-  Returns `{:ok, %{files_restored: n, events_dropped: m}}`. Best-effort
-  on file restoration; partial failures are logged.
+  Only files inside `within` are touched, so a history folder can never move
+  a write outside the chat's own folder. Returns `{:ok, files_restored}`.
   """
-  @spec rewind(String.t(), atom(), keyword()) ::
-          {:ok, map()} | {:error, term()}
-  def rewind(session_id, mode, opts \\ []) when mode in [:code_and_history, :history_only] do
-    cwd = Keyword.get_lazy(opts, :cwd, &File.cwd!/0)
-    to_uuid = Keyword.get(opts, :to_uuid)
+  @spec restore_files(String.t(), String.t(), MapSet.t(String.t()), String.t()) ::
+          {:ok, non_neg_integer()}
+  def restore_files(cwd, session_id, keep_calls, within) do
+    within = Path.expand(within)
+    root = history_dir(cwd, session_id)
 
-    if is_nil(to_uuid),
-      do: {:error, :missing_to_uuid},
-      else: do_rewind(session_id, mode, cwd, to_uuid)
+    case File.ls(root) do
+      {:ok, sha_dirs} ->
+        {:ok, Enum.count(sha_dirs, &restore_one(Path.join(root, &1), keep_calls, within))}
+
+      _ ->
+        {:ok, 0}
+    end
+  end
+
+  defp restore_one(dir, keep_calls, within) do
+    {versions, _} = list_versions(dir)
+
+    with {:ok, original} <- File.read(Path.join(dir, "path")),
+         true <- inside?(original, within),
+         version when is_integer(version) <-
+           Enum.find(versions, &dropped?(dir, &1, keep_calls)) do
+      if File.exists?(Path.join(dir, "#{version}.tombstone")) do
+        _ = File.rm(original)
+      else
+        File.mkdir_p!(Path.dirname(original))
+        File.write!(original, File.read!(Path.join(dir, "#{version}.bin")))
+      end
+
+      true
+    else
+      _ -> false
+    end
+  end
+
+  defp dropped?(dir, version, keep_calls) do
+    case File.read(Path.join(dir, "#{version}.calls")) do
+      {:ok, body} ->
+        body |> String.split("\n", trim: true) |> Enum.any?(&(not MapSet.member?(keep_calls, &1)))
+
+      _ ->
+        false
+    end
+  end
+
+  defp inside?(path, root) do
+    path = Path.expand(path)
+    path == root or String.starts_with?(path, root <> "/")
   end
 
   # ── Internals ────────────────────────────────────────────────────
@@ -148,99 +189,5 @@ defmodule ExAthena.Checkpoint do
       _ ->
         {[], nil}
     end
-  end
-
-  defp do_rewind(session_id, mode, cwd, to_uuid) do
-    files_result =
-      if mode == :code_and_history do
-        restore_files(cwd, session_id, to_uuid)
-      else
-        {:ok, 0}
-      end
-
-    case files_result do
-      {:ok, files_restored} ->
-        case truncate_session_log(session_id, to_uuid) do
-          {:ok, events_dropped} ->
-            {:ok, %{files_restored: files_restored, events_dropped: events_dropped}}
-
-          err ->
-            err
-        end
-
-      err ->
-        err
-    end
-  end
-
-  defp restore_files(cwd, session_id, _to_uuid) do
-    # PR5 ships a simple restoration: roll every checkpointed file back to
-    # version 0 (the *first* snapshot, taken before the first edit). A
-    # version-aware rewind that maps to_uuid → versions is followup work
-    # once Sessions.Store records the version per write event in
-    # `data[:checkpoint_version]`. The simple form already covers the
-    # common case "undo this whole session's edits".
-    history_root = history_dir(cwd, session_id)
-
-    case File.ls(history_root) do
-      {:ok, sha_dirs} ->
-        restored =
-          Enum.reduce(sha_dirs, 0, fn sha, acc ->
-            sha_path = Path.join(history_root, sha)
-            v0 = Path.join(sha_path, "0.bin")
-            tombstone = Path.join(sha_path, "0.tombstone")
-            path_marker = Path.join(sha_path, "path")
-
-            with true <- File.regular?(v0),
-                 {:ok, original_path} <- File.read(path_marker) do
-              if File.exists?(tombstone) do
-                _ = File.rm(original_path)
-              else
-                File.mkdir_p!(Path.dirname(original_path))
-                File.write!(original_path, File.read!(v0))
-              end
-
-              acc + 1
-            else
-              _ -> acc
-            end
-          end)
-
-        {:ok, restored}
-
-      _ ->
-        {:ok, 0}
-    end
-  end
-
-  defp truncate_session_log(session_id, to_uuid) do
-    path = Jsonl.path_for(session_id)
-
-    case File.read(path) do
-      {:ok, body} ->
-        lines = String.split(body, "\n", trim: true)
-
-        kept =
-          Enum.take_while(lines, fn line ->
-            case Jason.decode(line, keys: :atoms!) do
-              {:ok, %{uuid: ^to_uuid}} -> false
-              _ -> true
-            end
-          end)
-
-        new_body = Enum.map_join(kept, "", fn line -> line <> "\n" end)
-        File.write!(path, new_body)
-        {:ok, length(lines) - length(kept)}
-
-      {:error, :enoent} ->
-        {:ok, 0}
-
-      err ->
-        err
-    end
-  rescue
-    e ->
-      Logger.warning("rewind truncate failed: #{Exception.message(e)}")
-      {:error, :truncate_failed}
   end
 end

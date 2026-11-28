@@ -98,10 +98,10 @@ defmodule ExAthena.Tools.Edit do
 
   defp occurrences(body, old_s), do: body |> String.split(old_s) |> length() |> Kernel.-(1)
 
-  # Best-effort: snapshot prior contents for `Checkpoint.rewind/3`.
-  defp maybe_snapshot(%ToolContext{session_id: sid, cwd: cwd}, path)
+  # Best-effort: snapshot prior contents for rewind (`ExAthena.Chats.rewind/3`).
+  defp maybe_snapshot(%ToolContext{session_id: sid, cwd: cwd, tool_call_id: call_id}, path)
        when is_binary(sid) and sid != "" do
-    _ = ExAthena.Checkpoint.snapshot(cwd, sid, path)
+    _ = ExAthena.Checkpoint.snapshot(cwd, sid, path, call_id)
     :ok
   rescue
     _ -> :ok

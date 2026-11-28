@@ -241,9 +241,9 @@ defmodule ExAthena.Tools.ApplyPatch do
     :ok
   end
 
-  defp maybe_snapshot(%ToolContext{session_id: sid, cwd: cwd}, path)
+  defp maybe_snapshot(%ToolContext{session_id: sid, cwd: cwd, tool_call_id: call_id}, path)
        when is_binary(sid) and sid != "" do
-    _ = ExAthena.Checkpoint.snapshot(cwd, sid, path)
+    _ = ExAthena.Checkpoint.snapshot(cwd, sid, path, call_id)
     :ok
   rescue
     e ->

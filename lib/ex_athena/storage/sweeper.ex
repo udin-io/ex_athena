@@ -78,7 +78,7 @@ defmodule ExAthena.Storage.Sweeper do
     cwd = Keyword.get_lazy(opts, :cwd, &File.cwd!/0)
 
     Enum.each(targets(), fn {subdir, max_age_seconds} ->
-      {:ok, removed} = sweep(Path.join(cwd, subdir), max_age_seconds)
+      {:ok, removed} = sweep(Path.expand(subdir, cwd), max_age_seconds)
 
       if removed != [] do
         Logger.info("Storage.Sweeper removed #{length(removed)} stale entries from #{subdir}")
@@ -95,6 +95,9 @@ defmodule ExAthena.Storage.Sweeper do
   @doc """
   The directories to sweep and how long each keeps its entries, in seconds.
 
+  A relative path is taken from the checkout; the saved chats
+  (`ExAthena.Chats.root/0`) are one folder for every checkout.
+
   Both retentions are user-settable in the settings modal. `0` means keep
   forever, for a user who wants the forensics kept indefinitely.
   """
@@ -102,7 +105,8 @@ defmodule ExAthena.Storage.Sweeper do
   def targets do
     [
       {".exathena/file-history", retention(:file_history_retention_days)},
-      {".exathena/sessions", retention(:session_retention_days)}
+      {".exathena/sessions", retention(:session_retention_days)},
+      {ExAthena.Chats.root(), retention(:session_retention_days)}
     ]
   end
 
