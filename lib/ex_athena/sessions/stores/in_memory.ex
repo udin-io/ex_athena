@@ -34,6 +34,11 @@ defmodule ExAthena.Sessions.Stores.InMemory do
   end
 
   @impl GenServer
+  def handle_call(:ensure_table, _from, state) do
+    create_table()
+    {:reply, :ok, state}
+  end
+
   def handle_call(:reset, _from, state) do
     if :ets.whereis(@table) != :undefined, do: :ets.delete_all_objects(@table)
     {:reply, :ok, state}
@@ -82,14 +87,33 @@ defmodule ExAthena.Sessions.Stores.InMemory do
   @spec reset() :: :ok
   def reset, do: GenServer.call(__MODULE__, :reset)
 
+  # The table belongs to the store's own process: a call that finds it
+  # missing asks the store to make it, so a short-lived caller never owns it
+  # (issue 149).
   defp ensure_table do
-    case :ets.whereis(@table) do
-      :undefined ->
-        :ets.new(@table, [:ordered_set, :public, :named_table, read_concurrency: true])
+    if :ets.whereis(@table) == :undefined do
+      case GenServer.whereis(__MODULE__) do
+        nil ->
+          raise ArgumentError,
+                "#{inspect(__MODULE__)} is not started; add it to your supervision tree"
 
-      _ ->
-        :ok
+        pid when pid == self() ->
+          create_table()
+
+        pid ->
+          GenServer.call(pid, :ensure_table)
+      end
     end
+
+    :ok
+  end
+
+  defp create_table do
+    if :ets.whereis(@table) == :undefined do
+      :ets.new(@table, [:ordered_set, :public, :named_table, read_concurrency: true])
+    end
+
+    :ok
   end
 
   defp monotonic, do: :erlang.monotonic_time()

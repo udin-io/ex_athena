@@ -58,11 +58,16 @@ defmodule ExAthena.Sessions.Stores.ETS do
 
   @impl GenServer
   def init(_) do
-    ensure_tables()
+    create_tables()
     {:ok, %{}}
   end
 
   @impl GenServer
+  def handle_call(:ensure_tables, _from, state) do
+    create_tables()
+    {:reply, :ok, state}
+  end
+
   def handle_call(:reset, _from, state) do
     Enum.each(@all_tables, fn t ->
       if :ets.whereis(t) != :undefined, do: :ets.delete_all_objects(t)
@@ -315,7 +320,28 @@ defmodule ExAthena.Sessions.Stores.ETS do
 
   # ── Private helpers ──────────────────────────────────────────────────
 
+  # Tables belong to the store's own process: a call that finds them missing
+  # asks the store to make them, so a short-lived caller never owns one and
+  # two first callers never race to create it (issue 149).
   defp ensure_tables do
+    if :ets.whereis(@sessions_table) == :undefined or :ets.whereis(@events_table) == :undefined do
+      case GenServer.whereis(__MODULE__) do
+        nil ->
+          raise ArgumentError,
+                "#{inspect(__MODULE__)} is not started; add it to your supervision tree"
+
+        pid when pid == self() ->
+          create_tables()
+
+        pid ->
+          GenServer.call(pid, :ensure_tables)
+      end
+    end
+
+    :ok
+  end
+
+  defp create_tables do
     Enum.each(
       [
         {@sessions_table, :set},
