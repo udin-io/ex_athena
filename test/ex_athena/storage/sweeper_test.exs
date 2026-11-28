@@ -127,10 +127,11 @@ defmodule ExAthena.Storage.SweeperTest do
   end
 
   describe "targets/0" do
-    test "keeps 30 days of both .exathena history directories by default" do
+    test "keeps 30 days of both .exathena history directories and the saved chats by default" do
       assert Sweeper.targets() == [
                {".exathena/file-history", 30 * @day},
-               {".exathena/sessions", 30 * @day}
+               {".exathena/sessions", 30 * @day},
+               {ExAthena.Chats.root(), 30 * @day}
              ]
     end
   end

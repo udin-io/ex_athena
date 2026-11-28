@@ -57,7 +57,8 @@ defmodule ExAthena.Storage.SweeperTuningTest do
 
     assert Sweeper.targets() == [
              {".exathena/file-history", 30 * @day},
-             {".exathena/sessions", 30 * @day}
+             {".exathena/sessions", 30 * @day},
+             {ExAthena.Chats.root(), 30 * @day}
            ]
 
     sessions = stale_dir(Path.join(tmp, ".exathena/sessions"))

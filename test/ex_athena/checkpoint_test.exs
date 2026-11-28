@@ -58,46 +58,91 @@ defmodule ExAthena.CheckpointTest do
     assert File.exists?(Path.join(dir, "0.tombstone"))
   end
 
-  test "rewind :code_and_history restores the original file content", %{cwd: cwd, sid: sid} do
+  test "restore_files puts back the version a dropped call snapshot", %{cwd: cwd, sid: sid} do
     path = Path.join(cwd, "rewind.txt")
     File.write!(path, "original")
 
-    # First snapshot before any edit.
-    {:ok, _} = Checkpoint.snapshot(cwd, sid, path)
+    {:ok, _} = Checkpoint.snapshot(cwd, sid, path, "dropped-call")
     File.write!(path, "edited")
+    :ok = Checkpoint.record_written(cwd, sid, path)
 
-    # Now rewind. We don't have a real session log, so rewind reports
-    # 0 events_dropped but should still restore the file.
-    assert {:ok, %{files_restored: n}} =
-             Checkpoint.rewind(sid, :code_and_history,
-               cwd: cwd,
-               to_uuid: "any-uuid"
-             )
+    assert {:ok, %{restored: 1}} =
+             Checkpoint.restore_files(cwd, sid, MapSet.new(["dropped-call"]), cwd)
 
-    assert n >= 1
     assert File.read!(path) == "original"
   end
 
-  test "rewind :code_and_history removes files that didn't exist at checkpoint time", %{
+  test "restore_files keeps a file only other calls changed", %{cwd: cwd, sid: sid} do
+    path = Path.join(cwd, "kept.txt")
+    File.write!(path, "original")
+
+    {:ok, _} = Checkpoint.snapshot(cwd, sid, path, "kept-call")
+    File.write!(path, "edited")
+    :ok = Checkpoint.record_written(cwd, sid, path)
+
+    assert {:ok, %{restored: 0}} =
+             Checkpoint.restore_files(cwd, sid, MapSet.new(["dropped-call"]), cwd)
+
+    assert File.read!(path) == "edited"
+  end
+
+  test "restore_files removes files that did not exist before the dropped call", %{
     cwd: cwd,
     sid: sid
   } do
     path = Path.join(cwd, "new.txt")
 
-    # Snapshot before file existed (creates a tombstone).
-    {:ok, _} = Checkpoint.snapshot(cwd, sid, path)
+    {:ok, _} = Checkpoint.snapshot(cwd, sid, path, "dropped-call")
     File.write!(path, "later")
+    :ok = Checkpoint.record_written(cwd, sid, path)
 
-    assert {:ok, _} =
-             Checkpoint.rewind(sid, :code_and_history,
-               cwd: cwd,
-               to_uuid: "any-uuid"
-             )
+    assert {:ok, %{restored: 1}} =
+             Checkpoint.restore_files(cwd, sid, MapSet.new(["dropped-call"]), cwd)
 
     refute File.exists?(path)
   end
 
-  test "rewind without to_uuid errors", %{sid: sid} do
-    assert {:error, :missing_to_uuid} = Checkpoint.rewind(sid, :code_and_history, [])
+  test "restore_files never picks a version saved without a call id", %{cwd: cwd, sid: sid} do
+    path = Path.join(cwd, "anon.txt")
+    File.write!(path, "original")
+
+    {:ok, _} = Checkpoint.snapshot(cwd, sid, path)
+    File.write!(path, "edited")
+
+    assert {:ok, %{restored: 0}} = Checkpoint.restore_files(cwd, sid, MapSet.new(["any"]), cwd)
+    assert File.read!(path) == "edited"
+  end
+
+  test "a file a kept call created empty is not removed by a later rewind", %{cwd: cwd, sid: sid} do
+    path = Path.join(cwd, "empty.txt")
+
+    {:ok, _} = Checkpoint.snapshot(cwd, sid, path, "kept")
+    File.write!(path, "")
+    :ok = Checkpoint.record_written(cwd, sid, path)
+    {:ok, _} = Checkpoint.snapshot(cwd, sid, path, "dropped")
+    File.write!(path, "content")
+    :ok = Checkpoint.record_written(cwd, sid, path)
+
+    assert {:ok, %{restored: 1}} =
+             Checkpoint.restore_files(cwd, sid, MapSet.new(["dropped"]), cwd)
+
+    assert File.read!(path) == ""
+  end
+
+  test "a saved version hard-linked to a file elsewhere is skipped", %{cwd: cwd, sid: sid} do
+    path = Path.join(cwd, "a.txt")
+    File.write!(path, "v0")
+    {:ok, %{path: dir}} = Checkpoint.snapshot(cwd, sid, path, "dropped")
+    File.write!(path, "v1")
+    secret = Path.expand("../secret-#{sid}", cwd)
+    File.write!(secret, "TOP SECRET")
+    on_exit(fn -> File.rm(secret) end)
+    File.rm!(Path.join(dir, "0.bin"))
+    File.ln!(secret, Path.join(dir, "0.bin"))
+
+    assert {:ok, %{restored: 0}} =
+             Checkpoint.restore_files(cwd, sid, MapSet.new(["dropped"]), cwd)
+
+    assert File.read!(path) == "v1"
   end
 end

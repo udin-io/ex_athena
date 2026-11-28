@@ -41,8 +41,27 @@ minor version. Nobody has published it yet.
   its mode; its audit quote length moves to `config :ex_athena, :chat,
   audit_request_chars:`. The `plan` helper agent runs as the chat in the
   read-only phase.
+- **Rewind moves to the saved chat; `Checkpoint.rewind/3` is gone**
+  ([#357](https://github.com/udin-io/ex_athena/issues/357)).
+  `Checkpoint.rewind/3` rewrote the whole session log in place, so a crash
+  mid-write lost it, and it always put files back to their first saved
+  version, whatever point you asked for. `ExAthena.Chats.rewind/3` replaces
+  it: it adds one line to the chat's file and puts back each file as it was
+  just before the first dropped step's edit. `Checkpoint.snapshot/4` takes
+  the tool call id, and the edit, write and patch tools pass it.
 
 ### Added
+
+- **One saved chat record any front end can write and read**
+  ([#357](https://github.com/udin-io/ex_athena/issues/357)). Each front end
+  kept chats its own way, so none could open another's. `ExAthena.Chats`
+  keeps one file per chat in `~/.ex_athena/chats`, readable by you alone,
+  that only ever grows: a line per message, per header change, per
+  compaction and per rewind. Every message reads back exactly as written,
+  pictures, pins and tool panels included. Fork copies a chat up to a step;
+  rewind and fork refuse while a turn runs. The 30-day cleanup covers the
+  folder. The terminal UI, the web UI and helpers move onto it in the next
+  three changes.
 
 - **Save a session's trace as one HTML file you can share**
   ([#353](https://github.com/udin-io/ex_athena/issues/353)). A trace is most

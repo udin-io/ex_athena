@@ -47,7 +47,8 @@ defmodule ExAthena.Tools.Edit do
          {:ok, body} <- File.read(path),
          {:ok, updated} <- replace(body, old_s, new_s, replace_all?),
          _ <- maybe_snapshot(ctx, path),
-         :ok <- File.write(path, updated) do
+         :ok <- File.write(path, updated),
+         :ok <- ExAthena.Checkpoint.record_written(ctx.cwd, ctx.session_id, path) do
       count = if replace_all?, do: occurrences(body, old_s), else: 1
 
       llm =
@@ -98,10 +99,10 @@ defmodule ExAthena.Tools.Edit do
 
   defp occurrences(body, old_s), do: body |> String.split(old_s) |> length() |> Kernel.-(1)
 
-  # Best-effort: snapshot prior contents for `Checkpoint.rewind/3`.
-  defp maybe_snapshot(%ToolContext{session_id: sid, cwd: cwd}, path)
+  # Best-effort: snapshot prior contents for rewind (`ExAthena.Chats.rewind/3`).
+  defp maybe_snapshot(%ToolContext{session_id: sid, cwd: cwd, tool_call_id: call_id}, path)
        when is_binary(sid) and sid != "" do
-    _ = ExAthena.Checkpoint.snapshot(cwd, sid, path)
+    _ = ExAthena.Checkpoint.snapshot(cwd, sid, path, call_id)
     :ok
   rescue
     _ -> :ok
