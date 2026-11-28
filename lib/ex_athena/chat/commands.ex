@@ -39,7 +39,10 @@ defmodule ExAthena.Chat.Commands do
     "help" => :help,
     "?" => :help,
     "provider" => :provider,
-    "slots" => :slots
+    "slots" => :slots,
+    "resume" => :resume,
+    "fork" => :fork,
+    "rewind" => :rewind
   }
 
   @spec parse(String.t() | :eof) :: result()
@@ -91,7 +94,10 @@ defmodule ExAthena.Chat.Commands do
       "help",
       "exit",
       "provider",
-      "slots"
+      "slots",
+      "resume",
+      "fork",
+      "rewind"
     ]
 
     canonical |> Enum.sort() |> Enum.map(&("/" <> &1))
@@ -107,7 +113,7 @@ defmodule ExAthena.Chat.Commands do
       "/model" => "pick or set the model",
       "/permissions" => "pick how much the chat may do without asking",
       "/tools" => "list available tools",
-      "/clear" => "wipe the conversation",
+      "/clear" => "start a new chat (the old one stays saved)",
       "/expand" => "show full Nth tool result",
       "/details" => "toggle the details pane",
       "/cd" => "set the working directory",
@@ -119,7 +125,10 @@ defmodule ExAthena.Chat.Commands do
       "/help" => "show full usage help",
       "/exit" => "leave the chat",
       "/provider" => "pick or switch the active provider",
-      "/slots" => "show or set the provider's parallel request slots"
+      "/slots" => "show or set the provider's parallel request slots",
+      "/resume" => "open a saved chat of this folder",
+      "/fork" => "copy this chat up to a step into a new chat",
+      "/rewind" => "go back to a step and put back the files changed after it"
     }
   end
 
@@ -134,7 +143,7 @@ defmodule ExAthena.Chat.Commands do
                          pick how much the chat may do without asking, or
                          set it (read_only, ask, edit, trusted)
       /tools             list the tools currently available to the agent
-      /clear             wipe the conversation history (new session)
+      /clear             start a new chat; the old one stays saved
       /expand [N]        show the Nth-most-recent tool result in full
                          (default 1 = most recent)
       /details [on|off]  show or hide the right "details" pane
@@ -155,6 +164,11 @@ defmodule ExAthena.Chat.Commands do
       /slots [N]         show or set how many requests the active provider
                          may serve concurrently (local servers default to 1;
                          raise only after load-testing your GPU setup)
+      /resume [id]       pick a saved chat of this folder, or open one by id
+      /fork [N]          copy this chat up to step N (default: all of it)
+                         into a new chat and switch to it
+      /rewind [N]        list the steps, or go back to step N; the files
+                         the later steps changed go back as they were
       /help, /?          show this help
       /exit, /quit, /q   leave the chat
 
@@ -171,6 +185,8 @@ defmodule ExAthena.Chat.Commands do
       --provider NAME    ollama, llamacpp, openai, claude, gemini, ...
       --model NAME       initial model (overrides config)
       --permission LEVEL read_only | ask | edit | trusted
+      --continue         open the newest saved chat of this folder
+      --resume ID        open the saved chat ID
 
     Anything that isn't a slash command is sent to the agent as a user
     message. Tool calls and results stream inline; use /expand N to see

@@ -72,7 +72,10 @@ defmodule ExAthena.Chat.Tui.Runner do
       tools: session.tools,
       messages: session.messages,
       on_event: callback,
-      timeout_ms: @run_timeout_ms
+      timeout_ms: @run_timeout_ms,
+      # The chat's id, so the file history every edit writes lines up with the
+      # saved chat a rewind reads (ExAthena.Chats.rewind/3).
+      session_id: session.chat_id
     ]
 
     base
