@@ -190,7 +190,7 @@ commands and their descriptions as you type the verb. Press `Tab` or
 | Command | Description |
 |---|---|
 | `/help`, `/?` | Show full usage help |
-| `/clear` | Wipe the conversation history and start a fresh session |
+| `/clear` | Start a new chat; the old one stays saved |
 | `/tools` | List the tools currently available to the agent |
 | `/model [name]` | Open the model picker, or set the model directly |
 | `/permissions [level]` | Open the level picker, or set it directly (`read_only`, `ask`, `edit`, `trusted`) |
@@ -203,6 +203,28 @@ commands and their descriptions as you type the verb. Press `Tab` or
 | `/pwd` | Print the current working directory |
 | `/mouse [on\|off]` | Toggle crossterm mouse capture; `off` restores native terminal text selection |
 | `/exit`, `/quit`, `/q` | Leave the chat |
+
+## Saved chats
+
+The chat saves itself after every reply, to the same record the web UI
+reads (`~/.ex_athena/chats`, readable by you alone). Close the terminal and
+pick it up later:
+
+- `mix athena.chat --continue` opens the newest chat of this folder.
+- `mix athena.chat --resume <id>` opens one chat by its id.
+- `/resume` lists this folder's chats in a picker; `/resume <id>` opens one.
+- `/rewind` lists the chat's steps; `/rewind 3` goes back to step 3 and puts
+  back the files the later steps changed.
+- `/fork` copies the chat into a new one; `/fork 3` copies it up to step 3.
+- `/clear` starts a new chat; the old one stays saved.
+
+The chat saves after every reply, after an error, and when you quit with
+Ctrl+C. A reply in progress holds the chat: sending a message, rewind and
+fork all wait while a reply is still coming, in this window, another
+terminal or the web UI. If another window went on with the chat while yours
+was open, your next reply is saved as a new chat forked from it, so neither
+side's turn is lost. `/rewind` and `/fork` keep the permission, model and
+folder you picked since the last save; `/resume` opens a chat with its own.
 
 ## Keyboard shortcuts
 
