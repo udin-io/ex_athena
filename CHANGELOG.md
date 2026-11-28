@@ -131,9 +131,23 @@ minor version. Nobody has published it yet.
   calls took 12 to 16 seconds instead of about 42. The model no longer sees
   its previous step's full thinking: it sees that step's text, or a line with
   what the step concluded when its text was blank (a bare space or newline
-  now counts as blank too). The cache still breaks when the notes the loop
-  adds after the last tool result pass about 512 tokens; issue 330 stays open
-  for that.
+  now counts as blank too).
+
+- **The notes after the last tool result stay short enough for the cache**
+  ([#330](https://github.com/udin-io/ex_athena/issues/330)). The loop rebuilds
+  these notes every call: the progress ledger of earlier conclusions, and the
+  wrap-up, phase and research notes. On a hybrid local model the cache comes
+  back only from a checkpoint about 512 tokens before the end of the previous
+  prompt, so notes longer than that made every call read the whole prompt
+  again. A four-call probe on Ollama's `qwen3.8:27b` with 1,570 bytes of notes
+  cached nothing on any call. The ledger now takes only the room the other
+  notes leave in 1,200 bytes, about 400 tokens, dropping its oldest
+  conclusions first and always keeping the newest. Near a budget's end the
+  wrap-up note alone takes 972 bytes, so the notes can still run to about
+  1,300 bytes there, and about 1,600 when the research note shows too. With the notes cut to 1,157 bytes, the probe cached
+  6,061, then 7,179, then 8,297 tokens. In a
+  long run the model now sees fewer of its earlier conclusions; the report
+  turn at a worker's deadline still sees all of them.
 
 - **A tool call sent as one fenced JSON block now runs**
   ([#321](https://github.com/udin-io/ex_athena/issues/321)). qwen2.5-coder on
