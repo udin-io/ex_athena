@@ -335,26 +335,66 @@ defmodule ExAthena.Tools.ApplyPatch do
           ["apply", "--whitespace=nowarn", tmp]
         end
 
-      task = Task.async(fn -> System.cmd("git", args, cd: cwd, stderr_to_stdout: true) end)
+      with :ok <- git_touches_only(tmp, file_sections, cwd) do
+        case run_git(args, cwd) do
+          {:ok, {_, 0}} ->
+            results =
+              Enum.map(file_sections, fn s ->
+                %{path: s.path, hunks_applied: s.hunk_count, hunks_skipped: 0}
+              end)
 
-      case Task.yield(task, @git_timeout) || Task.shutdown(task, :brutal_kill) do
-        {:ok, {_, 0}} ->
-          results =
-            Enum.map(file_sections, fn s ->
-              %{path: s.path, hunks_applied: s.hunk_count, hunks_skipped: 0}
-            end)
+            {:ok, results}
 
-          {:ok, results}
+          {:ok, {stderr, _}} ->
+            {:error, {:git_apply_failed, String.trim(stderr)}}
 
-        {:ok, {stderr, _}} ->
-          {:error, {:git_apply_failed, String.trim(stderr)}}
-
-        nil ->
-          {:error, :git_timeout}
+          _ ->
+            {:error, :git_timeout}
+        end
       end
     after
       File.rm(tmp)
     end
+  end
+
+  # `git apply` acts on headers the parser above never sees (`rename old`, a
+  # `deleted file mode` with no hunk, a binary patch), and the snapshot covers
+  # only the parsed files. So git lists what the patch does first: a rename,
+  # copy, create or delete, or more files than the parser found, would change
+  # a file no rewind can put back.
+  defp git_touches_only(tmp, file_sections, cwd) do
+    case run_git(["apply", "--summary", "--numstat", "--whitespace=nowarn", tmp], cwd) do
+      {:ok, {out, 0}} ->
+        lines = String.split(out, "\n", trim: true)
+
+        cond do
+          Enum.any?(lines, &Regex.match?(~r/^ (rename|copy) /, &1)) ->
+            {:error, {:unsupported_diff_feature, :rename}}
+
+          Enum.any?(lines, &String.starts_with?(&1, " create mode ")) ->
+            {:error, {:unsupported_diff_feature, :file_creation}}
+
+          Enum.any?(lines, &String.starts_with?(&1, " delete mode ")) ->
+            {:error, {:unsupported_diff_feature, :file_deletion}}
+
+          Enum.count(lines, &Regex.match?(~r/^(\d+|-)\t(\d+|-)\t/, &1)) > length(file_sections) ->
+            {:error, {:unsupported_diff_feature, :unparsed_file}}
+
+          true ->
+            :ok
+        end
+
+      {:ok, {out, _}} ->
+        {:error, {:git_apply_failed, String.trim(out)}}
+
+      _ ->
+        {:error, :git_timeout}
+    end
+  end
+
+  defp run_git(args, cwd) do
+    task = Task.async(fn -> System.cmd("git", args, cd: cwd, stderr_to_stdout: true) end)
+    Task.yield(task, @git_timeout) || Task.shutdown(task, :brutal_kill)
   end
 
   # ---------------------------------------------------------------------------
