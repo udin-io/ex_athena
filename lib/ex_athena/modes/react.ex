@@ -182,6 +182,7 @@ defmodule ExAthena.Modes.ReAct do
     # re-sends the same shape of request.
     handback? = BudgetPressure.handback?(state, System.monotonic_time(:millisecond))
     request = build_request(state, handback?)
+    state = mark_research_noted(state, handback?)
 
     # ChatParams hooks fire just before the provider call so callers can
     # adjust temperature / tools / system_prompt per turn without
@@ -993,12 +994,15 @@ defmodule ExAthena.Modes.ReAct do
   # ── Research rail ─────────────────────────────────────────────────
   #
   # Deterministic "go online when local context runs out". When a planning/
-  # investigation turn shows it lacks context — an empty/failed local search,
-  # a recorded negative finding, or repetition — steer the model to web_search
+  # investigation turn shows it lacks context — a failed page fetch,
+  # a failed web_fetch, a recorded negative finding, or repetition — steer the model to web_search
   # (then web_fetch) instead of re-running the same local lookups. Pairs with
   # the prompt steering in the agent defs / mode addenda.
 
-  @research_local_tools ~w(grep glob read web_fetch)
+  # An empty grep, glob or read is how a model finds out where a feature does
+  # NOT live in its own codebase; it says nothing about missing outside
+  # knowledge (issue 331). A page fetch that failed does.
+  @research_local_tools ~w(web_fetch)
   @max_research_searches 2
   @empty_result_re ~r/no matches|no files found|0 results|no results|not found/i
 
@@ -1009,7 +1013,7 @@ defmodule ExAthena.Modes.ReAct do
     if needs_research?(state) do
       [
         Messages.user(
-          "[runtime] Local context looks insufficient (a search/fetch came up empty, you " <>
+          "[runtime] Local context looks insufficient (a page fetch failed, you " <>
             "recorded a negative finding, or you are repeating yourself). Before continuing, " <>
             "call web_search with a focused query to find authoritative external information, " <>
             "then web_fetch the most relevant result. Do NOT re-run the same local glob/grep."
@@ -1020,10 +1024,22 @@ defmodule ExAthena.Modes.ReAct do
     end
   end
 
+  # The note is shown once per run (issue 331). A model that read it and went
+  # on without searching has answered it; saying it again every turn only
+  # costs thinking. `mark_research_noted/2` records the showing.
   defp needs_research?(state) do
     web_search_available?(state) and research_budget_left?(state) and
+      not Map.get(state.meta, :research_noted, false) and
       (empty_local_result?(state) or negative_finding_signal?(state) or
          ledger_repeated_signal?(state))
+  end
+
+  defp mark_research_noted(state, true), do: state
+
+  defp mark_research_noted(state, false) do
+    if needs_research?(state),
+      do: %{state | meta: Map.put(state.meta, :research_noted, true)},
+      else: state
   end
 
   defp web_search_available?(%State{tool_specs: specs}),

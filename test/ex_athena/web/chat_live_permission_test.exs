@@ -228,4 +228,130 @@ defmodule ExAthena.Web.Live.ChatLivePermissionTest do
       assert File.exists?(Path.join(dir, "a.txt"))
     end
   end
+
+  describe "a level picked while the chat runs (issue 333)" do
+    setup %{conn: conn} do
+      start_supervised!({Registry, keys: :unique, name: ExAthena.Web.RunRegistry})
+
+      start_supervised!(
+        {DynamicSupervisor, name: ExAthena.Web.RunSupervisor, strategy: :one_for_one}
+      )
+
+      dir = Path.join(System.tmp_dir!(), "web_live_perm_#{System.unique_integer([:positive])}")
+      File.mkdir_p!(dir)
+      on_exit(fn -> File.rm_rf!(dir) end)
+      {:ok, view, _html} = live(conn, "/")
+      {:ok, dir: dir, view: view}
+    end
+
+    # A run at `level` that holds before its first step until the test sends
+    # `:go`, then runs one command and finishes.
+    defp paused_run(sid, level, dir) do
+      test_pid = self()
+      counter = :counters.new(1, [:atomics])
+
+      responder = fn _request ->
+        :counters.add(counter, 1, 1)
+
+        case :counters.get(counter, 1) do
+          1 ->
+            send(test_pid, {:paused, sid, self()})
+            receive do: (:go -> :ok)
+
+            %Response{
+              text: "",
+              tool_calls: [
+                %ToolCall{id: "b1", name: "bash", arguments: %{"command" => "touch one.txt"}}
+              ],
+              finish_reason: :tool_calls,
+              provider: :mock
+            }
+
+          _ ->
+            %Response{text: "Done.", finish_reason: :stop, provider: :mock}
+        end
+      end
+
+      {:ok, _} =
+        RunServer.start_run(sid, %{
+          run_opts: [
+            provider: :mock,
+            mock: [responder: responder],
+            messages: [Messages.user("make one.txt")],
+            cwd: dir,
+            tools: [ExAthena.Tools.Bash],
+            memory: false
+          ],
+          assistant_msg_id: "amsg",
+          run_sid: "#{sid}-run",
+          subscriber: self(),
+          permission: level
+        })
+
+      assert_receive {:paused, ^sid, task}, 2_000
+      task
+    end
+
+    # The state start_agent_run leaves: this session, a run going.
+    defp bind(view, sid, level) do
+      :sys.replace_state(view.pid, fn st ->
+        socket =
+          Phoenix.Component.assign(st.socket,
+            session_id: sid,
+            streaming: true,
+            permission: Atom.to_string(level)
+          )
+
+        %{st | socket: socket}
+      end)
+    end
+
+    defp pick(view, level),
+      do: view |> form("#permission-form", %{"value" => level}) |> render_change()
+
+    test "Trusted picked mid-run lets the next command run without asking",
+         %{view: view, dir: dir} do
+      sid = "live-up-#{System.unique_integer([:positive])}"
+      task = paused_run(sid, :ask, dir)
+      bind(view, sid, :ask)
+
+      pick(view, "trusted")
+      send(task, :go)
+
+      assert_receive {:athena_done, _}, 2_000
+      refute_received {:athena_ask_user, _}
+      assert File.exists?(Path.join(dir, "one.txt"))
+    end
+
+    test "Ask picked mid-run makes the next command ask", %{view: view, dir: dir} do
+      sid = "live-down-#{System.unique_integer([:positive])}"
+      task = paused_run(sid, :trusted, dir)
+      bind(view, sid, :trusted)
+
+      pick(view, "ask")
+      send(task, :go)
+
+      assert_receive {:athena_ask_user, %{question: "Run this command?\n\ntouch one.txt"} = q},
+                     2_000
+
+      RunServer.answer(sid, q.tool_call_id, "Deny")
+      assert_receive {:athena_done, _}, 2_000
+      refute File.exists?(Path.join(dir, "one.txt"))
+    end
+
+    test "the picker moves only its own chat's run", %{view: view, dir: dir} do
+      other = "live-other-#{System.unique_integer([:positive])}"
+      task = paused_run(other, :ask, dir)
+      bind(view, "live-mine-#{System.unique_integer([:positive])}", :ask)
+
+      pick(view, "trusted")
+      send(task, :go)
+
+      assert_receive {:athena_ask_user, %{question: "Run this command?\n\ntouch one.txt"} = q},
+                     2_000
+
+      RunServer.answer(other, q.tool_call_id, "Deny")
+      assert_receive {:athena_done, _}, 2_000
+    end
+  end
 end

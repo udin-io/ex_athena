@@ -73,6 +73,50 @@ minor version. Nobody has published it yet.
 
 ### Fixed
 
+- **The model is no longer told to search the web while it reads local code**
+  ([#331](https://github.com/udin-io/ex_athena/issues/331)). The note that
+  steers the model to `web_search` fired on every empty grep or glob, and an
+  empty search is normal when you look for where a feature lives. In one
+  14-turn run the model spent thinking on rejecting it at turns 1, 5, 6 and 11.
+  An empty grep, glob or read no longer triggers the note. A failed web fetch,
+  a recorded negative finding or a repeating run still does, and the note
+  shows once per run, so a model that read it and went on is not told again.
+  Its text is unchanged.
+
+- **File summaries no longer fail when the model asks for several at once**
+  ([#332](https://github.com/udin-io/ex_athena/issues/332)). On a local model
+  with one request slot, a run that asked for three file summaries got one
+  back and two `summarizer failed: :request_queue_timeout`: a summary gave up
+  after 5 seconds in the queue, shorter than one summary takes on a local 27B
+  model. The model then read both files in full, so the summaries saved
+  nothing and cost a turn. A summary now waits for the model as long as any
+  other call does, and several asked together run one after another. If a
+  summary still cannot get the model (the new `read_summary_queue_wait_ms`
+  limit under the `:tools` tuning, 0 by default for none), the error tells the model
+  to read the file instead. Hosted models, which have free slots, behave as
+  before.
+
+- **The permission level you pick while the chat runs applies to that run**
+  ([#333](https://github.com/udin-io/ex_athena/issues/333)). The web UI's
+  picker changed only the next message's level: a run started on Ask before
+  edits kept asking before every command after you picked Trusted, and one
+  run asked three times while the picker showed Trusted. A run started on
+  Trusted kept running everything after you lowered it. Now the picker moves
+  the run going in that chat, and its next tool call, a helper's included,
+  follows the new level, up or down. A run moved to Read only refuses edits
+  and commands that can change something without asking, and the refusal
+  tells the chat to show its plan; your approval then sets the level again.
+  An Allow you give after picking Read only changes nothing. A run started on
+  Read only still waits for its plan approval before it edits, whatever you
+  pick meanwhile. In a run moved to Read only a helper named by an agent
+  definition is refused, since that definition can run on the Claude Code
+  provider; a plain helper still goes, read only. The Claude Code provider
+  runs its own tools and never asks, so its runs, and Claude Code helpers
+  sent later, keep the level the chat started with. From code,
+  `ExAthena.Chat.Permission.put/2` moves a run's `:level_ref`; Trusted now
+  runs in the `:default` phase with `permission_mode: :bypass_permissions`,
+  and a Claude Code helper in the `:plan` phase stays in `:plan` under it.
+
 - **A local hybrid model reuses its cache from one call to the next**
   ([#330](https://github.com/udin-io/ex_athena/issues/330)). In a 14-turn
   chat on Ollama's `qwen3.8:27b`, every call reported 5,696 cached tokens

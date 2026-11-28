@@ -8,6 +8,13 @@ defmodule ExAthena.Tools.ReadSummary do
   (a keyword list forwarded to `ExAthena.query/2`). When absent, falls
   back to ex_athena's default configured provider.
 
+  The summary shares the run's model, so it waits for a free slot as long as
+  any other call does (`:infinity`); the 5-second default of `ExAthena.query/2`
+  is shorter than one summary on a local model. When several summaries are
+  asked for together, a one-slot provider runs them one at a time. The
+  `:read_summary_queue_wait_ms` key of the `:tools` tuning namespace sets a
+  limit in milliseconds (0, the default, means none).
+
   Consumers should call this before `read` on any unfamiliar file. Only
   use `read` (with `offset` and `limit`) after this, and only for the
   specific sections that require full detail.
@@ -71,6 +78,15 @@ defmodule ExAthena.Tools.ReadSummary do
 
   def execute(_args, _ctx), do: {:error, "path is required"}
 
+  # 0 (the default), or anything that is not a positive number, waits without
+  # limit, so a bad setting cannot bring the 5 s default back.
+  defp queue_wait do
+    case Tuning.get(:tools, :read_summary_queue_wait_ms, 0) do
+      ms when is_integer(ms) and ms > 0 -> ms
+      _ -> :infinity
+    end
+  end
+
   defp summarize(path, content, provider_opts) do
     truncated =
       String.slice(content, 0, Tuning.get(:tools, :read_summary_input_bytes, @max_input_bytes))
@@ -100,7 +116,8 @@ defmodule ExAthena.Tools.ReadSummary do
         system_prompt:
           "You summarize source code files into structured, line-number-anchored summaries. " <>
             "Return only the summary in the requested format.",
-        allowed_tools: []
+        allowed_tools: [],
+        queue_timeout: queue_wait()
       ] ++ provider_opts
 
     case ExAthena.query(prompt, opts) do
@@ -109,6 +126,11 @@ defmodule ExAthena.Tools.ReadSummary do
 
       {:ok, _} ->
         {:error, "summarizer returned empty response"}
+
+      {:error, :request_queue_timeout} ->
+        {:error,
+         "the model is busy and could not write a summary in time; " <>
+           "read the file instead, with offset and limit for the part you need"}
 
       {:error, reason} ->
         {:error, "summarizer failed: #{inspect(reason)}"}

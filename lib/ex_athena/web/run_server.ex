@@ -173,6 +173,19 @@ defmodule ExAthena.Web.RunServer do
     end
   end
 
+  @doc """
+  Move the run for `session_id` to the level a person picked, so its next
+  tool call follows it (issue 333). Raising and lowering both take effect at
+  that call.
+  """
+  @spec set_permission(String.t(), Permission.level()) :: :ok | {:error, :not_running}
+  def set_permission(session_id, level) do
+    case whereis(session_id) do
+      nil -> {:error, :not_running}
+      pid -> call_or(pid, {:set_permission, level}, {:error, :not_running})
+    end
+  end
+
   @doc "Route a user's `ask_user` answer back into the blocked run."
   @spec answer(String.t(), String.t(), String.t()) :: :ok
   def answer(session_id, tool_call_id, answer) do
@@ -231,6 +244,9 @@ defmodule ExAthena.Web.RunServer do
       # Every run asks at a level: a run with no `can_use_tool` in the default
       # phase would let everything through.
       permission: Map.get(spec, :permission) || Permission.default(),
+      # The run's level cell, set when the run starts. `set_permission/2`
+      # writes the level a person picks into it.
+      level_ref: nil,
       task_pid: nil,
       task_ref: nil,
       subscribers: subscribers,
@@ -255,13 +271,14 @@ defmodule ExAthena.Web.RunServer do
   @impl GenServer
   def handle_continue(:start_run, state) do
     server = self()
+    {level_ref, permission_opts} = permission_opts(state.permission, server)
 
     opts =
       state.run_opts
       |> Keyword.put(:on_event, fn event -> send(server, {:run_event, event}) end)
       |> Keyword.put(:assigns, %{ask_user: server})
       |> put_coordinator(state.coordinator)
-      |> put_permission(state.permission, server)
+      |> Keyword.merge(permission_opts)
       |> Keyword.put(:inbox, fn -> drain_inbox(server) end)
 
     {:ok, task_pid} =
@@ -273,14 +290,12 @@ defmodule ExAthena.Web.RunServer do
       end)
 
     ref = Process.monitor(task_pid)
-    {:noreply, %{state | task_pid: task_pid, task_ref: ref}}
+    {:noreply, %{state | task_pid: task_pid, task_ref: ref, level_ref: level_ref}}
   end
 
   # The level's approvals ask through this server, the same channel `ask_user`
   # uses, so a question survives a reconnect like any other.
-  defp put_permission(opts, nil, _server), do: opts
-
-  defp put_permission(opts, level, server) do
+  defp permission_opts(level, server) do
     ask = fn question, options, kind ->
       id = "approval-" <> Base.encode16(:crypto.strong_rand_bytes(6), case: :lower)
 
@@ -290,8 +305,7 @@ defmodule ExAthena.Web.RunServer do
       end
     end
 
-    {_ref, permission_opts} = Keyword.pop(Permission.run_opts(level, ask), :level_ref)
-    Keyword.merge(opts, permission_opts)
+    Keyword.pop(Permission.run_opts(level, ask), :level_ref)
   end
 
   # Called from the run's own process. A server that is gone has nothing left
@@ -309,6 +323,15 @@ defmodule ExAthena.Web.RunServer do
 
   @impl GenServer
   def handle_call(:running?, _from, state), do: {:reply, state.streaming, state}
+
+  def handle_call({:set_permission, level}, _from, %{level_ref: ref} = state)
+      when ref != nil do
+    Permission.put(ref, level)
+    {:reply, :ok, %{state | permission: level}}
+  end
+
+  def handle_call({:set_permission, _level}, _from, state),
+    do: {:reply, {:error, :not_running}, state}
 
   def handle_call({:push_message, _text}, _from, %{streaming: true, inbox: inbox} = state)
       when length(inbox) >= @max_waiting_messages,

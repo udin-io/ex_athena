@@ -14,17 +14,21 @@ The one thing a person picks is how much the chat may do without asking. That is
 - **Read only (plan)** (`:read_only`, phase `:plan`): the chat looks around and changes nothing. It is told to call `plan_mode` with `action: "exit"` and its plan once it has one. The person approves the plan with edits asked or allowed, or tells it to keep planning.
 - **Ask before edits** (`:ask`, the default): every edit and every command that can change something asks Allow or Deny first.
 - **Edit freely** (`:edit`): edits run; commands that can change something still ask.
-- **Trusted** (`:trusted`, phase `:trusted`): everything runs.
+- **Trusted** (`:trusted`, phase `:default`): everything runs. The callback still sees every call, so a level lowered mid-run takes effect at once; `permission_mode: :bypass_permissions` keeps the Claude Code provider, which never asks, running everything.
 
 Reading and searching files, the to-do list, questions, `finish`, skills and helpers never ask. Below Trusted, every command, web fetch, web search and GitHub call asks, Read only included (where a command that fails the read-only test is refused outright), and the language server asks once per run. A helper is held to its parent's level, since it inherits the parent's phase and callback, and it cannot leave Read only on its own.
 
 ```elixir
-ask = fn question, options -> MyUI.ask(question, options) end   # returns the answer text
-{_ref, opts} = Keyword.pop(ExAthena.Chat.Permission.run_opts(:read_only, ask), :level_ref)
+# returns the answer text, or :gone when nobody is there
+ask = fn question, options, _kind -> MyUI.ask(question, options) end
+{level_ref, opts} = Keyword.pop(ExAthena.Chat.Permission.run_opts(:read_only, ask), :level_ref)
 ExAthena.run("add rate limiting to the login endpoint", [provider: :ollama] ++ opts)
+
+# Later, from the UI, while the run goes: the next tool call follows it.
+ExAthena.Chat.Permission.put(level_ref, :trusted)
 ```
 
-The web UI asks through the question card, the terminal UI through a popup.
+The web UI asks through the question card, the terminal UI through a popup. In the web UI, a level picked while the chat runs moves that run (issue 333), up or down, at its next tool call, helpers included; the terminal UI holds commands until the run ends. A run moved to Read only refuses edits and changing commands without asking, and the refusal tells the model to show its plan through `plan_mode`. It keeps its phase, so the read-only note never joins its prompt, host-declared read-only tools are refused, and so is a helper named by an agent definition (it could run on Claude Code); a helper gets a refusal that points to its report. A run started in Read only stays in the read-only phase until its plan is approved. The Claude Code provider never asks, so its runs, and Claude Code helpers sent later, keep the level the chat started with.
 
 A message the person sends while the chat runs reaches it: the front end passes an `:inbox` function, and the loop takes each message at the start of its next turn (or as one more turn when the model has just stopped with text), never between a tool call and its result. The removed modes return `{:error, {:removed_mode, mode, hint}}` from `ExAthena.run/2`:
 
