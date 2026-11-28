@@ -827,8 +827,12 @@ defmodule ExAthena.Web.Live.ChatLive do
     {:noreply, assign(socket, model_query: query, model_open: true)}
   end
 
+  # The picked level also reaches the run going in this chat, so its next
+  # tool call follows it. Only this LiveView's own session id names the run.
   def handle_event("set_permission", %{"value" => level}, socket) do
-    {:noreply, assign(socket, permission: Atom.to_string(Permission.parse(level)))}
+    level = Permission.parse(level)
+    _ = ExAthena.Web.RunServer.set_permission(socket.assigns.session_id, level)
+    {:noreply, assign(socket, permission: Atom.to_string(level))}
   end
 
   def handle_event("toggle_sessions", _params, socket) do

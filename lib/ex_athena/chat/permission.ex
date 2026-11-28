@@ -23,8 +23,13 @@ defmodule ExAthena.Chat.Permission do
   cannot leave Read only on its own.
 
   The level lives in an `:atomics` cell for the whole run, helpers included,
-  so a plan approved "edit freely" lets the run's later edits through without
-  a restart.
+  and is read at every tool call. A plan approved "edit freely" lets the run's
+  later edits through without a restart, and a front end moves a running run
+  to the level a person picks with `put/2` (issue 333), up or down.
+
+  A run started Read only stays in the read-only phase until its plan is
+  approved, whatever level is picked meanwhile; the approval sets the level.
+  A run moved to Read only mid-run refuses what that phase refuses.
   """
 
   alias ExAthena.Permissions
@@ -39,6 +44,15 @@ defmodule ExAthena.Chat.Permission do
   }
 
   @never_ask ~w(todo_write ask_user finish skill read_summary read_worker_report)
+
+  # A run moved to Read only mid-run keeps its phase, so its prompt never
+  # gained the read-only note; the refusal carries it instead.
+  @now_read_only "The person made this chat read only. Change nothing: look around with " <>
+                   "the read-only tools, then call plan_mode with action \"exit\" and your " <>
+                   "plan in `plan`, one step per line. The person approves it before anything changes."
+
+  @helper_read_only "The person made this chat read only. Change nothing; put what you " <>
+                      "would do in your report to the chat that sent you."
 
   @approve_ask "Yes, and ask before each edit"
   @approve_edit "Yes, and edit freely"
@@ -90,7 +104,13 @@ defmodule ExAthena.Chat.Permission do
   `:approval`), and returns the answer, or `:gone` when nobody is there to
   answer; a gone answer denies. A front end moves its picker only on a
   `:plan_approval` answer, never on a question the model wrote. The returned
-  `:level_ref` holds the level a plan approval moved the run to.
+  `:level_ref` holds the run's level: a plan approval moves it, and so does
+  `put/2`.
+
+  Trusted runs in the `:default` phase so that every call still reaches the
+  level, which lets a lowered level take effect at once. It carries
+  `permission_mode: :bypass_permissions` for providers that run their own
+  tools and never ask (`ExAthena.Providers.ClaudeCode`).
   """
   @spec run_opts(level(), ask()) :: keyword()
   def run_opts(level, ask) when level in @levels and is_function(ask, 3) do
@@ -104,7 +124,11 @@ defmodule ExAthena.Chat.Permission do
       can_use_tool: fn name, args, ctx -> decide(ref, name, args, ctx, ask) end,
       level_ref: ref
     ]
+    |> put_bypass(level)
   end
+
+  defp put_bypass(opts, :trusted), do: Keyword.put(opts, :permission_mode, :bypass_permissions)
+  defp put_bypass(opts, _level), do: opts
 
   @doc """
   The level a plan approval's answer moves the chat to, or nil when the answer
@@ -124,11 +148,15 @@ defmodule ExAthena.Chat.Permission do
   @spec current(:atomics.atomics_ref()) :: level()
   def current(ref), do: Enum.at(@levels, :atomics.get(ref, 1))
 
-  defp put(ref, level),
+  @doc """
+  Moves a run to `level`: its next tool call, and its helpers' next calls,
+  follow it.
+  """
+  @spec put(:atomics.atomics_ref(), level()) :: :ok
+  def put(ref, level) when level in @levels,
     do: :atomics.put(ref, 1, Enum.find_index(@levels, &(&1 == level)))
 
   defp phase(:read_only), do: :plan
-  defp phase(:trusted), do: :trusted
   defp phase(_), do: :default
 
   defp decide(ref, "plan_mode", %{"action" => "exit"} = args, ctx, ask) do
@@ -142,15 +170,15 @@ defmodule ExAthena.Chat.Permission do
     end
   end
 
-  defp decide(ref, name, args, _ctx, ask) do
+  defp decide(ref, name, args, ctx, ask) do
     level = current(ref)
 
     cond do
       level == :trusted -> :allow
+      level == :read_only and refused_read_only?(name, args, ctx) -> read_only_refusal(ctx)
       quiet?(name, args, level) -> :allow
-      name == "lsp" and :atomics.get(ref, 2) == 1 -> :allow
       level == :edit and name in ~w(write edit apply_patch) -> :allow
-      true -> ask_once(ref, name, args, ask)
+      true -> ask_once(ref, name, args, ctx, ask)
     end
   end
 
@@ -158,6 +186,31 @@ defmodule ExAthena.Chat.Permission do
     do: Map.get(assigns, :agent_depth, 0) > 0
 
   defp helper?(_ctx), do: false
+
+  # A helper holds no plan_mode, and its plan is not the chat's.
+  defp read_only_refusal(ctx) do
+    if helper?(ctx),
+      do: {:deny, @helper_read_only},
+      else: {:deny, @now_read_only}
+  end
+
+  # A run moved to Read only mid-run keeps the phase it started in, so the
+  # level refuses what the read-only phase would. In that phase the phase
+  # itself already refused it.
+  defp refused_read_only?(_name, _args, %{phase: :plan}), do: false
+
+  # An agent definition can name its own provider, and the Claude Code CLI
+  # never asks: it would take the phase this run started in, not Read only.
+  # A plain helper runs in-process and reads this level.
+  defp refused_read_only?("spawn_agent", %{"agent" => agent}, _ctx)
+       when is_binary(agent) and agent != "",
+       do: true
+
+  defp refused_read_only?("bash", args, _ctx),
+    do: ExAthena.Tools.Bash.read_only_violation(args) != nil
+
+  defp refused_read_only?(name, _args, _ctx),
+    do: name not in @never_ask and name not in Permissions.readonly_tools()
 
   defp approve_plan(ref, args, ask) do
     plan = args |> Map.get("plan", "") |> to_string() |> String.trim()
@@ -202,17 +255,33 @@ defmodule ExAthena.Chat.Permission do
       (name in @never_ask or name in Permissions.readonly_tools())
   end
 
-  defp ask_once(ref, name, args, ask) do
+  defp ask_once(ref, name, args, ctx, ask) do
+    if name == "lsp" and :atomics.get(ref, 2) == 1,
+      do: :allow,
+      else: ask(ref, name, args, ctx, ask)
+  end
+
+  defp ask(ref, name, args, ctx, ask) do
     case ask.(describe(name, args), ["Allow", "Deny"], :approval) do
       "Allow" ->
-        if name == "lsp", do: :atomics.put(ref, 2, 1)
-        :allow
+        allowed(ref, name, args, ctx)
 
       :gone ->
         {:deny, "Nobody is there to approve this. Do not try it again."}
 
       _ ->
         {:deny, "The person did not allow this. Do not try it again; ask or move on."}
+    end
+  end
+
+  # The level can move while the question is on screen: an Allow given after
+  # the person picked Read only does not let a change through.
+  defp allowed(ref, name, args, ctx) do
+    if current(ref) == :read_only and refused_read_only?(name, args, ctx) do
+      read_only_refusal(ctx)
+    else
+      if name == "lsp", do: :atomics.put(ref, 2, 1)
+      :allow
     end
   end
 

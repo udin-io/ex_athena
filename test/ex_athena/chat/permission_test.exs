@@ -248,6 +248,233 @@ defmodule ExAthena.Chat.PermissionTest do
     refute_received {:asked, _, _}
   end
 
+  describe "a level moved while the run goes (issue 333)" do
+    # A run at `level` whose model moves it to `moved_to` before its first
+    # step, the way the web chat's picker does.
+    defp run_moved(level, moved_to, step, dir, answers) do
+      {ref, opts} = Keyword.pop(Permission.run_opts(level, asker(answers)), :level_ref)
+      counter = :counters.new(1, [:atomics])
+
+      responder = fn _request ->
+        :counters.add(counter, 1, 1)
+
+        if :counters.get(counter, 1) == 1 do
+          Permission.put(ref, moved_to)
+          step
+        else
+          says("Done.")
+        end
+      end
+
+      Loop.run(
+        "do it",
+        [
+          provider: :mock,
+          mock: [responder: responder],
+          cwd: dir,
+          tools: [ExAthena.Tools.Write, ExAthena.Tools.Bash],
+          memory: false,
+          max_iterations: 5
+        ] ++ opts
+      )
+    end
+
+    test "Trusted lets the next command run without asking", %{dir: dir} do
+      assert {:ok, _} = run_moved(:ask, :trusted, bash("b1", "touch made.txt"), dir, [])
+
+      refute_received {:asked, _, _}
+      assert written?(dir, "made.txt")
+    end
+
+    test "Ask makes a Trusted run's next command ask", %{dir: dir} do
+      assert {:ok, _} = run_moved(:trusted, :ask, bash("b1", "touch made.txt"), dir, ["Deny"])
+
+      assert_received {:asked, "Run this command?\n\ntouch made.txt", _}
+      refute written?(dir, "made.txt")
+    end
+
+    test "Read only refuses the next edit without asking", %{dir: dir} do
+      assert {:ok, _} = run_moved(:edit, :read_only, write(), dir, ["Allow"])
+
+      refute_received {:asked, _, _}
+      refute written?(dir)
+    end
+
+    test "Read only refuses a command that can change something", %{dir: dir} do
+      assert {:ok, _} =
+               run_moved(:trusted, :read_only, bash("b1", "touch made.txt"), dir, ["Allow"])
+
+      refute_received {:asked, _, _}
+      refute written?(dir, "made.txt")
+    end
+
+    test "Read only still asks before a command that only reads", %{dir: dir} do
+      assert {:ok, _} = run_moved(:ask, :read_only, bash("b1", "ls"), dir, ["Allow"])
+      assert_received {:asked, "Run this command?\n\nls", _}
+    end
+
+    test "Read only tells the chat how to show its plan, and the approval lets it edit",
+         %{dir: dir} do
+      {ref, opts} =
+        Keyword.pop(Permission.run_opts(:edit, asker(["Yes, and edit freely"])), :level_ref)
+
+      exit_plan = tool_turn([call("p1", "plan_mode", %{"action" => "exit", "plan" => "1. a"})])
+      responses = [write("w1"), exit_plan, write("w2"), says("Done.")]
+      counter = :counters.new(1, [:atomics])
+      test_pid = self()
+
+      responder = fn request ->
+        :counters.add(counter, 1, 1)
+        n = :counters.get(counter, 1)
+        if n == 1, do: Permission.put(ref, :read_only)
+        if n == 2, do: send(test_pid, {:refusal, List.last(request.messages)})
+        Enum.at(responses, n - 1, says("Done."))
+      end
+
+      assert {:ok, _} =
+               Loop.run(
+                 "do it",
+                 [
+                   provider: :mock,
+                   mock: [responder: responder],
+                   cwd: dir,
+                   tools: [ExAthena.Tools.Write, ExAthena.Tools.PlanMode],
+                   memory: false,
+                   max_iterations: 6
+                 ] ++ opts
+               )
+
+      assert_received {:refusal, refusal}
+      assert inspect(refusal) =~ "plan_mode"
+      assert_received {:asked, "The chat's plan:" <> _, _}
+      refute_received {:asked, _, _}
+      assert Permission.current(ref) == :edit
+      assert written?(dir)
+    end
+
+    test "an Allow given after the person picked Read only changes nothing" do
+      # The picker moves while the question is on screen; the call runs here,
+      # in the test process.
+      ask = fn _question, _options, _kind ->
+        Permission.put(Process.get(:level_ref), :read_only)
+        "Allow"
+      end
+
+      {ref, opts} = Keyword.pop(Permission.run_opts(:ask, ask), :level_ref)
+      Process.put(:level_ref, ref)
+
+      assert {:deny, reason} =
+               opts[:can_use_tool].("bash", %{"command" => "touch x"}, %{phase: :default})
+
+      assert reason =~ "read only"
+    end
+
+    test "a helper sent after the level was lowered asks before its command", %{dir: dir} do
+      assert {:ok, _} = run_with_helper(:trusted, :ask, dir, ["Deny"])
+
+      assert_received {:asked, "Run this command?\n\ntouch helper.txt", _}
+      refute written?(dir, "helper.txt")
+    end
+
+    test "a helper in a run moved to Read only is refused without asking", %{dir: dir} do
+      assert {:ok, _} = run_with_helper(:trusted, :read_only, dir, ["Allow"])
+
+      refute_received {:asked, _, _}
+      refute written?(dir, "helper.txt")
+      assert_received {:helper_refusal, refusal}
+      assert inspect(refusal) =~ "your report"
+      refute inspect(refusal) =~ "plan_mode"
+    end
+
+    test "Read only refuses a helper named by an agent definition, and sends a plain one" do
+      {ref, opts} = Keyword.pop(Permission.run_opts(:ask, asker([])), :level_ref)
+      decide = opts[:can_use_tool]
+      Permission.put(ref, :read_only)
+
+      assert {:deny, _} =
+               decide.("spawn_agent", %{"prompt" => "x", "agent" => "coder"}, %{phase: :default})
+
+      assert decide.("spawn_agent", %{"prompt" => "x"}, %{phase: :default}) == :allow
+      assert decide.("todo_write", %{"todos" => []}, %{phase: :default}) == :allow
+      assert decide.("finish", %{"summary" => "x"}, %{phase: :default}) == :allow
+      refute_received {:asked, _, _}
+    end
+
+    # The chat moves to `moved_to`, then sends a helper that runs one command.
+    defp run_with_helper(level, moved_to, dir, answers) do
+      {ref, opts} = Keyword.pop(Permission.run_opts(level, asker(answers)), :level_ref)
+      parent = :counters.new(1, [:atomics])
+      child = :counters.new(1, [:atomics])
+
+      parent_responder = fn _request ->
+        :counters.add(parent, 1, 1)
+
+        if :counters.get(parent, 1) == 1 do
+          Permission.put(ref, moved_to)
+          tool_turn([call("s1", "spawn_agent", %{"prompt" => "make helper.txt"})])
+        else
+          says("Done.")
+        end
+      end
+
+      test_pid = self()
+
+      child_responder = fn request ->
+        :counters.add(child, 1, 1)
+
+        if :counters.get(child, 1) == 2,
+          do: send(test_pid, {:helper_refusal, List.last(request.messages)})
+
+        if :counters.get(child, 1) == 1,
+          do: bash("c1", "touch helper.txt"),
+          else: says("Helper done.")
+      end
+
+      Loop.run(
+        "do it",
+        [
+          provider: :mock,
+          mock: [responder: parent_responder],
+          cwd: dir,
+          tools: [ExAthena.Tools.SpawnAgent, ExAthena.Tools.Bash],
+          memory: false,
+          max_iterations: 5,
+          assigns: %{
+            spawn_agent_opts: [
+              provider: :mock,
+              mock: [responder: child_responder],
+              tools: [ExAthena.Tools.Bash],
+              memory: false
+            ]
+          }
+        ] ++ opts
+      )
+    end
+
+    test "a helper follows the moved level, and still cannot leave read only" do
+      {ref, opts} = Keyword.pop(Permission.run_opts(:ask, asker([])), :level_ref)
+      decide = opts[:can_use_tool]
+      helper = %{assigns: %{agent_depth: 1}}
+
+      Permission.put(ref, :trusted)
+      assert decide.("bash", %{"command" => "touch x"}, helper) == :allow
+      refute_received {:asked, _, _}
+
+      assert {:deny, reason} = decide.("plan_mode", %{"action" => "exit", "plan" => "x"}, helper)
+      assert reason =~ "helper"
+      assert Permission.current(ref) == :trusted
+    end
+
+    test "Trusted still lets a provider that runs its own tools skip asking" do
+      opts = Permission.run_opts(:trusted, asker([]))
+
+      assert ExAthena.Providers.ClaudeCode.build_opts(
+               %ExAthena.Request{messages: []},
+               opts
+             )[:permission_mode] == :bypass_permissions
+    end
+  end
+
   test "an answer nobody gives denies", %{dir: dir} do
     {_ref, opts} =
       Keyword.pop(Permission.run_opts(:ask, fn _q, _o, _kind -> :gone end), :level_ref)
