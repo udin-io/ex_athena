@@ -62,10 +62,12 @@ defmodule ExAthena.Session do
 
   use GenServer
 
+  require Logger
+
   alias ExAthena.Loop
   alias ExAthena.Messages
   alias ExAthena.Sessions.{SchemaStore, Store}
-  alias ExAthena.Sessions.Stores.{ETS, InMemory, Jsonl}
+  alias ExAthena.Sessions.Stores.{Chat, ETS, InMemory, Jsonl}
   alias ExAthena.Telemetry
 
   # ── Client API ─────────────────────────────────────────────────────
@@ -75,9 +77,12 @@ defmodule ExAthena.Session do
 
     * `:name` — GenServer name.
     * `:system_prompt` — pinned system prompt used on every turn.
-    * `:store` — `:in_memory` (default), `:ets`, `:jsonl`, or a custom module
-      implementing `ExAthena.Sessions.Store`. Per-turn events are persisted
-      via the chosen store; `resume/2` reads them back.
+    * `:store` — `:in_memory` (default), `:ets`, `:jsonl`, `:chat`, or a custom
+      module implementing `ExAthena.Sessions.Store`. Per-turn events are
+      persisted via the chosen store; `resume/2` reads them back. `:chat`
+      saves the whole history to the shared chat record (`ExAthena.Chats`),
+      which `mix athena.chat --resume <id>` and the web UI open; with it,
+      `fork/2` takes `:step` and `rewind/3` takes `{:step, uuid}`.
     * `:messages` — seed the conversation with a prior message history (e.g.
       from `resume/2`). Each entry is passed through `Messages.from_map/1`.
     * `:session_id` — reuse a stable id from a prior session; generated if
@@ -204,6 +209,16 @@ defmodule ExAthena.Session do
   def fork(session_id, opts \\ []) when is_binary(session_id) do
     store = resolve_store(Keyword.get(opts, :store, :in_memory))
 
+    if store == Chat do
+      with {:ok, chat} <- ExAthena.Chats.fork(session_id, Keyword.take(opts, [:step, :title])) do
+        {:ok, %{session_id: chat.id, parent_id: session_id}}
+      end
+    else
+      fork_rows(store, session_id, opts)
+    end
+  end
+
+  defp fork_rows(store, session_id, opts) do
     if not SchemaStore.implements?(store) do
       {:error, :unsupported_store}
     else
@@ -241,6 +256,19 @@ defmodule ExAthena.Session do
   def rewind(session_id, target, opts \\ []) when is_binary(session_id) do
     store = resolve_store(Keyword.get(opts, :store, :in_memory))
 
+    case {store, target} do
+      {Chat, {:step, step}} ->
+        ExAthena.Chats.rewind(session_id, step, Keyword.take(opts, [:restore_files]))
+
+      {Chat, _} ->
+        {:error, :unsupported_target}
+
+      _ ->
+        rewind_rows(store, session_id, target, opts)
+    end
+  end
+
+  defp rewind_rows(store, session_id, target, opts) do
     if not SchemaStore.implements?(store) do
       {:error, :unsupported_store}
     else
@@ -296,13 +324,42 @@ defmodule ExAthena.Session do
        opts: opts,
        session_id: session_id,
        store: store,
-       messages: seed_messages,
-       usage: nil
+       messages: chat_messages(store, session_id, seed_messages),
+       usage: nil,
+       # `store: :chat`: the record's version when this session opened it, so
+       # its first save never writes over a turn another front end added.
+       chat_version: chat_version(store, session_id, seed_messages)
      }}
   end
 
   @impl GenServer
-  def handle_call({:send_message, message, extra_opts}, _from, state) do
+  def handle_call({:send_message, message, extra_opts}, from, %{store: Chat} = state) do
+    # The turn holds its chat, so the terminal or web UI waits for it, and it
+    # refuses to start while one of them runs a reply in the same chat.
+    with :ok <- ExAthena.Chats.hold(state.session_id),
+         {:ok, state} <- fork_if_moved(state) do
+      reply = run_turn(message, extra_opts, from, state)
+      # The chat this turn held: a save that moved to a fork leaves it held.
+      ExAthena.Chats.release(state.session_id)
+      reply
+    else
+      {:error, reason, state} ->
+        ExAthena.Chats.release(state.session_id)
+        {:reply, {:error, reason}, state}
+
+      {:error, _} = err ->
+        {:reply, err, state}
+    end
+  end
+
+  def handle_call({:send_message, message, extra_opts}, from, state),
+    do: run_turn(message, extra_opts, from, state)
+
+  def handle_call(:messages, _from, state), do: {:reply, state.messages, state}
+
+  def handle_call(:session_id, _from, state), do: {:reply, state.session_id, state}
+
+  defp run_turn(message, extra_opts, _from, state) do
     loop_opts =
       state.opts
       |> Keyword.merge(extra_opts)
@@ -325,6 +382,7 @@ defmodule ExAthena.Session do
         new_messages = Enum.drop(result.messages, length(state.messages) + 1)
 
         Enum.each(new_messages, &persist_message(&1, state))
+        state = save_chat(state, result.messages)
 
         state = %{
           state
@@ -339,11 +397,117 @@ defmodule ExAthena.Session do
     end
   end
 
-  def handle_call(:messages, _from, state), do: {:reply, state.messages, state}
-
-  def handle_call(:session_id, _from, state), do: {:reply, state.session_id, state}
-
   # ── Internal ────────────────────────────────────────────────────────
+
+  # `store: :chat` keeps the whole history in the shared chat record, which
+  # the terminal and web UIs open too.
+  defp save_chat(%{store: Chat} = state, messages) do
+    fields = %{
+      cwd: Keyword.get(state.opts, :cwd),
+      provider: Keyword.get(state.opts, :provider),
+      model: Keyword.get(state.opts, :model)
+    }
+
+    opts = if v = Map.get(state, :chat_version), do: [expect: v], else: []
+
+    case ExAthena.Chats.save(state.session_id, fields, messages, opts) do
+      :ok ->
+        put_version(state)
+
+      # Another front end went on with the chat since this session last
+      # saved: this history goes on as a new chat forked from it, never over
+      # that work.
+      {:error, :moved} ->
+        attrs = Map.put(fields, :forked_from, %{chat: state.session_id, step: nil})
+
+        with {:ok, %{id: id}} <- ExAthena.Chats.create(attrs),
+             :ok <- ExAthena.Chats.sync(id, messages) do
+          put_version(%{state | session_id: id})
+        else
+          err ->
+            Logger.warning(
+              "ExAthena.Session could not save chat #{state.session_id} as a fork: #{inspect(err)}"
+            )
+
+            state
+        end
+
+      {:error, reason} ->
+        Logger.warning(
+          "ExAthena.Session could not save chat #{state.session_id}: #{inspect(reason)}"
+        )
+
+        state
+    end
+  end
+
+  defp save_chat(state, _messages), do: state
+
+  # Opening a saved chat with no seed messages goes on from its history.
+  # Before a turn, while the chat is held: when another front end went on
+  # with it, this history moves to a new chat forked from it first, so the
+  # turn's file edits are recorded under the chat they belong to.
+  defp fork_if_moved(%{chat_version: nil} = state), do: {:ok, state}
+
+  defp fork_if_moved(state) do
+    case ExAthena.Chats.version(state.session_id) do
+      {:ok, v} when v == state.chat_version ->
+        {:ok, state}
+
+      {:ok, _moved} ->
+        fields = %{
+          cwd: Keyword.get(state.opts, :cwd),
+          provider: Keyword.get(state.opts, :provider),
+          model: Keyword.get(state.opts, :model),
+          forked_from: %{chat: state.session_id, step: nil}
+        }
+
+        with {:ok, %{id: id}} <- ExAthena.Chats.create(fields),
+             {:ok, version} <- ExAthena.Chats.sync(id, state.messages, return: :version) do
+          ExAthena.Chats.release(state.session_id)
+          _ = ExAthena.Chats.hold(id)
+          {:ok, %{state | session_id: id, chat_version: version}}
+        else
+          {:error, reason} -> {:error, {:chat_moved, reason}, state}
+        end
+
+      _ ->
+        {:ok, state}
+    end
+  end
+
+  defp chat_messages(Chat, session_id, []) do
+    case ExAthena.Chats.load(session_id) do
+      {:ok, %{messages: messages}} -> messages
+      _ -> []
+    end
+  end
+
+  defp chat_messages(_store, _session_id, seeds), do: seeds
+
+  # Seeds that do not start with the saved history would replace it: the
+  # version is marked stale, so the first save goes to a new forked chat.
+  defp chat_version(Chat, session_id, seeds) do
+    case ExAthena.Chats.load(session_id) do
+      {:ok, %{messages: saved, version: v}} ->
+        if seeds == [] or
+             Enum.take(Enum.map(seeds, &ExAthena.Chats.as_saved/1), length(saved)) == saved,
+           do: v,
+           else: -1
+
+      _ ->
+        nil
+    end
+  end
+
+  defp chat_version(_store, _session_id, _seeds), do: nil
+
+  defp put_version(state) do
+    case ExAthena.Chats.version(state.session_id) do
+      {:ok, v} -> Map.put(state, :chat_version, v)
+      _ -> state
+    end
+  end
 
   defp persist_message(msg, state) do
     event_kind = role_to_event_kind(msg.role)
@@ -706,6 +870,7 @@ defmodule ExAthena.Session do
 
   defp resolve_store(:in_memory), do: InMemory
   defp resolve_store(:jsonl), do: Jsonl
+  defp resolve_store(:chat), do: Chat
   defp resolve_store(:ets), do: ETS
   defp resolve_store(mod) when is_atom(mod), do: mod
 

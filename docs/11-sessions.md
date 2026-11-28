@@ -218,6 +218,12 @@ hash, folder and symlink checks). Both refuse a chat a turn holds
 the separate terminal and web programs). A cut last line is skipped on read, and the next write
 starts on a new line.
 
+A helper's work is saved as a chat of its own when it finishes, with
+`parent: %{chat: <parent chat id>, step: <spawn tool call id>}`; `list/1`
+leaves it out unless `helpers: true`. `ExAthena.Session` with `store: :chat`
+(`ExAthena.Sessions.Stores.Chat`) saves each turn's whole history to the
+record, and its `fork/2` and `rewind/3` take a step uuid.
+
 ## The web chat's session file
 
 `mix athena.web` keeps each chat's messages, title, folder, provider, model

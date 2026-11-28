@@ -89,6 +89,12 @@ Three files per worker, all under
 
 `ExAthena.Tools.ReadWorkerReport` reads all three (`source:` selects).
 
+A fourth copy lives outside the folder: when a worker finishes, its whole
+history is saved as a chat of its own in the shared chat record
+(`ExAthena.Chats`), linked to the parent chat and the spawn step (issue 360).
+It is written only at the end, so a killed worker has none; the transcript
+above is still the only live copy.
+
 Before reaching for "persist the worker's output", check whether it is already
 there — it usually is.
 

@@ -52,6 +52,13 @@ minor version. Nobody has published it yet.
 
 ### Added
 
+- **Helpers and library sessions save to the shared chat record too**
+  ([#360](https://github.com/udin-io/ex_athena/issues/360)). A helper's work
+  now also lands as a saved chat of its own, linked to the parent chat and
+  to the step that sent it, so it can be read like any other chat. Code that
+  calls the library can pass `store: :chat` to `ExAthena.Session`: each turn
+  then goes to the same record, `mix athena.chat --resume <id>` opens it, and
+  `fork/2` and `rewind/3` work on it by step.
 - **The web UI and the terminal chat share their saved chats**
   ([#359](https://github.com/udin-io/ex_athena/issues/359)). The web UI kept
   chats in files only it read, and the 30-day cleanup never reached them.
@@ -160,6 +167,14 @@ minor version. Nobody has published it yet.
   `spawn_agent_opts[:cwd]` still wins. A run that never calls it behaves as before.
 
 ### Fixed
+
+- **The in-memory session stores keep their tables when a caller exits**
+  ([#149](https://github.com/udin-io/ex_athena/issues/149)). The ETS,
+  in-memory and JSONL stores made their tables on whichever process called
+  them first, so a short-lived caller took the tables, and every saved row,
+  with it when it exited. The tables now belong to the store's own process;
+  a call that finds them missing asks the store to make them, and a call to
+  a store that is not running says so.
 
 - **The web UI's key and saved chats are private to their owner**
   ([#303](https://github.com/udin-io/ex_athena/issues/303)). On a shared machine
