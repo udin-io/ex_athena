@@ -73,6 +73,16 @@ minor version. Nobody has published it yet.
 
 ### Fixed
 
+- **The model is no longer told to search the web while it reads local code**
+  ([#331](https://github.com/udin-io/ex_athena/issues/331)). The note that
+  steers the model to `web_search` fired on every empty grep or glob, and an
+  empty search is normal when you look for where a feature lives. In one
+  14-turn run the model spent thinking on rejecting it at turns 1, 5, 6 and 11.
+  An empty grep, glob or read no longer triggers the note. A failed web fetch,
+  a recorded negative finding or a repeating run still does, and the note
+  shows once per run, so a model that read it and went on is not told again.
+  Its text is unchanged.
+
 - **File summaries no longer fail when the model asks for several at once**
   ([#332](https://github.com/udin-io/ex_athena/issues/332)). On a local model
   with one request slot, a run that asked for three file summaries got one
