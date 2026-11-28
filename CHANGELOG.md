@@ -44,6 +44,26 @@ minor version. Nobody has published it yet.
 
 ### Added
 
+- **Save a session's trace as one HTML file you can share**
+  ([#353](https://github.com/udin-io/ex_athena/issues/353)). A trace is most
+  useful when you can send it to someone, and the Trace tab lived only in the
+  running web UI. Its new Save button, and the new `mix athena.trace <session
+  id>` (with `--out FILE`), write the same picture as one HTML file that opens
+  in any browser with no server and loads nothing from the network; clicking
+  a mark opens that turn's details offline. The file leaves out file contents
+  (what a read, a search or an MCP server's tool returned, the text a write or
+  an edit sent, a helper's call arguments past the path they name), cuts any
+  command output past its
+  first 2,000 characters, and replaces with `[redacted]` every configured API
+  key, token, secret or password (ExAthena's config, provider files, the
+  environment, the web UI's own token) in the forms text prints them, and the
+  value of any `FOO_TOKEN=…`, `FOO_TOKEN: …`, `"api_key": "…"`, `Bearer …`,
+  `Authorization: …`, `--api-key …` or `user:password@` in an address; an MCP
+  server's headers count as secrets too, apart from those that only describe
+  the request. It says so at its
+  top. `mix athena.trace` writes the file readable by its owner only, and
+  replaces a link planted at the target rather than writing through it.
+
 - **A Trace tab draws a session so you can see what happened and why**
   ([#352](https://github.com/udin-io/ex_athena/issues/352)). Finding where a
   29-minute run spent its time, or what told it to delete a test, meant reading

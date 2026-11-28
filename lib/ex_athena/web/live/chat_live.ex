@@ -1024,6 +1024,13 @@ defmodule ExAthena.Web.Live.ChatLive do
     {:noreply, assign(socket, trace_selected: selected)}
   end
 
+  # Save the open chat's trace (issue 353). Built from this page's own
+  # session, never from an id the browser sends.
+  def handle_event("trace_save", _params, socket) do
+    {name, html} = trace_file(socket.assigns)
+    {:noreply, push_event(socket, "trace-download", %{name: name, html: html})}
+  end
+
   def handle_event("term_new", _params, socket) do
     {:noreply, open_terminal(socket)}
   end
@@ -3239,6 +3246,18 @@ defmodule ExAthena.Web.Live.ChatLive do
       created_at: a.session_created_at,
       details_stream: a.details_stream
     }
+  end
+
+  @doc """
+  The file the Trace tab's Save button sends: its name and its HTML, the same
+  file `mix athena.trace` writes.
+  """
+  @spec trace_file(map()) :: {String.t(), String.t()}
+  def trace_file(assigns) do
+    session = trace_session(assigns)
+
+    {ExAthena.Web.TraceExport.file_name(session),
+     ExAthena.Web.TraceExport.html(session, Trace.helper_records(session))}
   end
 
   defp load_trace_helpers(socket) do

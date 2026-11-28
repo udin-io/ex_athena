@@ -121,6 +121,18 @@ since its journal keeps no tool output. Many narrow turns of one kind fold into 
 its click lists them all. The tab redraws as the run goes. A session saved
 before times were recorded draws its turns evenly spaced and says so.
 
+**Save** writes the same picture as one HTML file that opens in any browser
+with no server, so you can send a run to someone. Clicking a mark works in the
+file too. From a terminal, `mix athena.trace <session id>` writes the same file
+(`--out FILE` names it; the id is the one in the chat's `/c/<id>` address).
+The file leaves out file contents (what a read, a search or an MCP tool
+returned, what a write or an edit sent) and any output past its first 2,000
+characters. It
+replaces every configured key and token with `[redacted]`, and the value of
+any line, header, flag or address that says it holds one (`FOO_TOKEN=…`,
+`api_key: …`, `Bearer …`, `--api-key …`, `user:password@`). It says so at its top, because a session can hold code and
+secrets, and it loads nothing from the network.
+
 ## Sidebar: provider and model selector
 
 The sidebar dropdown lists every provider the registry knows about at startup —
