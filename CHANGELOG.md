@@ -73,6 +73,29 @@ minor version. Nobody has published it yet.
 
 ### Fixed
 
+- **The model is no longer told to search the web while it reads local code**
+  ([#331](https://github.com/udin-io/ex_athena/issues/331)). The note that
+  steers the model to `web_search` fired on every empty grep or glob, and an
+  empty search is normal when you look for where a feature lives. In one
+  14-turn run the model spent thinking on rejecting it at turns 1, 5, 6 and 11.
+  An empty grep, glob or read no longer triggers the note. A failed web fetch,
+  a recorded negative finding or a repeating run still does, and the note
+  shows once per run, so a model that read it and went on is not told again.
+  Its text is unchanged.
+
+- **File summaries no longer fail when the model asks for several at once**
+  ([#332](https://github.com/udin-io/ex_athena/issues/332)). On a local model
+  with one request slot, a run that asked for three file summaries got one
+  back and two `summarizer failed: :request_queue_timeout`: a summary gave up
+  after 5 seconds in the queue, shorter than one summary takes on a local 27B
+  model. The model then read both files in full, so the summaries saved
+  nothing and cost a turn. A summary now waits for the model as long as any
+  other call does, and several asked together run one after another. If a
+  summary still cannot get the model (the new `read_summary_queue_wait_ms`
+  limit under the `:tools` tuning, 0 by default for none), the error tells the model
+  to read the file instead. Hosted models, which have free slots, behave as
+  before.
+
 - **The permission level you pick while the chat runs applies to that run**
   ([#333](https://github.com/udin-io/ex_athena/issues/333)). The web UI's
   picker changed only the next message's level: a run started on Ask before
