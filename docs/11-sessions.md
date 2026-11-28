@@ -220,8 +220,20 @@ starts on a new line.
 
 ## The web chat's session file
 
-`mix athena.web` saves each chat to `~/.ex_athena/web/sessions/<id>.session`,
-an Erlang term file. Its `details_stream` is the chat's activity log, newest
+`mix athena.web` keeps each chat's messages, title, folder, provider, model
+and permission in the shared chat record above, so the terminal chat opens
+the same chats. It also keeps how it drew a chat as a cache in
+`~/.ex_athena/web/sessions/<id>.session`, an Erlang term file, marked
+`record: true`. `Web.Sessions.load/1` uses the cache while its messages
+match the record, and rebuilds one user message and one reply per turn from
+the record otherwise (a chat the terminal started, or went on with). At
+start, `Web.Sessions.migrate!/0` moves each older file without the mark
+into the record, once; a marked cache whose record the cleanup removed is
+deleted, not moved back. Before a turn, the page compares the record's
+version with the one it read; if another window went on meanwhile, the page
+goes on as a new chat forked from it. A run holds its chat.
+
+The cache's `details_stream` is the chat's activity log, newest
 entry first: each entry has an `id`, a `type`, a `payload` and the
 `message_id` of the turn it belongs to.
 

@@ -204,6 +204,43 @@ defmodule ExAthena.Chats do
   end
 
   @doc """
+  Create the chat when it is missing, sync `messages`, then record the
+  header fields that changed: the call a front end makes on each save.
+  Takes `sync/3`'s `:expect`; a refused sync records no header change.
+  """
+  @spec save(id(), map(), [Message.t()], keyword()) :: :ok | {:error, term()}
+  def save(id, fields, messages, opts \\ []) when is_map(fields) and is_list(messages) do
+    with :ok <- check_id(id) do
+      fields = Map.take(fields, @header_fields)
+
+      locked(id, fn ->
+        do_save(id, read_header(id), fields, messages, Keyword.get(opts, :expect))
+      end)
+    end
+  end
+
+  defp do_save(id, {:ok, header}, fields, messages, expect) do
+    with {:ok, _version} <- do_sync(id, messages, expect) do
+      update(id, Map.reject(fields, fn {k, v} -> Map.get(header, k) == v end))
+    end
+  end
+
+  defp do_save(id, :error, fields, messages, _expect) do
+    with {:ok, _} <- create(Map.put(fields, :id, id)),
+         {:ok, _version} <- do_sync(id, messages, nil),
+         do: :ok
+  end
+
+  @doc """
+  `message` as it reads back from a saved chat: through the codec and back.
+  Compare a front end's messages with a saved chat's this way.
+  """
+  @spec as_saved(Message.t() | map()) :: Message.t()
+  def as_saved(message) do
+    message |> ExAthena.Messages.from_map() |> Codec.encode() |> Codec.decode()
+  end
+
+  @doc """
   Read a chat: its header fields, `messages` (the active history) and `steps`
   (the same messages with the `uuid` and time of each).
   """
@@ -692,10 +729,6 @@ defmodule ExAthena.Chats do
   # ── Writing ───────────────────────────────────────────────────────
 
   defp new_step(%Message{} = message), do: %{uuid: new_uuid(), at: now(), message: message}
-
-  defp as_saved(message) do
-    message |> ExAthena.Messages.from_map() |> Codec.encode() |> Codec.decode()
-  end
 
   defp step_object(step),
     do: ordered([{"uuid", step.uuid}, {"at", step.at}, {"message", Codec.encode(step.message)}])

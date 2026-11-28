@@ -52,6 +52,18 @@ minor version. Nobody has published it yet.
 
 ### Added
 
+- **The web UI and the terminal chat share their saved chats**
+  ([#359](https://github.com/udin-io/ex_athena/issues/359)). The web UI kept
+  chats in files only it read, and the 30-day cleanup never reached them.
+  It now saves each chat to the shared chat record, so a chat started in
+  `mix athena.chat` shows in the web UI's list and opens there, and the
+  terminal's `--resume` opens a web chat. Older web chats move into the
+  record once, at start. Fork copies the chat in the record, and a new
+  Rewind button beside it goes back to a reply and puts back the files the
+  later steps changed. A page whose chat went on in another window goes on
+  as a new chat instead of writing over that work. A 500-turn chat opens in
+  the same time as before (341 ms against 346 ms here), and in 8 ms when
+  the web UI has no cached view of it.
 - **The terminal chat saves every reply and opens saved chats**
   ([#358](https://github.com/udin-io/ex_athena/issues/358)). Closing
   `mix athena.chat` used to lose the chat. It now saves after each reply to

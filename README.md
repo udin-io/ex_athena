@@ -198,7 +198,7 @@ The sidebar lets you switch provider, model, and what the chat may do without re
 
 | Feature | Description |
 |---|---|
-| **Session recall** | Every completed turn is auto-saved to `~/.ex_athena/web/sessions/`. Click "▼ Sessions" in the sidebar to load or delete past conversations. |
+| **Session recall** | Every completed turn is saved to the shared chat record in `~/.ex_athena/chats/`, which `mix athena.chat --resume` opens too. Click "▼ Sessions" in the sidebar to load or delete past conversations. |
 | **Fork** | Each assistant message has a `⑂ fork` button. It snapshots the conversation history at that point and opens a new branch — the original session is untouched. |
 | **Diff viewer** | File edits show a "▼ view" button next to the tool result. Click it for a color-coded line diff (`+` green / `−` red) computed server-side. Bash tool calls show exit code, runtime, and stdout. File reads show the content. |
 | **Action indicator** | While the model is running, a `⚡ Reading · foo.ex` pill in the message header tracks the current tool call in real time. |

@@ -284,5 +284,7 @@ session is untouched.
   the startup banner — anyone holding it can run commands on your machine.
   Use `api_key_prompt: true` in provider JSON files to let each user supply
   their own key without sharing credentials.
-- **Session cleanup**: sessions accumulate in `~/.ex_athena/web/sessions/`.
-  Delete them from the sidebar × button or remove `*.session` files directly.
+- **Session cleanup**: chats live in `~/.ex_athena/chats/`, shared with
+  `mix athena.chat`; the web UI keeps a cached view of each in
+  `~/.ex_athena/web/sessions/`. Delete a chat from the sidebar × button.
+  Chats nobody touched for 30 days are removed at start.
