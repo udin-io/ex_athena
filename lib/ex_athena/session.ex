@@ -339,7 +339,8 @@ defmodule ExAthena.Session do
     with :ok <- ExAthena.Chats.hold(state.session_id),
          {:ok, state} <- fork_if_moved(state) do
       reply = run_turn(message, extra_opts, from, state)
-      ExAthena.Chats.release(elem(reply, 2).session_id)
+      # The chat this turn held: a save that moved to a fork leaves it held.
+      ExAthena.Chats.release(state.session_id)
       reply
     else
       {:error, reason, state} ->
@@ -464,6 +465,7 @@ defmodule ExAthena.Session do
         with {:ok, %{id: id}} <- ExAthena.Chats.create(fields),
              {:ok, version} <- ExAthena.Chats.sync(id, state.messages, return: :version) do
           ExAthena.Chats.release(state.session_id)
+          _ = ExAthena.Chats.hold(id)
           {:ok, %{state | session_id: id, chat_version: version}}
         else
           {:error, reason} -> {:error, {:chat_moved, reason}, state}

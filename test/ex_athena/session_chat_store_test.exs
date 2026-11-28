@@ -164,4 +164,41 @@ defmodule ExAthena.SessionChatStoreTest do
     assert {:ok, %{files_restored: 1}} = Chats.rewind(new_id, first.uuid)
     assert File.read!(Path.join(cwd, "f.txt")) == "orig"
   end
+
+  test "a turn whose save moves to a fork lets go of the chat it held", %{cwd: cwd} do
+    {:ok, _} = Chats.create(%{id: "libmov000002", cwd: cwd})
+    :ok = Chats.sync("libmov000002", [ExAthena.Messages.user("start")])
+
+    # Another writer goes on with the chat during the turn, so the turn's
+    # save goes to a new chat.
+    responder = fn _ ->
+      :ok =
+        Chats.sync("libmov000002", [
+          ExAthena.Messages.user("start"),
+          ExAthena.Messages.user("elsewhere")
+        ])
+
+      %Response{text: "hello back", finish_reason: :stop, provider: :mock}
+    end
+
+    {:ok, pid} =
+      Session.start_link(
+        provider: :mock,
+        mock: [responder: responder],
+        cwd: cwd,
+        memory: false,
+        tools: [],
+        store: :chat,
+        session_id: "libmov000002"
+      )
+
+    {:ok, _} = Session.send_message(pid, "go")
+    assert Session.session_id(pid) != "libmov000002"
+
+    me = self()
+    spawn(fn -> send(me, {:other, Chats.hold("libmov000002")}) end)
+    assert_receive {:other, :ok}
+
+    Session.stop(pid)
+  end
 end
