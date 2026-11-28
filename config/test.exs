@@ -51,6 +51,15 @@ config :ex_athena,
       "ex_athena_test_web#{System.get_env("MIX_TEST_PARTITION")}"
     )
 
+# The saved chats (ExAthena.Chats) live under ~/.ex_athena/chats by default;
+# the same lesson as web_dir above, partitioned the same way.
+config :ex_athena,
+  chats_dir:
+    Path.join(
+      System.tmp_dir!(),
+      "ex_athena_test_chats#{System.get_env("MIX_TEST_PARTITION")}"
+    )
+
 # Web UI endpoint for route-level LiveView tests (test/ex_athena/web/*).
 # Phoenix.LiveViewTest drives the endpoint in-process; the HTTP server is
 # never started. Mirrors the config `mix athena.web` builds at runtime

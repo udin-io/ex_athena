@@ -253,8 +253,8 @@ if Code.ensure_loaded?(Igniter) do
       • 14 hook events with {:inject, msg} / {:transform, prompt}
         return values. See guides/hooks_reference.md.
       • Session storage: pass `store: :jsonl` for durable sessions
-        with Session.resume/2. File-checkpointing + Checkpoint.rewind/3
-        for /undo.
+        with Session.resume/2. File-checkpointing for rewind
+        (ExAthena.Chats.rewind/3).
 
       Full guide list: https://hexdocs.pm/ex_athena.
       """)

@@ -8,25 +8,14 @@ defmodule ExAthena.Checkpoint do
   where `<sha>` is the SHA-256 of the absolute file path and
   `<version>` increments on each edit.
 
-  `rewind/3` restores files (and optionally truncates the JSONL
-  session log) to the state at a given event UUID.
+  Each version also lists, in `<version>.calls`, the tool calls that took
+  it, so `restore_files/4` can tell which versions belong to steps a rewind
+  drops (`ExAthena.Chats.rewind/3`).
 
   Adapted from Claude Code's `~/.claude/file-history/<session_id>/`
   layout. The 30-day TTL is enforced at boot by
   `ExAthena.Storage.Sweeper`, and is settable in the settings modal.
-
-  ## Modes
-
-    * `:code_and_history` — restore files to checkpoint AND truncate
-      the session log to the chosen UUID.
-    * `:history_only` — restore session log only; leave files as-is
-      (useful when files have evolved since but you want to drop the
-      conversation context).
   """
-
-  require Logger
-
-  alias ExAthena.Sessions.Stores.Jsonl
 
   @history_subdir ".exathena/file-history"
 
@@ -38,12 +27,77 @@ defmodule ExAthena.Checkpoint do
 
   Idempotent: if the file's contents match the most-recent
   checkpoint version exactly, the existing version is reused (no
-  duplicate write).
+  duplicate write). `tool_call_id`, when given, is added to the
+  version's call list either way.
   """
-  @spec snapshot(String.t(), String.t(), String.t()) ::
+  @spec snapshot(String.t(), String.t(), String.t(), String.t() | nil) ::
           {:ok, %{version: non_neg_integer(), path: String.t()}}
           | {:error, term()}
-  def snapshot(cwd, session_id, file_path) when is_binary(file_path) do
+  def snapshot(cwd, session_id, file_path, tool_call_id \\ nil) when is_binary(file_path) do
+    seen = content_sha(file_path)
+
+    with {:ok, %{version: version, path: dir}} = ok <-
+           read_and_snapshot(cwd, session_id, file_path) do
+      if is_binary(tool_call_id) and tool_call_id != "" do
+        File.write!(Path.join(dir, "#{version}.calls"), tool_call_id <> "\n", [:append])
+      end
+
+      mark_foreign(dir, version, seen)
+      ok
+    end
+  end
+
+  # The file differs from what the chat last left in it, so someone else
+  # changed it before this call: the version is marked, and a rewind past
+  # it would undo their change.
+  defp mark_foreign(dir, version, seen) do
+    note = Path.join(dir, "written")
+
+    case File.read(note) do
+      {:ok, ^seen} -> :ok
+      {:ok, _other} -> File.write!(Path.join(dir, "#{version}.foreign"), "")
+      _ -> :ok
+    end
+
+    File.write!(note, seen)
+  end
+
+  @doc """
+  Note what a chat's edit left in `file_path`, right after the write. Rewind
+  then puts the file back only while it still holds exactly that: a file
+  someone else changed since (another chat, a fork, a person) is left alone
+  and listed. Best-effort, like `snapshot/4`.
+  """
+  @spec record_written(String.t(), String.t() | nil, String.t()) :: :ok
+  def record_written(cwd, session_id, file_path)
+      when is_binary(session_id) and session_id != "" do
+    dir = Path.join(history_dir(cwd, session_id), path_sha(Path.expand(file_path)))
+    if File.dir?(dir), do: File.write!(Path.join(dir, "written"), content_sha(file_path))
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  def record_written(_cwd, _session_id, _file_path), do: :ok
+
+  defp content_sha(path) do
+    case File.read(path) do
+      {:ok, body} -> :crypto.hash(:sha256, body) |> Base.encode16(case: :lower)
+      {:error, :enoent} -> "absent"
+      {:error, _} -> "unreadable"
+    end
+  end
+
+  # Unchanged since this chat last wrote it, or no note kept (an older
+  # history), so the file is this chat's to put back.
+  defp still_ours?(dir, original) do
+    case File.read(Path.join(dir, "written")) do
+      {:ok, sha} -> sha == content_sha(original)
+      _ -> true
+    end
+  end
+
+  defp read_and_snapshot(cwd, session_id, file_path) do
     case File.read(file_path) do
       {:ok, body} ->
         do_snapshot(cwd, session_id, file_path, body)
@@ -66,33 +120,164 @@ defmodule ExAthena.Checkpoint do
   end
 
   @doc """
-  Rewind a session.
+  Put back each file that a chat's dropped tool calls changed.
 
-    * `mode = :code_and_history` — restore each file's contents to its
-      most-recent checkpoint at-or-before `to_uuid`, AND truncate the
-      session JSONL to that uuid.
-    * `mode = :history_only` — only truncate the JSONL.
+  `drop_calls` holds the ids of the tool calls a rewind takes out of the
+  chat. For every file with saved versions, the first version one of those
+  calls took is the file as it was before that call ran; it is written back,
+  or the file is removed when it did not exist then. Calls outside
+  `drop_calls` never move a file: a call a compaction summarised, or one an
+  earlier rewind already undid, keeps its effect. A version saved without a
+  call id is never chosen.
 
-  Returns `{:ok, %{files_restored: n, events_dropped: m}}`. Best-effort
-  on file restoration; partial failures are logged.
+  The history folder sits inside the project, so the model can write to it.
+  An entry is skipped unless its folder name is the hash of its path, the
+  path lies inside `within` with no symlink on the way, the file there (if
+  any) is a regular file, and the saved version is a regular file.
+
+  A file whose content differs from what the chat's last edit left in it
+  (`record_written/3`) is left alone and listed as failed: someone else
+  changed it since.
+
+  Returns `{:ok, %{restored: n, restored_paths: [path], failed: [path]}}`.
   """
-  @spec rewind(String.t(), atom(), keyword()) ::
-          {:ok, map()} | {:error, term()}
-  def rewind(session_id, mode, opts \\ []) when mode in [:code_and_history, :history_only] do
-    cwd = Keyword.get_lazy(opts, :cwd, &File.cwd!/0)
-    to_uuid = Keyword.get(opts, :to_uuid)
-
-    if is_nil(to_uuid),
-      do: {:error, :missing_to_uuid},
-      else: do_rewind(session_id, mode, cwd, to_uuid)
+  @spec restore_files(String.t(), String.t(), MapSet.t(String.t()), String.t()) ::
+          {:ok, map()}
+  def restore_files(cwd, session_id, drop_calls, within) do
+    cwd |> plan_restores(session_id, drop_calls, within) |> apply_restores()
   end
+
+  @doc """
+  What `restore_files/4` would do, without doing it: `{:put, path, dir,
+  version}` for a file to put back, `{:failed, path}` for one to leave and
+  name. A caller with histories in several folders merges the plans first.
+  """
+  @spec plan_restores(String.t(), String.t(), MapSet.t(String.t()), String.t()) :: [tuple()]
+  def plan_restores(cwd, session_id, drop_calls, within) do
+    within = Path.expand(within)
+    root = history_dir(cwd, session_id)
+
+    case File.ls(root) do
+      {:ok, sha_dirs} ->
+        Enum.flat_map(sha_dirs, &plan_one(Path.join(root, &1), drop_calls, within))
+
+      _ ->
+        []
+    end
+  end
+
+  @doc "Carry out a plan from `plan_restores/4`; returns what `restore_files/4` does."
+  @spec apply_restores([tuple()]) :: {:ok, map()}
+  def apply_restores(plans) do
+    results =
+      Enum.map(plans, fn
+        {:put, original, dir, version} ->
+          dir |> put_back(version, original) |> note_restored(dir, original)
+
+        {:failed, _} = failed ->
+          failed
+      end)
+
+    restored = for {:restored, path} <- results, do: path
+
+    {:ok,
+     %{
+       restored: length(restored),
+       restored_paths: restored,
+       failed: for({:failed, path} <- results, do: path)
+     }}
+  end
+
+  defp plan_one(dir, drop_calls, within) do
+    versions = version_numbers(dir)
+
+    with {:ok, original} <- File.read(Path.join(dir, "path")),
+         original = Path.expand(original),
+         true <- Path.basename(dir) == path_sha(original),
+         {:ok, %File.Stat{type: :directory}} <- File.lstat(dir),
+         true <- safe_target?(original, within),
+         version when is_integer(version) <- Enum.find(versions, &dropped?(dir, &1, drop_calls)) do
+      foreign_after? =
+        Enum.any?(versions, &(&1 > version and File.exists?(Path.join(dir, "#{&1}.foreign"))))
+
+      if still_ours?(dir, original) and not foreign_after?,
+        do: [{:put, original, dir, version}],
+        else: [{:failed, original}]
+    else
+      _ -> []
+    end
+  end
+
+  defp note_restored({:restored, _} = result, dir, original) do
+    _ = File.write(Path.join(dir, "written"), content_sha(original))
+    result
+  end
+
+  defp note_restored(result, _dir, _original), do: result
+
+  defp put_back(dir, version, original) do
+    bin = Path.join(dir, "#{version}.bin")
+
+    cond do
+      File.exists?(Path.join(dir, "#{version}.tombstone")) ->
+        _ = File.rm(original)
+        {:restored, original}
+
+      regular?(bin) ->
+        File.mkdir_p!(Path.dirname(original))
+        File.write!(original, File.read!(bin))
+        {:restored, original}
+
+      true ->
+        :skipped
+    end
+  rescue
+    _ -> {:failed, original}
+  end
+
+  defp dropped?(dir, version, drop_calls) do
+    case File.read(Path.join(dir, "#{version}.calls")) do
+      {:ok, body} ->
+        body |> String.split("\n", trim: true) |> Enum.any?(&MapSet.member?(drop_calls, &1))
+
+      _ ->
+        false
+    end
+  end
+
+  # Inside `within`, and no part of the path below it is a symlink, so a write
+  # cannot be steered outside the folder.
+  defp safe_target?(path, within) do
+    with true <- String.starts_with?(path, within <> "/"),
+         parts = path |> Path.relative_to(within) |> Path.split(),
+         false <- Enum.member?(parts, "..") do
+      parts
+      |> Enum.scan(within, &Path.join(&2, &1))
+      |> Enum.all?(&safe_part?(&1, &1 == path))
+    else
+      _ -> false
+    end
+  end
+
+  defp safe_part?(part, last?) do
+    case File.lstat(part) do
+      {:ok, %File.Stat{type: :symlink}} -> false
+      {:ok, %File.Stat{type: :regular}} -> true
+      {:ok, %File.Stat{type: :directory}} -> not last?
+      {:error, :enoent} -> true
+      _ -> false
+    end
+  end
+
+  # One link only: a hard link to a file elsewhere is not a saved version.
+  defp regular?(path), do: match?({:ok, %File.Stat{type: :regular, links: 1}}, File.lstat(path))
+
+  defp path_sha(path), do: :crypto.hash(:sha256, path) |> Base.encode16(case: :lower)
 
   # ── Internals ────────────────────────────────────────────────────
 
   defp do_snapshot(cwd, session_id, file_path, body) do
-    sha =
-      :crypto.hash(:sha256, Path.expand(file_path))
-      |> Base.encode16(case: :lower)
+    sha = path_sha(Path.expand(file_path))
 
     dir = Path.join(history_dir(cwd, session_id), sha)
     File.mkdir_p!(dir)
@@ -131,116 +316,42 @@ defmodule ExAthena.Checkpoint do
   defp list_versions(dir) do
     case File.ls(dir) do
       {:ok, entries} ->
-        versions =
-          entries
-          |> Enum.filter(&String.ends_with?(&1, ".bin"))
-          |> Enum.map(fn name -> name |> String.trim_trailing(".bin") |> String.to_integer() end)
-          |> Enum.sort()
+        versions = numbers(entries)
 
-        latest_body =
-          case List.last(versions) do
-            nil -> nil
-            v -> File.read!(Path.join(dir, "#{v}.bin"))
-          end
-
-        {versions, latest_body}
+        {versions, latest_body(dir, List.last(versions))}
 
       _ ->
         {[], nil}
     end
   end
 
-  defp do_rewind(session_id, mode, cwd, to_uuid) do
-    files_result =
-      if mode == :code_and_history do
-        restore_files(cwd, session_id, to_uuid)
+  # A tombstone's empty bytes never stand for an empty file that exists.
+  defp latest_body(_dir, nil), do: nil
+
+  defp latest_body(dir, v) do
+    if File.exists?(Path.join(dir, "#{v}.tombstone")),
+      do: :tombstone,
+      else: File.read!(Path.join(dir, "#{v}.bin"))
+  end
+
+  defp version_numbers(dir) do
+    case File.ls(dir) do
+      {:ok, entries} -> numbers(entries)
+      _ -> []
+    end
+  end
+
+  # A name that is not `<integer>.bin` is skipped, not a crash.
+  defp numbers(entries) do
+    entries
+    |> Enum.flat_map(fn name ->
+      with true <- String.ends_with?(name, ".bin"),
+           {n, ""} <- Integer.parse(String.trim_trailing(name, ".bin")) do
+        [n]
       else
-        {:ok, 0}
+        _ -> []
       end
-
-    case files_result do
-      {:ok, files_restored} ->
-        case truncate_session_log(session_id, to_uuid) do
-          {:ok, events_dropped} ->
-            {:ok, %{files_restored: files_restored, events_dropped: events_dropped}}
-
-          err ->
-            err
-        end
-
-      err ->
-        err
-    end
-  end
-
-  defp restore_files(cwd, session_id, _to_uuid) do
-    # PR5 ships a simple restoration: roll every checkpointed file back to
-    # version 0 (the *first* snapshot, taken before the first edit). A
-    # version-aware rewind that maps to_uuid → versions is followup work
-    # once Sessions.Store records the version per write event in
-    # `data[:checkpoint_version]`. The simple form already covers the
-    # common case "undo this whole session's edits".
-    history_root = history_dir(cwd, session_id)
-
-    case File.ls(history_root) do
-      {:ok, sha_dirs} ->
-        restored =
-          Enum.reduce(sha_dirs, 0, fn sha, acc ->
-            sha_path = Path.join(history_root, sha)
-            v0 = Path.join(sha_path, "0.bin")
-            tombstone = Path.join(sha_path, "0.tombstone")
-            path_marker = Path.join(sha_path, "path")
-
-            with true <- File.regular?(v0),
-                 {:ok, original_path} <- File.read(path_marker) do
-              if File.exists?(tombstone) do
-                _ = File.rm(original_path)
-              else
-                File.mkdir_p!(Path.dirname(original_path))
-                File.write!(original_path, File.read!(v0))
-              end
-
-              acc + 1
-            else
-              _ -> acc
-            end
-          end)
-
-        {:ok, restored}
-
-      _ ->
-        {:ok, 0}
-    end
-  end
-
-  defp truncate_session_log(session_id, to_uuid) do
-    path = Jsonl.path_for(session_id)
-
-    case File.read(path) do
-      {:ok, body} ->
-        lines = String.split(body, "\n", trim: true)
-
-        kept =
-          Enum.take_while(lines, fn line ->
-            case Jason.decode(line, keys: :atoms!) do
-              {:ok, %{uuid: ^to_uuid}} -> false
-              _ -> true
-            end
-          end)
-
-        new_body = Enum.map_join(kept, "", fn line -> line <> "\n" end)
-        File.write!(path, new_body)
-        {:ok, length(lines) - length(kept)}
-
-      {:error, :enoent} ->
-        {:ok, 0}
-
-      err ->
-        err
-    end
-  rescue
-    e ->
-      Logger.warning("rewind truncate failed: #{Exception.message(e)}")
-      {:error, :truncate_failed}
+    end)
+    |> Enum.sort()
   end
 end

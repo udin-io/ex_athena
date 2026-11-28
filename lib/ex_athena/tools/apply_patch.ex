@@ -10,7 +10,8 @@ defmodule ExAthena.Tools.ApplyPatch do
     is itself atomic on failure.
   - Otherwise: pure-Elixir two-pass parser/applier.
 
-  v1 limitations: no binary diffs, no `/dev/null` create/delete hunks, no fuzzy
+  v1 limitations: no binary diffs, no `/dev/null` create/delete hunks, no
+  renames or copies (rewind could not put the source file back), no fuzzy
   context matching.
   """
 
@@ -50,11 +51,19 @@ defmodule ExAthena.Tools.ApplyPatch do
   @impl true
   def execute(args, %ToolContext{} = ctx) do
     with {:ok, patch} <- fetch_patch(args),
+         :ok <- refuse_rename(patch),
          dry_run? = Map.get(args, "dry_run", false),
          {:ok, file_sections} <- parse_diff(patch),
          {:ok, resolved} <- resolve_paths(file_sections, ctx),
          :ok <- maybe_snapshot_all(ctx, resolved),
          {:ok, results} <- dispatch(patch, resolved, dry_run?, ctx) do
+      unless dry_run?,
+        do:
+          Enum.each(
+            results,
+            &ExAthena.Checkpoint.record_written(ctx.cwd, ctx.session_id, &1.path)
+          )
+
       llm =
         Enum.map_join(results, "\n", fn %{path: p, hunks_applied: h} ->
           rel = Path.relative_to(p, ctx.cwd)
@@ -125,6 +134,14 @@ defmodule ExAthena.Tools.ApplyPatch do
     end)
   end
 
+  # A rename or copy changes a second file the snapshot never sees, and `git
+  # apply` would carry it out, so a rewind could not put the source back.
+  defp refuse_rename(patch) do
+    if Regex.match?(~r/^(rename|copy) (from|to) /m, patch),
+      do: {:error, {:unsupported_diff_feature, :rename}},
+      else: :ok
+  end
+
   defp parse_file_section(lines) do
     with {:ok, raw_path} <- extract_target_path(lines),
          {:ok, hunks} <- parse_hunks(lines) do
@@ -146,12 +163,25 @@ defmodule ExAthena.Tools.ApplyPatch do
       not is_nil(minus_line) and String.starts_with?(minus_line, "--- /dev/null") ->
         {:error, {:unsupported_diff_feature, :file_creation}}
 
+      renamed?(minus_line, plus_line) ->
+        {:error, {:unsupported_diff_feature, :rename}}
+
       String.starts_with?(plus_line, "+++ b/") ->
         {:ok, plus_line |> String.slice(6, String.length(plus_line)) |> tab_strip()}
 
       true ->
         {:ok, plus_line |> String.slice(4, String.length(plus_line)) |> tab_strip()}
     end
+  end
+
+  defp renamed?(nil, _plus), do: false
+
+  defp renamed?(minus, plus) do
+    strip = fn line, prefix ->
+      line |> String.slice(4..-1//1) |> tab_strip() |> String.replace_prefix(prefix, "")
+    end
+
+    strip.(minus, "a/") != strip.(plus, "b/")
   end
 
   # Strip optional tab-separated timestamp that some diff tools append.
@@ -241,9 +271,9 @@ defmodule ExAthena.Tools.ApplyPatch do
     :ok
   end
 
-  defp maybe_snapshot(%ToolContext{session_id: sid, cwd: cwd}, path)
+  defp maybe_snapshot(%ToolContext{session_id: sid, cwd: cwd, tool_call_id: call_id}, path)
        when is_binary(sid) and sid != "" do
-    _ = ExAthena.Checkpoint.snapshot(cwd, sid, path)
+    _ = ExAthena.Checkpoint.snapshot(cwd, sid, path, call_id)
     :ok
   rescue
     e ->
@@ -305,26 +335,102 @@ defmodule ExAthena.Tools.ApplyPatch do
           ["apply", "--whitespace=nowarn", tmp]
         end
 
-      task = Task.async(fn -> System.cmd("git", args, cd: cwd, stderr_to_stdout: true) end)
+      with :ok <- git_touches_only(tmp, file_sections, cwd) do
+        case run_git(args, cwd) do
+          {:ok, {_, 0}} ->
+            results =
+              Enum.map(file_sections, fn s ->
+                %{path: s.path, hunks_applied: s.hunk_count, hunks_skipped: 0}
+              end)
 
-      case Task.yield(task, @git_timeout) || Task.shutdown(task, :brutal_kill) do
-        {:ok, {_, 0}} ->
-          results =
-            Enum.map(file_sections, fn s ->
-              %{path: s.path, hunks_applied: s.hunk_count, hunks_skipped: 0}
-            end)
+            {:ok, results}
 
-          {:ok, results}
+          {:ok, {stderr, _}} ->
+            {:error, {:git_apply_failed, String.trim(stderr)}}
 
-        {:ok, {stderr, _}} ->
-          {:error, {:git_apply_failed, String.trim(stderr)}}
-
-        nil ->
-          {:error, :git_timeout}
+          _ ->
+            {:error, :git_timeout}
+        end
       end
     after
       File.rm(tmp)
     end
+  end
+
+  # `git apply` acts on headers the parser above never sees (`rename old`, a
+  # `deleted file mode` with no hunk, a binary patch), and the snapshot covers
+  # only the parsed files. So git lists what the patch does first: a rename,
+  # copy, create or delete, or more files than the parser found, would change
+  # a file no rewind can put back. `core.quotepath=false` keeps a name outside
+  # ASCII as it is, so it compares equal to the parsed path; a name with a
+  # quote or control character stays quoted and is refused.
+  defp git_touches_only(tmp, file_sections, cwd) do
+    args = ["-c", "core.quotepath=false", "apply", "--summary", "--numstat"]
+
+    case run_git(args ++ ["--whitespace=nowarn", tmp], cwd) do
+      {:ok, {out, 0}} ->
+        lines = String.split(out, "\n", trim: true)
+
+        cond do
+          Enum.any?(lines, &Regex.match?(~r/^ (rename|copy) /, &1)) ->
+            {:error, {:unsupported_diff_feature, :rename}}
+
+          Enum.any?(lines, &String.starts_with?(&1, " create mode ")) ->
+            {:error, {:unsupported_diff_feature, :file_creation}}
+
+          Enum.any?(lines, &String.starts_with?(&1, " delete mode ")) ->
+            {:error, {:unsupported_diff_feature, :file_deletion}}
+
+          Enum.any?(lines, &String.starts_with?(&1, " mode change ")) ->
+            {:error, {:unsupported_diff_feature, :mode_change}}
+
+          Enum.count(lines, &Regex.match?(~r/^(\d+|-)\t(\d+|-)\t/, &1)) > length(file_sections) ->
+            {:error, {:unsupported_diff_feature, :unparsed_file}}
+
+          # git strips the first folder of a path with no `a/` or `b/`, so it
+          # can edit a file other than the one the snapshot covered.
+          numstat_paths(lines, cwd) != MapSet.new(file_sections, &Path.expand(&1.path)) ->
+            {:error, {:unsupported_diff_feature, :path_mismatch}}
+
+          true ->
+            :ok
+        end
+
+      {:ok, {out, _}} ->
+        {:error, {:git_apply_failed, String.trim(out)}}
+
+      _ ->
+        {:error, :git_timeout}
+    end
+  end
+
+  # `--numstat` prints paths from the repository's top folder; the prefix
+  # takes them back to the working folder (a path outside it keeps the
+  # prefix's absence, so it cannot match).
+  defp numstat_paths(lines, cwd) do
+    prefix =
+      case run_git(["rev-parse", "--show-prefix"], cwd) do
+        {:ok, {out, 0}} -> String.trim(out)
+        _ -> ""
+      end
+
+    for line <- lines,
+        [_, _, path] <- [String.split(line, "\t", parts: 3)],
+        into: MapSet.new(),
+        do: path |> strip_prefix(prefix) |> Path.expand(cwd)
+  end
+
+  defp strip_prefix(path, ""), do: path
+
+  defp strip_prefix(path, prefix) do
+    if String.starts_with?(path, prefix),
+      do: String.replace_prefix(path, prefix, ""),
+      else: "../" <> path
+  end
+
+  defp run_git(args, cwd) do
+    task = Task.async(fn -> System.cmd("git", args, cd: cwd, stderr_to_stdout: true) end)
+    Task.yield(task, @git_timeout) || Task.shutdown(task, :brutal_kill)
   end
 
   # ---------------------------------------------------------------------------
