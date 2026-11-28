@@ -44,6 +44,20 @@ minor version. Nobody has published it yet.
 
 ### Added
 
+- **A saved web chat records when each step happened and what ExAthena told
+  the model** ([#351](https://github.com/udin-io/ex_athena/issues/351)). To
+  learn why a run went wrong, you read a session file whose 356 events had no
+  times, and the notes the runtime adds to a model call (the research note,
+  the repeat note, the wrap-up note) were saved nowhere. Now every entry of a
+  chat's activity log carries `at`, its time in milliseconds since the session
+  began, and a reconnect keeps the times the run had. Each note the runtime
+  sends and each finish check that sends the chat back to work is kept with
+  the exact text, each model call with how long it took, and each test command
+  with whether it passed. The Activity tab shows the notes as "note to model"
+  rows. The loop emits two new events for this, `{:steer, %{kind:, text:}}`
+  and `{:model_call, %{purpose:, duration_ms:, ok?:}}`. A session saved before
+  this still loads, with no times.
+
 - **A message you send while the chat runs reaches it**
   ([#323](https://github.com/udin-io/ex_athena/issues/323)). The web UI
   dropped a message typed during a run, and the terminal UI ignored Enter

@@ -57,6 +57,16 @@ defmodule ExAthena.Loop.Events do
       actually blocks — a free slot produces no events. Hosts use this to
       render a "waiting on GPU" state for runs queued behind other loops.
     * `{:usage, usage_map}` — partial usage report from the provider.
+    * `{:model_call, %{purpose:, duration_ms:, ok?:}}` — one provider call
+      finished. `duration_ms` runs from the moment the call got its queue
+      slot to its last byte, so a wait for a slot is not in it.
+    * `{:steer, %{kind:, text:}}` — the runtime told the model something:
+      `text` is exactly what the model got. `kind` is `:research`,
+      `:ledger_repeat` or `:wrap_up` (notes added to the end of one request,
+      never kept in the transcript), `:handback` (the last turn's report
+      request), `:open_steps`, or `:finish_check`, which also carries
+      `check:` (`"verification"`, `"test"`, `"coverage"` or `"audit"`).
+      Hosts record these so a trace shows what steered the run (issue 351).
     * `{:structured_retry, %{attempt:, error:}}` — extract_structured
       retry.
     * `{:error, reason}` — non-fatal warning (the loop continues).
@@ -120,6 +130,19 @@ defmodule ExAthena.Loop.Events do
                optional(:waited_ms) => non_neg_integer()
              }}
           | {:usage, map()}
+          | {:model_call,
+             %{
+               required(:purpose) => atom(),
+               required(:duration_ms) => non_neg_integer(),
+               required(:ok?) => boolean()
+             }}
+          | {:steer,
+             %{
+               required(:kind) =>
+                 :research | :ledger_repeat | :wrap_up | :handback | :open_steps | :finish_check,
+               required(:text) => String.t(),
+               optional(:check) => String.t()
+             }}
           | {:structured_retry,
              %{required(:attempt) => non_neg_integer(), required(:error) => term()}}
           | {:error, term()}

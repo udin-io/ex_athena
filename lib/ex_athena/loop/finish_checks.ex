@@ -21,7 +21,7 @@ defmodule ExAthena.Loop.FinishChecks do
   drop the note but not the flag.
   """
 
-  alias ExAthena.Loop.State
+  alias ExAthena.Loop.{Events, State}
   alias ExAthena.Provenance
   alias ExAthena.Tools.Bash
   alias ExAthena.Tuning
@@ -141,9 +141,16 @@ defmodule ExAthena.Loop.FinishChecks do
     do: halted.mode_state[flag] != true and flag not in ev.fired and deficient?.(ev)
 
   defp nudge(halted, flag, note) do
+    text = gate_prefix(flag) <> note
+
+    Events.emit(
+      halted.on_event,
+      {:steer, %{kind: :finish_check, check: @gate_names[flag], text: text}}
+    )
+
     {:continue,
      halted
-     |> redirect(gate_prefix(flag) <> note)
+     |> redirect(text)
      |> Map.put(:halted_reason, nil)
      |> put_in([Access.key(:mode_state), flag], true)
      |> Map.put(:meta, Map.delete(halted.meta, :finish_reason))}

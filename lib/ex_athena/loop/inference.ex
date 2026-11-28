@@ -100,7 +100,7 @@ defmodule ExAthena.Loop.Inference do
 
       result =
         Telemetry.span([:ex_athena, :chat], chat_meta, fn ->
-          queued_call(state, request, stream_cb)
+          queued_call(state, request, stream_cb, purpose)
         end)
 
       case result do
@@ -219,10 +219,10 @@ defmodule ExAthena.Loop.Inference do
   # scarce slots (local GPUs serve 1-3 concurrent requests). The slot is held
   # for the full call/stream lifetime and released on every exit path; the
   # provider's own timeout_ms only starts once the slot is acquired.
-  defp queued_call(state, request, stream_cb) do
+  defp queued_call(state, request, stream_cb, purpose) do
     ExAthena.RequestQueue.with_slot(
       state.meta[:provider_atom],
-      fn -> provider_call(state, request, stream_cb) end,
+      fn -> timed_provider_call(state, request, stream_cb, purpose) end,
       Keyword.merge(
         state.meta[:queue_opts] || [],
         on_wait: queue_wait_callback(state)
@@ -250,6 +250,25 @@ defmodule ExAthena.Loop.Inference do
       if is_function(emitter, 1), do: emitter.(notification)
       :ok
     end
+  end
+
+  # Timed inside the queue slot, so a wait for a free GPU is not counted as the
+  # model's time (that wait has its own `{:queue_wait, _}` events).
+  defp timed_provider_call(state, request, stream_cb, purpose) do
+    started = System.monotonic_time(:millisecond)
+    result = provider_call(state, request, stream_cb)
+
+    Events.emit(
+      state.on_event,
+      {:model_call,
+       %{
+         purpose: purpose,
+         duration_ms: System.monotonic_time(:millisecond) - started,
+         ok?: match?({:ok, _}, result)
+       }}
+    )
+
+    result
   end
 
   defp provider_call(state, request, nil),

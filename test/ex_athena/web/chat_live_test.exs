@@ -930,6 +930,140 @@ defmodule ExAthena.Web.Live.ChatLiveTest do
     end
   end
 
+  # Issue 351: a trace needs when each step happened, what the runtime told
+  # the model, and whether each test run passed.
+  describe "what a session records for its trace" do
+    defp run_socket(overrides \\ %{}) do
+      assigns =
+        Map.merge(
+          %{
+            __changed__: %{},
+            details_stream: [],
+            stream_events: [],
+            stream_tool_ui: %{},
+            stream_text: "",
+            current_action: nil,
+            error: nil,
+            cwd: "/tmp",
+            pending_assistant_msg_id: "m1",
+            # The run started half a second ago, ten seconds into the session.
+            run_clock: %{mono: System.monotonic_time(:millisecond) - 500, offset_ms: 10_000}
+          },
+          overrides
+        )
+
+      %Phoenix.LiveView.Socket{assigns: assigns}
+    end
+
+    defp live(socket, events) do
+      Enum.reduce(events, socket, fn ev, s ->
+        {:noreply, s} = ChatLive.handle_info({:athena, ev}, s)
+        s
+      end)
+    end
+
+    defp oldest_first(socket), do: Enum.reverse(socket.assigns.details_stream)
+
+    test "every event carries when it happened, counted from the session's start" do
+      events = [
+        {:iteration, 1},
+        {:thinking, "let me "},
+        {:thinking, "look"},
+        {:tool_call, %{id: "c1", name: "read", arguments: %{}}},
+        {:usage, %{input_tokens: 5}}
+      ]
+
+      ats = run_socket() |> live(events) |> oldest_first() |> Enum.map(&Map.get(&1, :at))
+
+      # The two thinking deltas are one entry, which keeps the first one's time.
+      assert length(ats) == 4
+      assert Enum.all?(ats, &(is_integer(&1) and &1 >= 10_500))
+      assert ats == Enum.sort(ats)
+    end
+
+    test "a replayed run keeps the times its events happened at" do
+      snap = %{
+        events: [{:iteration, 1}, {:tool_call, %{id: "c1", name: "read", arguments: %{}}}],
+        event_at: [40, 900],
+        pending_assistant_msg_id: "m1"
+      }
+
+      result = ChatLive.replay_run_events(run_socket(), snap)
+
+      assert result |> oldest_first() |> Enum.map(&Map.get(&1, :at)) == [10_040, 10_900]
+    end
+
+    test "older entries of a resumed session keep no time rather than a wrong one" do
+      old = %{id: "old", type: :tool_call, message_id: "m0", payload: %{}}
+
+      result = live(run_socket(%{details_stream: [old]}), [{:iteration, 1}])
+
+      assert [%{type: :iteration, at: at}, ^old] = result.assigns.details_stream
+      assert at >= 10_500
+    end
+
+    test "a question the chat asks carries when it was asked" do
+      question = %{tool_call_id: "q1", question: "Go?", options: []}
+
+      {:noreply, socket} =
+        ChatLive.handle_info({:athena_ask_user, question}, run_socket(%{awaiting_question: nil}))
+
+      assert [%{type: :ask_user, at: at}] = socket.assigns.details_stream
+      assert at >= 10_500
+    end
+
+    test "a note the runtime sent the model is kept with its kind and text" do
+      steer =
+        {:steer, %{kind: :finish_check, check: "test", text: "[chat runtime: test check] x"}}
+
+      assert [%{type: :steer, payload: payload}] =
+               run_socket() |> live([steer]) |> oldest_first()
+
+      assert payload == %{
+               kind: :finish_check,
+               check: "test",
+               text: "[chat runtime: test check] x"
+             }
+    end
+
+    test "each model call keeps how long it took" do
+      call = {:model_call, %{purpose: :turn, duration_ms: 1234, ok?: true}}
+
+      assert [%{type: :model_call, payload: %{duration_ms: 1234, purpose: :turn}}] =
+               run_socket() |> live([call]) |> oldest_first()
+    end
+
+    defp process_ui(command, code, output) do
+      {:tool_ui,
+       %{
+         tool_call_id: "b1",
+         kind: :process,
+         payload: %{command: command, exit_code: code, stdout: output, duration_ms: 10}
+       }}
+    end
+
+    defp test_outcome(event) do
+      [%{type: :tool_ui, payload: payload}] = run_socket() |> live([event]) |> oldest_first()
+      Map.get(payload, :test)
+    end
+
+    test "a failing test command is recorded as failed" do
+      assert test_outcome(process_ui("mix test", 2, "3 tests, 1 failure")) == :failed
+    end
+
+    test "a passing test command is recorded as passed" do
+      assert test_outcome(process_ui("mix test", 0, "3 tests, 0 failures")) == :passed
+    end
+
+    test "a test run piped through tail that exits 0 over failures is recorded as failed" do
+      assert test_outcome(process_ui("mix test | tail -5", 0, "3 tests, 2 failures")) == :failed
+    end
+
+    test "a command that is not a test run records no outcome" do
+      assert test_outcome(process_ui("ls -la", 0, "a\nb")) == nil
+    end
+  end
+
   describe "replay_run_events/2 — rebuilding a run after reconnect" do
     defp detail(type, msg_id), do: %{id: "d#{type}", type: type, message_id: msg_id, payload: %{}}
 

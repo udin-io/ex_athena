@@ -104,6 +104,12 @@ defmodule ExAthena.Web.Live.ChatLive do
         # O(1) prepends and O(1) "extend the last entry" merging during
         # streaming. `Enum.reverse/1` once at render time.
         details_stream: [],
+        # The running turn's clock (issue 351): `mono` is the run's start on
+        # the monotonic clock, `offset_ms` that start in ms since the session
+        # was created. Each detail an event adds gets `at = offset_ms + (now -
+        # mono)`, so times order within a run and place runs within the
+        # session. Nil outside a run, and then nothing is stamped.
+        run_clock: nil,
         # The assistant message id that streaming events are currently
         # attributed to. Set in start_agent_run; cleared in :athena_done.
         pending_assistant_msg_id: nil,
@@ -214,6 +220,7 @@ defmodule ExAthena.Web.Live.ChatLive do
     case ExAthena.Web.RunServer.attach(id, self()) do
       {:ok, snap} ->
         socket
+        |> assign(run_clock: snapshot_clock(socket, snap))
         |> assign(
           streaming: snap.streaming,
           stream_text: snap.stream_text,
@@ -474,8 +481,12 @@ defmodule ExAthena.Web.Live.ChatLive do
   # untouched and makes a repeated reattach idempotent — a flapping connection
   # can reattach many times without duplicating rows.
   @doc false
-  def replay_run_events(socket, %{events: events, pending_assistant_msg_id: msg_id})
+  def replay_run_events(socket, %{events: events, pending_assistant_msg_id: msg_id} = snap)
       when is_list(events) and events != [] do
+    # Each event replays with the time RunServer saw it arrive, so a reattach
+    # does not move the rebuilt rows to the moment of the reattach.
+    times = Map.get(snap, :event_at) || List.duplicate(nil, length(events))
+
     socket
     |> update(:details_stream, fn stream ->
       Enum.reject(stream, &(&1.message_id == msg_id))
@@ -484,7 +495,11 @@ defmodule ExAthena.Web.Live.ChatLive do
     # turn owns starts empty — otherwise replayed text lands on top of the
     # restored copy and the answer appears twice.
     |> assign(stream_events: [], stream_tool_ui: %{}, stream_text: "")
-    |> then(&Enum.reduce(events, &1, fn event, s -> apply_event(s, event) end))
+    |> then(
+      &Enum.reduce(Enum.zip(events, times), &1, fn {event, at}, s ->
+        apply_timed(s, event, run_time(s, at))
+      end)
+    )
   end
 
   def replay_run_events(socket, _snap), do: socket
@@ -1170,7 +1185,8 @@ defmodule ExAthena.Web.Live.ChatLive do
     {:noreply, assign(socket, available_models: models, models_loading: false, model: model)}
   end
 
-  def handle_info({:athena, event}, socket), do: {:noreply, apply_event(socket, event)}
+  def handle_info({:athena, event}, socket),
+    do: {:noreply, apply_timed(socket, event, run_time(socket, :now))}
 
   # Keep the persisted session current while a run is in flight. Stops
   # rescheduling itself once the run ends — the completion save in
@@ -1216,10 +1232,12 @@ defmodule ExAthena.Web.Live.ChatLive do
   # answer is routed back via `answer_question/2`.
   def handle_info({:athena_ask_user, question}, socket) do
     detail =
-      new_detail(:ask_user, socket.assigns.pending_assistant_msg_id, %{
+      :ask_user
+      |> new_detail(socket.assigns.pending_assistant_msg_id, %{
         question: question.question,
         options: Map.get(question, :options, [])
       })
+      |> stamp_now(socket)
 
     {:noreply,
      socket
@@ -1280,12 +1298,9 @@ defmodule ExAthena.Web.Live.ChatLive do
     # as a collapsed tool row. Surface it as a final assistant-text item so the
     # answer shows in the chat.
     details_stream =
-      maybe_surface_deliverable(
-        socket.assigns.details_stream,
-        assistant_msg_id,
-        socket.assigns.stream_text,
-        result
-      )
+      socket.assigns.details_stream
+      |> maybe_surface_deliverable(assistant_msg_id, socket.assigns.stream_text, result)
+      |> stamp_added(socket.assigns.details_stream, run_time(socket, :now))
 
     # Upsert, not append: a reload mid-run may already have reopened this turn
     # as a placeholder, and two messages sharing an id is a duplicate DOM id.
@@ -2689,6 +2704,19 @@ defmodule ExAthena.Web.Live.ChatLive do
     """
   end
 
+  # What the runtime told the model (issue 351). These notes never enter the
+  # transcript, so this row is the only place a person sees them.
+  defp detail_entry(%{entry: %{type: :steer} = e} = assigns) do
+    assigns = assign(assigns, :e, e)
+
+    ~H"""
+    <div class="detail-entry detail-entry--meta" id={"detail-#{@e.id}"}>
+      <div class="detail-label">note to model · {steer_label(@e.payload)}</div>
+      <pre class="detail-pre">{Map.get(@e.payload, :text)}</pre>
+    </div>
+    """
+  end
+
   defp detail_entry(%{entry: %{type: :error} = e} = assigns) do
     assigns = assign(assigns, :e, e)
 
@@ -2723,6 +2751,10 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   defp detail_entry(assigns), do: ~H""
+
+  defp steer_label(%{kind: :finish_check, check: check}), do: "#{check} check"
+  defp steer_label(%{kind: kind}), do: kind |> to_string() |> String.replace("_", " ")
+  defp steer_label(_payload), do: "note"
 
   # ---------------------------------------------------------------------------
   # Overview tab — live orchestration state
@@ -3055,7 +3087,13 @@ defmodule ExAthena.Web.Live.ChatLive do
   def apply_event(socket, {:tool_ui, %{tool_call_id: id, kind: kind, payload: payload}}) do
     ui_entry = build_ui_entry(kind, payload, socket.assigns.cwd)
     msg_id = socket.assigns.pending_assistant_msg_id
-    detail = new_detail(:tool_ui, msg_id, %{tool_call_id: id, ui: ui_entry})
+
+    detail =
+      new_detail(
+        :tool_ui,
+        msg_id,
+        put_test_outcome(%{tool_call_id: id, ui: ui_entry}, kind, payload)
+      )
 
     socket
     |> update(:stream_tool_ui, &Map.put(&1, id, ui_entry))
@@ -3093,6 +3131,16 @@ defmodule ExAthena.Web.Live.ChatLive do
     update(socket, :details_stream, &[detail | &1])
   end
 
+  def apply_event(socket, {:steer, data}) do
+    detail = new_detail(:steer, socket.assigns.pending_assistant_msg_id, data)
+    update(socket, :details_stream, &[detail | &1])
+  end
+
+  def apply_event(socket, {:model_call, data}) do
+    detail = new_detail(:model_call, socket.assigns.pending_assistant_msg_id, data)
+    update(socket, :details_stream, &[detail | &1])
+  end
+
   def apply_event(socket, {:usage, usage}) do
     detail = new_detail(:usage, socket.assigns.pending_assistant_msg_id, %{usage: usage})
     update(socket, :details_stream, &[detail | &1])
@@ -3112,6 +3160,75 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   def apply_event(socket, _other), do: socket
+
+  # Fold one event and stamp `at` on the entries it added. Entries are stamped
+  # only back to the head that was there before, so a resumed session's older
+  # entries, saved without times, never take this one's.
+  defp apply_timed(socket, event, at) do
+    before = socket.assigns.details_stream |> List.first() |> then(&(&1 && &1.id))
+    socket = apply_event(socket, event)
+
+    if is_integer(at),
+      do: update(socket, :details_stream, &stamp_new(&1, before, at)),
+      else: socket
+  end
+
+  defp stamp_now(detail, socket) do
+    case run_time(socket, :now) do
+      at when is_integer(at) -> Map.put(detail, :at, at)
+      nil -> detail
+    end
+  end
+
+  defp stamp_added(stream, _before, nil), do: stream
+
+  defp stamp_added(stream, before, at),
+    do: stamp_new(stream, before |> List.first() |> then(&(&1 && &1.id)), at)
+
+  defp stamp_new([%{id: id} | _] = stream, id, _at), do: stream
+
+  defp stamp_new([entry | rest], before, at),
+    do: [Map.put_new(entry, :at, at) | stamp_new(rest, before, at)]
+
+  defp stamp_new([], _before, _at), do: []
+
+  # `at` for an event of the running turn: `:now` for one arriving live, or
+  # the ms since the run's start RunServer recorded for a replayed one.
+  defp run_time(%{assigns: %{run_clock: %{mono: mono, offset_ms: offset}}}, :now),
+    do: offset + System.monotonic_time(:millisecond) - mono
+
+  defp run_time(%{assigns: %{run_clock: %{offset_ms: offset}}}, at) when is_integer(at),
+    do: offset + at
+
+  defp run_time(_socket, _at), do: nil
+
+  defp snapshot_clock(socket, %{started_mono: mono, started_at: %DateTime{} = started_at}) do
+    created = socket.assigns[:session_created_at] || started_at
+    # A session that failed to load keeps the mount time as its start, which
+    # is after the run began; a negative offset would put the run before it.
+    %{mono: mono, offset_ms: max(DateTime.diff(started_at, created, :millisecond), 0)}
+  end
+
+  defp snapshot_clock(_socket, _snap), do: nil
+
+  # A shell command that runs tests is judged the way the finish checks judge
+  # it, so the trace and the checks agree on what passed.
+  defp put_test_outcome(detail, :process, %{command: command} = payload) do
+    if ExAthena.Provenance.test_command?(command) do
+      outcome =
+        ExAthena.Provenance.command_outcome(
+          command,
+          Map.get(payload, :exit_code),
+          Map.get(payload, :stdout)
+        )
+
+      Map.put(detail, :test, outcome)
+    else
+      detail
+    end
+  end
+
+  defp put_test_outcome(detail, _kind, _payload), do: detail
 
   # ---------------------------------------------------------------------------
   # Private helpers
@@ -3190,7 +3307,17 @@ defmodule ExAthena.Web.Live.ChatLive do
       # (override with EX_ATHENA_CONFINE=0).
       |> Keyword.put(:confine, ExAthena.confine_default?())
 
-    user_detail = new_detail(:user_text, user_msg.id, %{text: text})
+    started_at = DateTime.utc_now()
+    started_mono = System.monotonic_time(:millisecond)
+
+    run_clock = %{
+      mono: started_mono,
+      offset_ms: DateTime.diff(started_at, socket.assigns.session_created_at, :millisecond)
+    }
+
+    user_detail =
+      :user_text |> new_detail(user_msg.id, %{text: text}) |> Map.put(:at, run_clock.offset_ms)
+
     messages = socket.assigns.messages ++ [user_msg]
 
     socket =
@@ -3206,6 +3333,7 @@ defmodule ExAthena.Web.Live.ChatLive do
         stream_tool_ui: %{},
         current_action: nil,
         pending_assistant_msg_id: assistant_msg_id,
+        run_clock: run_clock,
         details_stream: [user_detail | socket.assigns.details_stream],
         orchestrator: initial_snapshot,
         orchestrator_sid: run_sid,
@@ -3239,7 +3367,9 @@ defmodule ExAthena.Web.Live.ChatLive do
         run_sid: run_sid,
         coordinator: coordinator,
         subscriber: self(),
-        permission: permission
+        permission: permission,
+        started_mono: started_mono,
+        started_at: started_at
       })
 
     {:noreply, push_session_url(socket)}
@@ -3262,10 +3392,12 @@ defmodule ExAthena.Web.Live.ChatLive do
     ExAthena.Web.RunServer.answer(socket.assigns.session_id, q.tool_call_id, answer)
 
     detail =
-      new_detail(:ask_user_answer, socket.assigns.pending_assistant_msg_id, %{
+      :ask_user_answer
+      |> new_detail(socket.assigns.pending_assistant_msg_id, %{
         question: q.question,
         answer: answer
       })
+      |> stamp_now(socket)
 
     {:noreply,
      socket

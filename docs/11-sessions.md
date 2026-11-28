@@ -189,6 +189,36 @@ Cross-link: [`guides/sessions_and_checkpoints.md`](../guides/sessions_and_checkp
 
 ---
 
+## The web chat's session file
+
+`mix athena.web` saves each chat to `~/.ex_athena/web/sessions/<id>.session`,
+an Erlang term file. Its `details_stream` is the chat's activity log, newest
+entry first: each entry has an `id`, a `type`, a `payload` and the
+`message_id` of the turn it belongs to.
+
+Since issue 351 the file also records what a trace needs:
+
+* `at` on each entry: milliseconds since the session's `created_at`. Within a
+  run it comes from the monotonic clock, so entries never go back in time;
+  between runs it follows the wall clock, so an idle hour shows as an hour.
+  A reconnect replays the run with the times RunServer saw each event arrive.
+  Entries saved before 351 have no `at`, and a resumed session leaves them
+  without one.
+* `:steer` entries: a note the runtime added to a model call, or a finish
+  check that sent the chat back to work. The payload is `%{kind:, text:}`,
+  where `text` is exactly what the model got; a finish check also carries
+  `check:`. See `{:steer, _}` in `ExAthena.Loop.Events` for the kinds.
+* `:model_call` entries: `%{purpose:, duration_ms:, ok?:}` for each provider
+  call, timed from the moment it got its queue slot.
+* `test:` on a `:tool_ui` entry for a shell command that runs tests:
+  `:passed`, `:failed` or `:unconfirmed`, judged as the finish checks judge it
+  (`ExAthena.Provenance.command_outcome/3`), so a piped `mix test | tail`
+  over failures reads as failed.
+
+Every field is an addition, so an older version still loads a newer file.
+
+---
+
 ## Sidechain transcripts (subagents)
 
 When a session spawns a subagent via `Tools.SpawnAgent`, the child loop's events stream into a *sidechain* under the parent's `session_id`. Stores that support multi-stream (e.g. `Jsonl`) keep these separate; others log them inline with a `parent_session_id` tag.
