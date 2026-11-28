@@ -109,4 +109,59 @@ defmodule ExAthena.SessionChatStoreTest do
     assert {:ok, %{messages: messages}} = Chats.load("libchat000005")
     assert Enum.map(messages, & &1.content) == ["one", "hello back", "two", "hello back"]
   end
+
+  test "a turn on a chat that moved on runs in the new chat, so its rewind undoes its edits", %{
+    cwd: cwd
+  } do
+    responder = fn req ->
+      if Enum.any?(req.messages, &(&1.role == :tool)) do
+        %Response{text: "done", finish_reason: :stop, provider: :mock}
+      else
+        %Response{
+          text: "writing",
+          tool_calls: [
+            %ExAthena.Messages.ToolCall{
+              id: "w1",
+              name: "write",
+              arguments: %{"path" => "f.txt", "content" => "changed"}
+            }
+          ],
+          finish_reason: :tool_calls,
+          provider: :mock
+        }
+      end
+    end
+
+    File.write!(Path.join(cwd, "f.txt"), "orig")
+    {:ok, _} = Chats.create(%{id: "libmov000001", cwd: cwd})
+    :ok = Chats.sync("libmov000001", [ExAthena.Messages.user("start")])
+
+    {:ok, pid} =
+      Session.start_link(
+        provider: :mock,
+        mock: [responder: responder],
+        cwd: cwd,
+        memory: false,
+        tools: [ExAthena.Tools.Write],
+        phase: :bypass_permissions,
+        store: :chat,
+        session_id: "libmov000001"
+      )
+
+    :ok =
+      Chats.sync("libmov000001", [
+        ExAthena.Messages.user("start"),
+        ExAthena.Messages.user("elsewhere")
+      ])
+
+    {:ok, _} = Session.send_message(pid, "write it")
+    new_id = Session.session_id(pid)
+    Session.stop(pid)
+
+    assert new_id != "libmov000001"
+    assert File.read!(Path.join(cwd, "f.txt")) == "changed"
+    {:ok, %{steps: [first | _]}} = Chats.load(new_id)
+    assert {:ok, %{files_restored: 1}} = Chats.rewind(new_id, first.uuid)
+    assert File.read!(Path.join(cwd, "f.txt")) == "orig"
+  end
 end

@@ -336,11 +336,15 @@ defmodule ExAthena.Session do
   def handle_call({:send_message, message, extra_opts}, from, %{store: Chat} = state) do
     # The turn holds its chat, so the terminal or web UI waits for it, and it
     # refuses to start while one of them runs a reply in the same chat.
-    case ExAthena.Chats.hold(state.session_id) do
-      :ok ->
-        reply = run_turn(message, extra_opts, from, state)
+    with :ok <- ExAthena.Chats.hold(state.session_id),
+         {:ok, state} <- fork_if_moved(state) do
+      reply = run_turn(message, extra_opts, from, state)
+      ExAthena.Chats.release(elem(reply, 2).session_id)
+      reply
+    else
+      {:error, reason, state} ->
         ExAthena.Chats.release(state.session_id)
-        reply
+        {:reply, {:error, reason}, state}
 
       {:error, _} = err ->
         {:reply, err, state}
@@ -439,6 +443,37 @@ defmodule ExAthena.Session do
   defp save_chat(state, _messages), do: state
 
   # Opening a saved chat with no seed messages goes on from its history.
+  # Before a turn, while the chat is held: when another front end went on
+  # with it, this history moves to a new chat forked from it first, so the
+  # turn's file edits are recorded under the chat they belong to.
+  defp fork_if_moved(%{chat_version: nil} = state), do: {:ok, state}
+
+  defp fork_if_moved(state) do
+    case ExAthena.Chats.version(state.session_id) do
+      {:ok, v} when v == state.chat_version ->
+        {:ok, state}
+
+      {:ok, _moved} ->
+        fields = %{
+          cwd: Keyword.get(state.opts, :cwd),
+          provider: Keyword.get(state.opts, :provider),
+          model: Keyword.get(state.opts, :model),
+          forked_from: %{chat: state.session_id, step: nil}
+        }
+
+        with {:ok, %{id: id}} <- ExAthena.Chats.create(fields),
+             {:ok, version} <- ExAthena.Chats.sync(id, state.messages, return: :version) do
+          ExAthena.Chats.release(state.session_id)
+          {:ok, %{state | session_id: id, chat_version: version}}
+        else
+          {:error, reason} -> {:error, {:chat_moved, reason}, state}
+        end
+
+      _ ->
+        {:ok, state}
+    end
+  end
+
   defp chat_messages(Chat, session_id, []) do
     case ExAthena.Chats.load(session_id) do
       {:ok, %{messages: messages}} -> messages
