@@ -217,6 +217,32 @@ Three things are worth knowing before pinning a level:
 
 ---
 
+## The prompt cache on a local server
+
+Ollama and llama.cpp reuse their cache only for the part of a prompt that
+matches the previous request from the start. Qwen3.5-family models (Ollama
+reports `qwen3.8:27b` as family `qwen35`) are hybrid: their recurrent layers
+cannot roll back to any position, so the server restores a checkpoint it saved
+shortly before the end of an earlier prompt. On Ollama 0.40 that checkpoint
+sat 512 tokens before the end. A checkpoint survives only while everything
+before it is unchanged.
+
+So the adapter sends each assistant reply in one form on every call that
+carries it ([#330](https://github.com/udin-io/ex_athena/issues/330)). A
+reply's reasoning never goes back verbatim; a reply whose text is blank, as a
+thinking model's tool turn often is, carries an `[earlier turn]` line with
+what it concluded. `test/ex_athena/providers/stable_history_test.exs` holds the
+rule: each request repeats the previous request's history byte for byte.
+
+The notes the loop adds after the last tool result (the progress ledger, the
+phase, budget and research notes) change every call by design. They stay cheap
+only while they are short. Once they pass the checkpoint's distance from the
+end, the checkpoint falls inside text the next call drops: in a probe with
+about 1,200 tokens of notes, four calls in a row cached nothing. Issue 330
+tracks that limit.
+
+---
+
 ## Mock provider (tests)
 
 [`Providers.Mock`](../lib/ex_athena/providers/mock.ex) is a scripted test double:
