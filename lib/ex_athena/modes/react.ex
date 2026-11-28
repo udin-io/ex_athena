@@ -181,7 +181,7 @@ defmodule ExAthena.Modes.ReAct do
     # the top of the turn, so the transient-error retry inside `do_iterate/3`
     # re-sends the same shape of request.
     handback? = BudgetPressure.handback?(state, System.monotonic_time(:millisecond))
-    request = build_request(state, handback?)
+    {request, steers} = build_request(state, handback?)
     state = mark_research_noted(state, handback?)
 
     # ChatParams hooks fire just before the provider call so callers can
@@ -199,6 +199,9 @@ defmodule ExAthena.Modes.ReAct do
         {:halt, state}
 
       {:ok, request, state} ->
+        # Recorded only once the request is going out: a hook that halts here
+        # means the model never got these notes.
+        emit_steers(state, steers)
         state |> do_iterate(request, handback?) |> check_finish()
     end
   end
@@ -258,6 +261,8 @@ defmodule ExAthena.Modes.ReAct do
             Enum.map_join(pending, "; ", &todo_content/1) <>
             ". Do the next one now. If the task is truly done, or a step cannot be " <>
             "done, mark the list to match and say so in your answer."
+
+        Events.emit(halted.on_event, {:steer, %{kind: :open_steps, text: note}})
 
         {:continue,
          halted
@@ -990,7 +995,7 @@ defmodule ExAthena.Modes.ReAct do
     # When the repetition is itself a research signal, the research note (which
     # rides earlier in the same request tail) carries the steer — don't ALSO
     # tell the model to "change strategy", or it gets contradictory nudges.
-    if ledger_repeated?(state, ledger) and not needs_research?(state) do
+    if repeat_directive?(state, ledger) do
       """
       You are repeating yourself without making progress — change strategy NOW:
       stop exploratory commands, record/update your todo list (todo_write),
@@ -1000,6 +1005,11 @@ defmodule ExAthena.Modes.ReAct do
       "Stay focused on the remaining work; do not repeat completed steps."
     end
   end
+
+  # When the repetition is itself a research signal, the research note carries
+  # the steer instead, so the model never gets both.
+  defp repeat_directive?(state, ledger),
+    do: ledger_repeated?(state, ledger) and not needs_research?(state)
 
   # Shared with the research rail (needs_research?/1). Identical DERIVED texts
   # ("ran bash") are weak evidence — only a stall when the kernel's fingerprint
@@ -1135,17 +1145,28 @@ defmodule ExAthena.Modes.ReAct do
 
   # ── Request building ──────────────────────────────────────────────
 
+  # Returns the request and the notes it carries that steer the model, as
+  # `{kind, text}` pairs, so the loop can record what the model was told
+  # (issue 351). The notes themselves stay off the transcript.
   defp build_request(state, handback?)
 
   defp build_request(state, false) do
-    notes = phase_note(state) ++ budget_note(state) ++ research_note(state)
+    wrap_up = budget_note(state)
+    research = research_note(state)
+    notes = phase_note(state) ++ wrap_up ++ research
+    ledger = recitation(state, @tail_note_bytes - bytes(notes))
 
-    %{
+    request = %{
       state.request_template
-      | messages: state.messages ++ notes ++ recitation(state, @tail_note_bytes - bytes(notes)),
+      | messages: state.messages ++ notes ++ ledger,
         tools: tool_schemas(state.tool_specs, state.capabilities),
         system_prompt: effective_system_prompt(state)
     }
+
+    steers =
+      tagged(:wrap_up, wrap_up) ++ tagged(:research, research) ++ ledger_steer(state, ledger)
+
+    {request, steers}
   end
 
   # The handback turn (issue 237): the last turn of a worker's wall-clock
@@ -1166,14 +1187,32 @@ defmodule ExAthena.Modes.ReAct do
   # of it are what make the report name files and commands. The instruction
   # goes last, where the model's attention is freshest.
   defp build_request(state, true) do
-    %{
+    note = Messages.user(BudgetPressure.handback_note(state))
+    ledger = recitation(state, :infinity)
+
+    request = %{
       state.request_template
-      | messages:
-          state.messages ++
-            recitation(state, :infinity) ++ [Messages.user(BudgetPressure.handback_note(state))],
+      | messages: state.messages ++ ledger ++ [note],
         tools: nil,
         system_prompt: state.request_template.system_prompt
     }
+
+    {request, ledger_steer(state, ledger) ++ tagged(:handback, [note])}
+  end
+
+  defp tagged(kind, messages), do: Enum.map(messages, &{kind, &1.content})
+
+  # The ledger rides every request; only its stall form steers.
+  defp ledger_steer(%State{meta: %{ledger: [_ | _] = ledger}} = state, [message]) do
+    if repeat_directive?(state, ledger), do: [{:ledger_repeat, message.content}], else: []
+  end
+
+  defp ledger_steer(_state, _ledger), do: []
+
+  defp emit_steers(state, steers) do
+    Enum.each(steers, fn {kind, text} ->
+      Events.emit(state.on_event, {:steer, %{kind: kind, text: text}})
+    end)
   end
 
   # Budget wrap-up pressure (cache-safe tail): a finite-budget loop that keeps
