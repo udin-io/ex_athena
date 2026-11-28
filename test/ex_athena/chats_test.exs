@@ -581,6 +581,36 @@ defmodule ExAthena.ChatsTest do
       assert File.read!(Path.join(cwd, "old.ex")) == "one\n"
     end
 
+    test "a patch that changes a file its own parser does not see is refused", %{cwd: cwd} do
+      {_, 0} = System.cmd("git", ["init", "-q", cwd])
+      File.write!(Path.join(cwd, "old.ex"), "keep me\n")
+      File.write!(Path.join(cwd, "y.ex"), "a\n")
+      File.write!(Path.join(cwd, "empty.ex"), "")
+      ctx = ExAthena.ToolContext.new(cwd: cwd, session_id: "hiddenchat", tool_call_id: "c1")
+      edit = "diff --git a/y.ex b/y.ex\n--- a/y.ex\n+++ b/y.ex\n@@ -1,1 +1,1 @@\n-a\n+b\n"
+
+      # `git apply` acts on each of these headers, and none has a "--- " line.
+      hidden = [
+        "diff --git a/old.ex b/new.ex\nsimilarity index 100%\nrename old old.ex\nrename new new.ex\n",
+        "diff --git a/empty.ex b/empty.ex\ndeleted file mode 100644\nindex e69de29..0000000\n",
+        "diff --git a/made.ex b/made.ex\nnew file mode 100644\nindex 0000000..e69de29\n"
+      ]
+
+      for header <- hidden do
+        assert {:error, {:unsupported_diff_feature, _}} =
+                 ExAthena.Tools.ApplyPatch.execute(%{"patch" => header <> edit}, ctx)
+      end
+
+      assert File.read!(Path.join(cwd, "old.ex")) == "keep me\n"
+      assert File.exists?(Path.join(cwd, "empty.ex"))
+      refute File.exists?(Path.join(cwd, "new.ex"))
+      refute File.exists?(Path.join(cwd, "made.ex"))
+      assert File.read!(Path.join(cwd, "y.ex")) == "a\n"
+
+      assert :ok = elem(ExAthena.Tools.ApplyPatch.execute(%{"patch" => edit}, ctx), 0)
+      assert File.read!(Path.join(cwd, "y.ex")) == "b\n"
+    end
+
     test "a patch that failed, then a person's edit, is not undone", %{cwd: cwd} do
       chat = new_chat(cwd)
       path = Path.join(cwd, "q.ex")
