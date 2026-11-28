@@ -306,5 +306,30 @@ defmodule ExAthena.Tools.ApplyPatchTest do
       assert {:error, _} = ApplyPatch.execute(%{"patch" => patch}, ctx)
       assert File.read!(Path.join(dir, "README.md")) == "hello\n"
     end
+
+    test "a file named outside ASCII is still patched", %{tmp_dir: dir} do
+      {_, 0} = System.cmd("git", ["init", "-q"], cd: dir)
+      File.write!(Path.join(dir, "café.md"), "hello\n")
+      ctx = ToolContext.new(cwd: dir, session_id: "pathchat02", tool_call_id: "c1")
+      patch = "--- a/café.md\n+++ b/café.md\n@@ -1,1 +1,1 @@\n-hello\n+bonjour\n"
+
+      assert {:ok, _, _} = ApplyPatch.execute(%{"patch" => patch}, ctx)
+      assert File.read!(Path.join(dir, "café.md")) == "bonjour\n"
+    end
+
+    test "a mode change beside an edit is refused", %{tmp_dir: dir} do
+      {_, 0} = System.cmd("git", ["init", "-q"], cd: dir)
+      File.write!(Path.join(dir, "run.sh"), "echo hi\n")
+      ctx = ToolContext.new(cwd: dir, session_id: "pathchat03", tool_call_id: "c1")
+
+      patch =
+        "diff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\n" <>
+          "--- a/run.sh\n+++ b/run.sh\n@@ -1,1 +1,1 @@\n-echo hi\n+echo bye\n"
+
+      assert {:error, {:unsupported_diff_feature, :mode_change}} =
+               ApplyPatch.execute(%{"patch" => patch}, ctx)
+
+      assert File.read!(Path.join(dir, "run.sh")) == "echo hi\n"
+    end
   end
 end
