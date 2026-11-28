@@ -558,7 +558,10 @@ defmodule ExAthena.Web.Live.ChatLive do
       true ->
         case chat_free(socket) do
           :ok ->
-            socket |> follow_new_output() |> fork_if_moved() |> start_agent_run(text)
+            case socket |> follow_new_output() |> fork_if_moved() do
+              {:ok, socket} -> start_agent_run(socket, text)
+              {:error, socket} -> {:noreply, socket}
+            end
 
           :busy ->
             {:noreply,
@@ -3805,15 +3808,25 @@ defmodule ExAthena.Web.Live.ChatLive do
   defp fork_if_moved(socket) do
     case Sessions.fork_if_moved(session_payload(socket.assigns)) do
       {:moved, new_id} ->
-        socket
-        |> assign(session_id: new_id, record_version: nil)
-        |> assign(
-          notice: "This chat moved on in another window, so it goes on here as a new chat."
-        )
-        |> push_session_url()
+        {:ok,
+         socket
+         |> assign(session_id: new_id, record_version: nil)
+         |> assign(
+           notice: "This chat moved on in another window, so it goes on here as a new chat."
+         )
+         |> push_session_url()}
 
-      _ ->
-        socket
+      :current ->
+        {:ok, socket}
+
+      # The copy could not be saved apart; a run would write into the moved
+      # chat, so nothing is sent.
+      {:error, _reason} ->
+        {:error,
+         assign(socket,
+           error:
+             "This chat moved on in another window and could not be copied, so nothing was sent. Open it again from the list."
+         )}
     end
   end
 

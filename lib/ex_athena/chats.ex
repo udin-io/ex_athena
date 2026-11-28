@@ -86,7 +86,8 @@ defmodule ExAthena.Chats do
   def create(attrs) when is_map(attrs) do
     id = Map.get(attrs, :id) || new_id()
 
-    with :ok <- check_id(id) do
+    with :ok <- check_id(id),
+         :ok <- create_guard(attrs) do
       header =
         attrs
         |> Map.take(@header_fields ++ [:forked_from, :parent])
@@ -98,6 +99,16 @@ defmodule ExAthena.Chats do
         :ok -> {:ok, Map.put(header, :updated_at, DateTime.utc_now())}
         err -> err
       end
+    end
+  end
+
+  # A test seam: `config :ex_athena, :chats_create_guard, fun` makes `create/1`
+  # return what `fun.(attrs)` returns when it is not `:ok`, so a test can make
+  # a create fail the way a full disk would.
+  defp create_guard(attrs) do
+    case Application.get_env(:ex_athena, :chats_create_guard) do
+      fun when is_function(fun, 1) -> fun.(attrs)
+      _ -> :ok
     end
   end
 

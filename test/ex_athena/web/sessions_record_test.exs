@@ -357,5 +357,27 @@ defmodule ExAthena.Web.SessionsRecordTest do
       assert {:ok, %{messages: messages}} = Chats.load("abc123def456")
       assert length(messages) == 6
     end
+
+    test "a page whose moved chat cannot be copied sends nothing and says so", %{cwd: cwd} do
+      :ok = Sessions.save(web_payload(cwd))
+      socket = opened("abc123def456")
+
+      :ok =
+        Chats.sync(
+          "abc123def456",
+          ex_turn() ++ [Messages.user("terminal"), Messages.assistant("t")]
+        )
+
+      Application.put_env(:ex_athena, :chats_create_guard, fn _attrs -> {:error, :disk_full} end)
+      on_exit(fn -> Application.delete_env(:ex_athena, :chats_create_guard) end)
+
+      socket = %{socket | assigns: Map.put(socket.assigns, :cwd, cwd)}
+      {:noreply, socket} = ChatLive.handle_event("send", %{"text" => "web question"}, socket)
+
+      assert socket.assigns.error =~ "could not be copied"
+      assert socket.assigns.session_id == "abc123def456"
+      assert {:ok, %{messages: messages}} = Chats.load("abc123def456")
+      assert List.last(messages).content == "t"
+    end
   end
 end

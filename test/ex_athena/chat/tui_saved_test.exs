@@ -255,4 +255,27 @@ defmodule ExAthena.Chat.TuiSavedTest do
 
     {:noreply, _} = Tui.handle_info({:athena_error, :stopped}, state)
   end
+
+  test "a moved chat that cannot be forked runs no turn, drops the hold and says so", %{cwd: cwd} do
+    state = cwd |> fresh() |> finish_turn("one", "two")
+    id = state.session.chat_id
+
+    :ok =
+      Chats.sync(
+        id,
+        state.session.messages ++ [Messages.user("web"), Messages.assistant("web reply")]
+      )
+
+    Application.put_env(:ex_athena, :chats_create_guard, fn _attrs -> {:error, :disk_full} end)
+    on_exit(fn -> Application.delete_env(:ex_athena, :chats_create_guard) end)
+
+    state = type(state, "next please")
+
+    assert state.run_task == nil
+    assert state.session.chat_id == id
+    assert Enum.any?(infos(state), &(&1 =~ "Could not start"))
+    test_pid = self()
+    spawn(fn -> send(test_pid, {:hold, Chats.hold(id)}) end)
+    assert_receive {:hold, :ok}
+  end
 end
