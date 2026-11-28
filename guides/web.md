@@ -87,11 +87,39 @@ a model, so it renders in an opaque origin with no access to your session.
   showing collapsible output previews. A message you send while the chat runs
   shows as waiting until the chat takes it at its next turn; one it never
   takes goes back into the message box.
-- **Details** (right) — chronological log of every tool call and result,
-  thinking blocks, and iteration markers for the current session.
+- **Details** (right) — tabs: Overview, Log (every tool call and result,
+  thinking blocks and iteration markers), Trace (the session drawn over time,
+  below), Git, Terminal and Files.
 - **Right panels** (optional, toggled via ⊟ / ± buttons) — color-coded diff
   viewer for file edits, raw stdout for Bash calls, and a live `git diff HEAD`
   panel.
+
+## Trace tab
+
+The Trace tab draws the open session as one picture, so you can see what
+happened and why without reading the session file. Time runs left to right.
+
+- **you** — a ▲ for each message you sent.
+- **chat** and **helper N** — one lane each. Every turn (one model call) is a
+  mark coloured by what it did: read or search, library lookup, edit, command,
+  test passed, test failed, helper sent, question, error, or a plain answer. A
+  helper's lane runs from the moment it was sent to its report, and its turns
+  come from its journal under `.exathena/sessions/` in the project folder.
+- **notes** — a letter for each note ExAthena sent the model and each finish
+  check that sent the chat back to work: R research, L repeat, W wrap-up,
+  H handback, O open steps, and V, T, C, A for the verification, test,
+  coverage and audit checks, and Z where the history was compacted. A check
+  sits on the turn whose request carried it. Hover a letter to read the note.
+- **tokens in** and **cached** — each call's input tokens and how many of them
+  the provider served from its cache, so a cache that stops holding shows as
+  the green strip falling away under the blue one.
+
+Click a mark to open that turn: the notes it was sent, its thinking, each tool
+call with its arguments and the first 2,000 characters of its output, and
+whether a test passed. A helper's turn shows its tool calls and what it said,
+since its journal keeps no tool output. Many narrow turns of one kind fold into one mark, and
+its click lists them all. The tab redraws as the run goes. A session saved
+before times were recorded draws its turns evenly spaced and says so.
 
 ## Sidebar: provider and model selector
 

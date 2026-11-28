@@ -44,6 +44,20 @@ minor version. Nobody has published it yet.
 
 ### Added
 
+- **A Trace tab draws a session so you can see what happened and why**
+  ([#352](https://github.com/udin-io/ex_athena/issues/352)). Finding where a
+  29-minute run spent its time, or what told it to delete a test, meant reading
+  the session file by hand. The web chat's right pane now has a Trace tab: the
+  chat and each helper get a lane over time, every turn is a mark coloured by
+  what it did (read, lookup, edit, command, test passed or failed, helper sent,
+  question, error, answer), letters mark each note ExAthena sent the model and
+  each finish check that fired, and two strips show each call's input and
+  cached tokens. Clicking a mark opens that turn's notes, thinking, tool calls
+  and output. It redraws live during a run and works on saved sessions; one
+  saved before #351 draws its turns evenly spaced and says so. Helpers' turns
+  come from their journals. The right pane's tabs now scroll when the pane is
+  too narrow for all six.
+
 - **A saved web chat records when each step happened and what ExAthena told
   the model** ([#351](https://github.com/udin-io/ex_athena/issues/351)). To
   learn why a run went wrong, you read a session file whose 356 events had no
