@@ -135,7 +135,8 @@ defmodule ExAthena.Chats do
   programs they are one only while the writer holds the chat (`hold/1`), so a
   front end saves its turn before it releases the hold.
   """
-  @spec sync(id(), [Message.t()], keyword()) :: :ok | {:error, term()}
+  @spec sync(id(), [Message.t()], keyword()) ::
+          :ok | {:ok, non_neg_integer()} | {:error, term()}
   def sync(id, messages, opts \\ [])
 
   def sync(id, messages, opts) when is_list(messages) do
