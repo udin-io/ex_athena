@@ -29,6 +29,40 @@ defmodule ExAthena.Web.Sessions do
   # Sessions
   # ---------------------------------------------------------------------------
 
+  @doc """
+  Writes `data` to `path` readable by its owner only (0600).
+
+  The file is created empty and restricted before the content goes in, so the
+  content is never readable by others, even briefly.
+  """
+  @spec write_private!(Path.t(), iodata()) :: :ok
+  def write_private!(path, data) do
+    unless File.exists?(path) do
+      File.touch!(path)
+    end
+
+    File.chmod!(path, 0o600)
+    File.write!(path, data)
+  end
+
+  @doc """
+  Restricts the store to its owner: the folder and the sessions folder 0700,
+  every file in them 0600. Run at start, to close what an older version left
+  open.
+  """
+  @spec secure_store!() :: :ok
+  def secure_store! do
+    base = ensure_base!()
+    sessions = sessions_dir()
+
+    for dir <- [base, sessions], name <- File.ls!(dir) do
+      path = Path.join(dir, name)
+      if File.regular?(path), do: File.chmod!(path, 0o600)
+    end
+
+    :ok
+  end
+
   @doc "List all session headers, newest first."
   @spec list() :: [map()]
   def list do
@@ -78,7 +112,7 @@ defmodule ExAthena.Web.Sessions do
   @spec save(map()) :: :ok
   def save(%{id: id} = data) do
     dir = sessions_dir()
-    File.write!(Path.join(dir, "#{id}.session"), :erlang.term_to_binary(data))
+    write_private!(Path.join(dir, "#{id}.session"), :erlang.term_to_binary(data))
   end
 
   @doc """
@@ -262,8 +296,8 @@ defmodule ExAthena.Web.Sessions do
         %{cwd: e.cwd, opened_at: DateTime.to_iso8601(e.opened_at)}
       end)
 
-    File.mkdir_p!(base_dir())
-    File.write!(recent_path(), Jason.encode!(payload))
+    ensure_base!()
+    write_private!(recent_path(), Jason.encode!(payload))
     :ok
   rescue
     _ -> :ok
@@ -279,8 +313,8 @@ defmodule ExAthena.Web.Sessions do
         %{cwd: e.cwd, opened_at: DateTime.to_iso8601(e.opened_at)}
       end)
 
-    File.mkdir_p!(base_dir())
-    File.write!(recent_path(), Jason.encode!(payload))
+    ensure_base!()
+    write_private!(recent_path(), Jason.encode!(payload))
     :ok
   rescue
     _ -> :ok
@@ -292,8 +326,17 @@ defmodule ExAthena.Web.Sessions do
 
   defp sessions_dir do
     dir = Path.join(base_dir(), "sessions")
+    ensure_base!()
     File.mkdir_p!(dir)
+    File.chmod!(dir, 0o700)
     dir
+  end
+
+  defp ensure_base! do
+    base = base_dir()
+    File.mkdir_p!(base)
+    File.chmod!(base, 0o700)
+    base
   end
 
   defp recent_path, do: Path.join(base_dir(), "recent.json")

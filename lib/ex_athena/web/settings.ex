@@ -924,7 +924,7 @@ defmodule ExAthena.Web.Settings do
 
     file = path()
     File.mkdir_p!(Path.dirname(file))
-    File.write!(file, Jason.encode!(payload))
+    ExAthena.Web.Sessions.write_private!(file, Jason.encode!(payload))
     :ok
   rescue
     e ->
