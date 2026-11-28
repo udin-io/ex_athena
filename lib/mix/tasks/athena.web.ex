@@ -37,6 +37,8 @@ defmodule Mix.Tasks.Athena.Web do
 
   use Mix.Task
 
+  alias ExAthena.Web.Sessions
+
   # Displayed to the user and used as the default token path. Kept in `~` form
   # so the startup banner reads `Token saved to ~/.ex_athena/web/token`; the
   # file write itself expands the path.
@@ -212,16 +214,19 @@ defmodule Mix.Tasks.Athena.Web do
   def persist_token(token, path \\ @default_token_path) do
     expanded = Path.expand(path)
     File.mkdir_p!(Path.dirname(expanded))
-    File.write!(expanded, token)
-    File.chmod!(expanded, 0o600)
+    Sessions.write_private!(expanded, token)
   end
 
   # Persist the secret_key_base so session cookies survive restarts.
   # A fresh random key on every start causes the old session cookie to fail
   # CSRF validation, which triggers LiveView's reloadWithJitter (5–10 s delay).
-  defp stable_key_base do
-    key_file = Path.expand("~/.ex_athena/web/secret.key")
-    File.mkdir_p!(Path.dirname(key_file))
+  @doc """
+  The endpoint's signing key, kept in the web folder (0600, folder 0700) so it
+  survives restarts. A start also restricts files an older version left open.
+  """
+  def stable_key_base do
+    Sessions.secure_store!()
+    key_file = Path.join(Sessions.base_dir(), "secret.key")
 
     case File.read(key_file) do
       {:ok, key} when byte_size(key) >= 64 ->
@@ -229,7 +234,7 @@ defmodule Mix.Tasks.Athena.Web do
 
       _ ->
         key = :crypto.strong_rand_bytes(64) |> Base.encode64()
-        File.write!(key_file, key)
+        Sessions.write_private!(key_file, key)
         key
     end
   end
