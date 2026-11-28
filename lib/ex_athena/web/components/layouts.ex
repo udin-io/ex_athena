@@ -447,6 +447,19 @@ defmodule ExAthena.Web.Layouts do
             hooks: Hooks
           })
           liveSocket.connect()
+
+          // The Trace tab's Save button (issue 353): the server sends the
+          // finished file, and the browser saves it; nothing is fetched.
+          window.addEventListener("phx:trace-download", (e) => {
+            const blob = new Blob([e.detail.html], {type: "text/html"})
+            const a = document.createElement("a")
+            a.href = URL.createObjectURL(blob)
+            a.download = e.detail.name
+            document.body.appendChild(a)
+            a.click()
+            a.remove()
+            setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+          })
           window.liveSocket = liveSocket
         </script>
       </head>

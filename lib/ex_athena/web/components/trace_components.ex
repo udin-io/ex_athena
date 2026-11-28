@@ -70,6 +70,13 @@ defmodule ExAthena.Web.TraceComponents do
         <span :if={@trace.timed?}>· {Trace.duration(@trace.duration_ms)}</span>
         <span>· {@trace.turn_count} turns</span>
         <span>· {Trace.compact(@trace.tokens_in)} tokens in</span>
+        <button
+          :if={@interactive == :live and @trace.turn_count > 0}
+          class="trace-save"
+          id="trace-save"
+          phx-click="trace_save"
+          title="Save this trace as one HTML file"
+        >Save</button>
       </div>
 
       <div :if={not @trace.timed? and @trace.turn_count > 0} class="trace-notice" id="trace-untimed">
@@ -208,7 +215,12 @@ defmodule ExAthena.Web.TraceComponents do
     assigns = assign(assigns, :turns, Enum.map(assigns.mark.turns, &assigns.trace.turns[&1]))
 
     ~H"""
-    <div class="trace-details" id={"trace-detail-#{@mark.id}"} hidden={@hidden}>
+    <div
+      class="trace-details"
+      id={"trace-detail-#{@mark.id}"}
+      data-turns={Enum.join(@mark.turns, " ")}
+      hidden={@hidden}
+    >
       <div :for={turn <- @turns} class="trace-turn" id={"trace-turn-#{turn.id}"}>
         <div class="trace-turn-head">
           <span class={["trace-swatch", "trace-mark--#{turn.kind}"]}></span>

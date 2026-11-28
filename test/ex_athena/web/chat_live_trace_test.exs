@@ -182,6 +182,15 @@ defmodule ExAthena.Web.ChatLiveTraceTest do
 
   defp pct(text), do: text |> String.trim_trailing("%") |> Float.parse() |> elem(0)
 
+  test "Save sends the open chat's trace as one file named for the session" do
+    assert {"trace-sess1.html", html} = ChatLive.trace_file(socket().assigns)
+
+    doc = LazyHTML.from_document(html)
+    assert count(doc, "#trace-lane-chat [data-kind='test_failed']") == 1
+    assert count(doc, "#trace-export-notice") == 1
+    assert {:noreply, _} = ChatLive.handle_event("trace_save", %{}, socket())
+  end
+
   test "an empty chat shows how the trace fills in" do
     assert count(html(socket(%{details_stream: []})), "#trace-empty") == 1
   end
