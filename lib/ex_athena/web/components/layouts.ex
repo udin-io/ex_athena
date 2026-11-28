@@ -12,6 +12,7 @@ defmodule ExAthena.Web.Layouts do
         <meta name="csrf-token" content={get_csrf_token()} />
         <title>ExAthena</title>
         <link rel="stylesheet" href="/assets/app.css" />
+        <link rel="stylesheet" href="/assets/trace.css" />
         <link rel="stylesheet" href="/assets/vendor/xterm/xterm.css" />
         <script src="/assets/vendor/xterm/xterm.js"></script>
         <script src="/assets/vendor/xterm/addon-fit.js"></script>
