@@ -97,6 +97,10 @@ defmodule ExAthena.Web.Live.ChatLive do
         # Provider-side conversation id (e.g. Claude Code CLI session) from
         # the last Result — passed back as `resume:` on the next run.
         provider_session_id: nil,
+        # How far the shared chat record had moved when this page last read
+        # or wrote it (ExAthena.Chats.version/1).
+        record_version: nil,
+        notice: nil,
         # Stored tool UI payloads (diff/process/file) keyed by tool_call_id
         tool_uis: %{},
         expanded_uis: MapSet.new(),
@@ -552,7 +556,17 @@ defmodule ExAthena.Web.Live.ChatLive do
         {:noreply, socket}
 
       true ->
-        socket |> follow_new_output() |> start_agent_run(text)
+        case chat_free(socket) do
+          :ok ->
+            socket |> follow_new_output() |> fork_if_moved() |> start_agent_run(text)
+
+          :busy ->
+            {:noreply,
+             assign(socket,
+               error:
+                 "Another window is running a reply in this chat. Wait for it, then send again."
+             )}
+        end
     end
   end
 
@@ -930,7 +944,15 @@ defmodule ExAthena.Web.Live.ChatLive do
             snap -> snap
           end
 
-        new_id = unique_id()
+        # The shared record forks too, so the copy names the chat it came from.
+        new_id =
+          with {:ok, step} <- record_step(socket.assigns.session_id, ex_messages),
+               {:ok, %{id: id}} <- ExAthena.Chats.fork(socket.assigns.session_id, step: step) do
+            id
+          else
+            _ -> unique_id()
+          end
+
         title = derive_title(forked_messages)
         details_stream = hydrate_details_stream(forked_messages, socket.assigns.tool_uis)
 
@@ -954,9 +976,52 @@ defmodule ExAthena.Web.Live.ChatLive do
            stream_events: [],
            stream_tool_ui: %{},
            current_action: nil,
-           show_sessions: false
+           show_sessions: false,
+           record_version: nil
          )
+         |> save_session()
          |> push_session_url()}
+    end
+  end
+
+  def handle_event("rewind_to", %{"msg_id" => msg_id}, socket) do
+    a = socket.assigns
+
+    with {:idle, false} <- {:idle, a[:streaming] == true},
+         {:current, true} <- {:current, current?(a)},
+         n when is_integer(n) <- Enum.find_index(a.messages, &(&1.id == msg_id)),
+         kept = Enum.take(a.messages, n + 1),
+         ex_messages = snapshot_up_to(kept, a.ex_messages),
+         {:ok, step} <- record_step(a.session_id, ex_messages),
+         {:ok, result} <- ExAthena.Chats.rewind(a.session_id, step) do
+      {:noreply,
+       socket
+       |> assign(
+         messages: kept,
+         ex_messages: ex_messages,
+         provider_session_id: nil,
+         details_stream: hydrate_details_stream(kept, a.tool_uis),
+         pending_assistant_msg_id: nil,
+         error: rewind_failures(result.files_failed),
+         notice: "Went back to this reply and put back #{result.files_restored} file(s)."
+       )
+       |> save_session()}
+    else
+      {:idle, true} ->
+        {:noreply, assign(socket, error: "Wait for the reply to finish first.")}
+
+      {:current, false} ->
+        {:noreply,
+         assign(socket,
+           error:
+             "This chat went on in another window. Open it again from the list before you rewind."
+         )}
+
+      {:error, :busy} ->
+        {:noreply, assign(socket, error: "Wait for the reply to finish first.")}
+
+      _ ->
+        {:noreply, assign(socket, error: "This reply cannot be rewound to.")}
     end
   end
 
@@ -1232,8 +1297,7 @@ defmodule ExAthena.Web.Live.ChatLive do
         if sig == socket.assigns[:session_sig] do
           socket
         else
-          save_session(socket)
-          assign(socket, session_sig: sig)
+          socket |> save_session() |> assign(session_sig: sig)
         end
 
       # Helpers write their journals as they go; re-read them while the Trace
@@ -1383,8 +1447,7 @@ defmodule ExAthena.Web.Live.ChatLive do
     # Helpers' last journal lines land after the last autosave tick.
     socket = if socket.assigns.details_tab == :trace, do: load_trace_helpers(socket), else: socket
 
-    save_session(socket)
-    {:noreply, socket}
+    {:noreply, save_session(socket)}
   end
 
   def handle_info({:athena_error, _reason}, %{assigns: %{streaming: false}} = socket),
@@ -1397,7 +1460,7 @@ defmodule ExAthena.Web.Live.ChatLive do
        streaming_task_pid: nil,
        current_action: nil,
        awaiting_question: nil,
-       error: inspect(reason)
+       error: if(is_binary(reason), do: reason, else: inspect(reason))
      )}
   end
 
@@ -1857,6 +1920,9 @@ defmodule ExAthena.Web.Live.ChatLive do
             />
           <% end %>
 
+          <%= if assigns[:notice] do %>
+            <div class="msg-error" data-role="notice">{@notice}</div>
+          <% end %>
           <%= if @error do %>
             <div class="msg-error">⚠ {@error}</div>
           <% end %>
@@ -2394,6 +2460,16 @@ defmodule ExAthena.Web.Live.ChatLive do
         assistant
         <button class="btn-fork" phx-click="fork_at" phx-value-msg_id={@msg.id} title="Fork conversation from here">
           ⑂ fork
+        </button>
+        <button
+          class="btn-fork"
+          phx-click="rewind_to"
+          phx-value-msg_id={@msg.id}
+          data-role="rewind"
+          title="Go back to here and put back the files changed after it"
+          data-confirm="Go back to this reply? Later messages leave the chat, and files they changed go back as they were, where ExAthena kept a copy."
+        >
+          ↶ rewind
         </button>
       </div>
       <%= if @items == [] do %>
@@ -3416,6 +3492,9 @@ defmodule ExAthena.Web.Live.ChatLive do
       ]
       |> maybe_put_model(model)
       |> maybe_put_resume(provider_session_id)
+      # The chat's id, so the file history each edit writes lines up with the
+      # saved chat a rewind reads (ExAthena.Chats.rewind/3).
+      |> Keyword.put(:session_id, session_id)
       |> apply_base_url(provider)
       |> maybe_put_cwd(socket.assigns.cwd)
       # Confine filesystem/bash/web access to the opened project by default
@@ -3460,7 +3539,7 @@ defmodule ExAthena.Web.Live.ChatLive do
 
     # Persist the session NOW (with the user turn) so RunServer has a file to
     # durably append the answer to, and a reconnect mid-run reopens the turn.
-    save_session(socket)
+    socket = save_session(socket)
 
     # …then keep it current for the rest of the run, so the session is
     # inspectable at any moment rather than only at start and finish.
@@ -3635,6 +3714,7 @@ defmodule ExAthena.Web.Live.ChatLive do
       pending_images: [],
       ex_messages: data.ex_messages,
       provider_session_id: Map.get(data, :provider_session_id),
+      record_version: Map.get(data, :record_version),
       tool_uis: tool_uis,
       expanded_uis: MapSet.new(),
       details_stream: details_stream,
@@ -3719,7 +3799,83 @@ defmodule ExAthena.Web.Live.ChatLive do
     end
   end
 
-  defp save_session(socket), do: Sessions.save(session_payload(socket.assigns))
+  # Another window went on with this chat (a turn in the terminal, a rewind)
+  # since this page read it: this page's copy goes on as a new chat, so
+  # neither side's work is written over.
+  defp fork_if_moved(socket) do
+    case Sessions.fork_if_moved(session_payload(socket.assigns)) do
+      {:moved, new_id} ->
+        socket
+        |> assign(session_id: new_id, record_version: nil)
+        |> assign(
+          notice: "This chat moved on in another window, so it goes on here as a new chat."
+        )
+        |> push_session_url()
+
+      _ ->
+        socket
+    end
+  end
+
+  # The record step for the end of `ex_messages`: the record's history must
+  # start with exactly these messages.
+  defp record_step(id, ex_messages) do
+    k = length(ex_messages)
+
+    with true <- k > 0,
+         {:ok, chat} <- ExAthena.Chats.load(id),
+         true <- Enum.take(chat.messages, k) == Enum.map(ex_messages, &ExAthena.Chats.as_saved/1),
+         %{uuid: uuid} <- Enum.at(chat.steps, k - 1) do
+      {:ok, uuid}
+    else
+      _ -> :none
+    end
+  end
+
+  defp snapshot_up_to(kept, fallback) do
+    kept
+    |> Enum.reverse()
+    |> Enum.find_value(fallback, &Map.get(&1, :ex_snapshot))
+  end
+
+  defp rewind_failures([]), do: nil
+  defp rewind_failures(paths), do: "Could not put back: " <> Enum.join(paths, ", ")
+
+  # Another program (the terminal) running a reply in this chat holds it;
+  # the page then saves nothing, so its question never lands mid-turn.
+  defp chat_free(socket) do
+    id = socket.assigns.session_id
+
+    case ExAthena.Chats.hold(id) do
+      :ok ->
+        ExAthena.Chats.release(id)
+        :ok
+
+      {:error, :busy} ->
+        :busy
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp current?(assigns) do
+    case ExAthena.Chats.version(assigns.session_id) do
+      {:ok, v} -> v == assigns[:record_version]
+      _ -> true
+    end
+  end
+
+  defp save_session(socket) do
+    id = socket.assigns.session_id
+
+    with :ok <- Sessions.save(session_payload(socket.assigns)),
+         {:ok, version} <- ExAthena.Chats.version(id) do
+      assign(socket, record_version: version)
+    else
+      _ -> socket
+    end
+  end
 
   @doc """
   The map persisted for a session.
@@ -3745,6 +3901,7 @@ defmodule ExAthena.Web.Live.ChatLive do
       display_messages: Enum.reject(a.messages, &(Map.get(&1, :waiting) == true)),
       ex_messages: a.ex_messages,
       provider_session_id: a.provider_session_id,
+      record_version: Map.get(a, :record_version),
       tool_uis: a.tool_uis,
       details_stream: a.details_stream,
       orchestrator: Map.get(a, :orchestrator)

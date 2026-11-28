@@ -1,12 +1,21 @@
 defmodule ExAthena.Web.Sessions do
   @moduledoc """
-  File-based session persistence for the web UI.
+  Session persistence for the web UI.
 
-  Sessions are stored as Erlang term binaries under ~/.ex_athena/web/sessions/.
+  A chat's messages, title, folder, provider, model and permission live in the
+  shared chat record (`ExAthena.Chats`), which the terminal UI reads and writes
+  too. The web UI also keeps how it drew the chat (tool panels, the details
+  stream, the Overview) as a cache under `~/.ex_athena/web/sessions/`, one
+  Erlang term file per chat. `load/1` uses the cache while its messages match
+  the record, and rebuilds the view from the record otherwise: a chat started
+  in the terminal, or one the terminal went on with.
+
   A compact JSON index at ~/.ex_athena/web/recent.json tracks the most recently
   opened working directories so users can jump back to a project quickly.
   """
 
+  alias ExAthena.Chat.Permission
+  alias ExAthena.Chats
   alias ExAthena.Tuning
 
   @default_base_dir "~/.ex_athena/web"
@@ -63,19 +72,20 @@ defmodule ExAthena.Web.Sessions do
     :ok
   end
 
-  @doc "List all session headers, newest first."
+  @doc "List all session headers, newest first, from the shared chat record."
   @spec list() :: [map()]
   def list do
-    dir = sessions_dir()
-
-    dir
-    |> File.ls!()
-    |> Enum.filter(&String.ends_with?(&1, ".session"))
-    |> Enum.flat_map(fn file ->
-      case read_header(Path.join(dir, file)) do
-        {:ok, h} -> [h]
-        _ -> []
-      end
+    Chats.list()
+    |> Enum.map(fn chat ->
+      %{
+        id: chat.id,
+        title: chat[:title],
+        cwd: chat[:cwd],
+        provider: provider_name(chat[:provider]),
+        model: chat[:model],
+        permission: chat[:permission],
+        updated_at: chat.updated_at
+      }
     end)
     |> sort_by_recency()
   end
@@ -108,12 +118,90 @@ defmodule ExAthena.Web.Sessions do
     list() |> Enum.filter(&(&1[:cwd] == cwd))
   end
 
-  @doc "Persist a session. Overwrites if the id already exists."
-  @spec save(map()) :: :ok
+  @doc """
+  Persist a session: its messages and header to the shared chat record, and
+  the web UI's view of it to the cache. Overwrites the cache if the id exists.
+  """
+  @spec save(map()) :: :ok | {:error, term()}
   def save(%{id: id} = data) do
-    dir = sessions_dir()
-    write_private!(Path.join(dir, "#{id}.session"), :erlang.term_to_binary(data))
+    with :ok <- Chats.save(id, record_fields(data), Map.get(data, :ex_messages) || []) do
+      write_private!(cache_path(id), :erlang.term_to_binary(Map.put(data, :record, true)))
+    end
   end
+
+  @doc """
+  When the record of `data.id` moved past `data.record_version` (another
+  front end added a turn or rewound it), save `data` as a new chat forked
+  from it and return `{:moved, new_id}`; otherwise `:current`. The web UI
+  calls this before a turn, so its stale copy never writes over that work.
+  """
+  @spec fork_if_moved(map()) :: :current | {:moved, String.t()} | {:error, term()}
+  def fork_if_moved(%{id: id} = data) do
+    case {Chats.version(id), Map.get(data, :record_version)} do
+      {{:ok, v}, expected} when is_integer(expected) and v != expected ->
+        fields = data |> record_fields() |> Map.put(:forked_from, %{chat: id, step: nil})
+
+        with {:ok, %{id: new_id}} <- Chats.create(fields),
+             :ok <- save(%{data | id: new_id}) do
+          {:moved, new_id}
+        end
+
+      _ ->
+        :current
+    end
+  end
+
+  @doc """
+  Move every chat saved before the shared record into it, once. Returns how
+  many moved. A cache already marked as moved is left alone, so a chat the
+  cleanup removed from the record does not come back.
+  """
+  @spec migrate!() :: non_neg_integer()
+  def migrate! do
+    dir = sessions_dir()
+
+    dir
+    |> File.ls!()
+    |> Enum.filter(&String.ends_with?(&1, ".session"))
+    |> Enum.count(fn file ->
+      with {:ok, data} <- read_cache(Path.join(dir, file)),
+           false <- Map.get(data, :record, false),
+           id = Path.basename(file, ".session"),
+           :ok <- save(Map.put(data, :id, id)) do
+        keep_age(id, Map.get(data, :updated_at))
+        true
+      else
+        _ -> false
+      end
+    end)
+  end
+
+  # A moved chat keeps its age, so the list's order and the cleanup still
+  # read when it was last used.
+  defp keep_age(id, %DateTime{} = at), do: File.touch(Chats.path(id), DateTime.to_unix(at))
+  defp keep_age(_id, _), do: :ok
+
+  defp record_fields(data) do
+    %{
+      title: Map.get(data, :title),
+      cwd: Map.get(data, :cwd),
+      model: Map.get(data, :model),
+      provider: provider_atom(Map.get(data, :provider)),
+      permission: data |> Map.get(:permission) |> Permission.parse()
+    }
+  end
+
+  defp provider_atom(nil), do: nil
+  defp provider_atom(p) when is_atom(p), do: p
+
+  defp provider_atom(p) when is_binary(p) do
+    String.to_existing_atom(p)
+  rescue
+    ArgumentError -> p
+  end
+
+  defp provider_name(nil), do: nil
+  defp provider_name(p), do: to_string(p)
 
   @doc """
   Durably append a completed run's final assistant message to its session.
@@ -233,22 +321,175 @@ defmodule ExAthena.Web.Sessions do
     _ -> :ok
   end
 
-  @doc "Load a full session by id."
+  @doc """
+  Load a full session by id: the record's messages and header, with the
+  web UI's cached view when it still matches them.
+  """
   @spec load(String.t()) :: {:ok, map()} | {:error, term()}
   def load(id) do
-    path = Path.join(sessions_dir(), "#{id}.session")
+    with true <- Chats.valid_id?(id) || {:error, :invalid_id} do
+      cache = read_cache(cache_path(id))
 
-    case File.read(path) do
-      {:ok, bin} -> {:ok, :erlang.binary_to_term(bin)}
-      {:error, _} = err -> err
+      case Chats.load(id) do
+        {:ok, chat} -> {:ok, view(chat, cache)}
+        {:error, :not_found} -> load_unmoved(id, cache)
+        err -> err
+      end
     end
   end
 
-  @doc "Delete a session file."
+  # A cache with no record: an old chat not moved yet moves now; one already
+  # moved lost its record to the cleanup and goes too.
+  defp load_unmoved(id, {:ok, %{record: true}}) do
+    _ = File.rm(cache_path(id))
+    {:error, :enoent}
+  end
+
+  defp load_unmoved(id, {:ok, data}) do
+    with :ok <- save(Map.put(data, :id, id)), do: load(id)
+  end
+
+  defp load_unmoved(_id, _), do: {:error, :enoent}
+
+  defp view(chat, {:ok, data}) do
+    cached = Enum.map(Map.get(data, :ex_messages) || [], &Chats.as_saved/1)
+
+    k = length(cached)
+
+    cond do
+      cached == chat.messages ->
+        Map.merge(data, header(chat))
+
+      # The record went on past the cached view (a turn in the terminal):
+      # keep the cached turns as drawn and add the new ones from the record.
+      k > 0 and Enum.take(chat.messages, k) == cached ->
+        data
+        |> Map.merge(header(chat))
+        |> Map.update(:display_messages, [], &(&1 ++ display_messages(chat.steps, k)))
+
+      true ->
+        rebuilt_view(chat)
+    end
+  end
+
+  defp view(chat, _), do: rebuilt_view(chat)
+
+  defp header(chat) do
+    %{
+      id: chat.id,
+      title: chat[:title],
+      cwd: chat[:cwd],
+      provider: provider_name(chat[:provider]),
+      model: chat[:model],
+      permission: chat[:permission],
+      ex_messages: chat.messages,
+      record_version: chat.version
+    }
+  end
+
+  # One user message and one reply per turn, each reply carrying the history
+  # up to it so the details stream and fork can be rebuilt from it.
+  defp rebuilt_view(chat) do
+    chat
+    |> header()
+    |> Map.merge(%{
+      created_at: parse_time(chat[:created_at]),
+      updated_at: chat.updated_at,
+      display_messages: display_messages(chat.steps),
+      provider_session_id: nil,
+      tool_uis: %{},
+      details_stream: [],
+      orchestrator: nil
+    })
+  end
+
+  defp display_messages(steps, skip \\ 0) do
+    messages = Enum.map(steps, & &1.message)
+
+    steps
+    |> Enum.with_index(1)
+    |> Enum.drop(skip)
+    |> Enum.chunk_while(
+      [],
+      fn {%{message: m}, _} = item, acc ->
+        if m.role == :user and acc != [],
+          do: {:cont, Enum.reverse(acc), [item]},
+          else: {:cont, [item | acc]}
+      end,
+      fn
+        [] -> {:cont, []}
+        acc -> {:cont, Enum.reverse(acc), []}
+      end
+    )
+    |> Enum.flat_map(&turn_messages(&1, messages))
+  end
+
+  defp turn_messages([{%{message: %{role: :user} = user, uuid: uuid}, _} | rest], messages) do
+    [display_user(uuid, user) | turn_reply(rest, messages)]
+  end
+
+  defp turn_messages(items, messages), do: turn_reply(items, messages)
+
+  defp turn_reply([], _messages), do: []
+
+  defp turn_reply(items, messages) do
+    {%{uuid: uuid}, last_index} = List.last(items)
+
+    text =
+      items
+      |> Enum.map(fn {%{message: m}, _} -> m end)
+      |> Enum.filter(&(&1.role == :assistant and is_binary(&1.content) and &1.content != ""))
+      |> Enum.map_join("\n\n", & &1.content)
+
+    [
+      %{
+        id: uuid,
+        role: :assistant,
+        text: text,
+        tool_events: [],
+        status: nil,
+        ex_snapshot: Enum.take(messages, last_index)
+      }
+    ]
+  end
+
+  defp display_user(uuid, %{content: content}) do
+    text =
+      case content do
+        text when is_binary(text) ->
+          text
+
+        parts when is_list(parts) ->
+          parts |> Enum.filter(&(&1.type == :text)) |> Enum.map_join("\n", & &1.text)
+
+        _ ->
+          ""
+      end
+
+    %{id: uuid, role: :user, text: text, images: [], tool_events: [], status: nil}
+  end
+
+  defp parse_time(iso) when is_binary(iso) do
+    case DateTime.from_iso8601(iso) do
+      {:ok, dt, _} -> dt
+      _ -> DateTime.utc_now()
+    end
+  end
+
+  defp parse_time(_), do: DateTime.utc_now()
+
+  @doc "Delete a chat: its record and the web UI's cached view of it."
   @spec delete(String.t()) :: :ok | {:error, term()}
   def delete(id) do
-    File.rm(Path.join(sessions_dir(), "#{id}.session"))
+    with :ok <- Chats.delete(id) |> ok_if_missing() do
+      File.rm(cache_path(id)) |> ok_if_missing()
+    end
   end
+
+  defp ok_if_missing({:error, :enoent}), do: :ok
+  defp ok_if_missing(other), do: other
+
+  defp cache_path(id), do: Path.join(sessions_dir(), "#{id}.session")
 
   # ---------------------------------------------------------------------------
   # Recently opened working directories
@@ -341,10 +582,10 @@ defmodule ExAthena.Web.Sessions do
 
   defp recent_path, do: Path.join(base_dir(), "recent.json")
 
-  defp read_header(path) do
+  defp read_cache(path) do
     with {:ok, bin} <- File.read(path),
-         data when is_map(data) <- :erlang.binary_to_term(bin) do
-      {:ok, Map.take(data, [:id, :title, :cwd, :provider, :model, :permission, :updated_at])}
+         data when is_map(data) <- :erlang.binary_to_term(bin, [:safe]) do
+      {:ok, data}
     else
       _ -> :error
     end

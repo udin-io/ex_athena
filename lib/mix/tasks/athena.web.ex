@@ -226,6 +226,8 @@ defmodule Mix.Tasks.Athena.Web do
   """
   def stable_key_base do
     Sessions.secure_store!()
+    # Chats saved before the shared record move into it, once.
+    _ = Sessions.migrate!()
     key_file = Path.join(Sessions.base_dir(), "secret.key")
 
     case File.read(key_file) do

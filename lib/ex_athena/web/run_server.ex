@@ -290,9 +290,24 @@ defmodule ExAthena.Web.RunServer do
 
     {:ok, task_pid} =
       Task.start(fn ->
-        case ExAthena.run(nil, opts) do
-          {:ok, result} -> send(server, {:run_done, result})
-          {:error, reason} -> send(server, {:run_error, reason})
+        # The run holds its chat, so a turn in the terminal on the same chat,
+        # and a rewind or fork, wait for it; the hold ends with this task.
+        case ExAthena.Chats.hold(state.session_id) do
+          :ok ->
+            case ExAthena.run(nil, opts) do
+              {:ok, result} -> send(server, {:run_done, result})
+              {:error, reason} -> send(server, {:run_error, reason})
+            end
+
+          {:error, :busy} ->
+            send(
+              server,
+              {:run_error,
+               "Another window is running a reply in this chat. Wait for it, then send again."}
+            )
+
+          {:error, reason} ->
+            send(server, {:run_error, reason})
         end
       end)
 
