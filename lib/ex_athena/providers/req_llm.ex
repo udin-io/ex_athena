@@ -398,52 +398,48 @@ defmodule ExAthena.Providers.ReqLLM do
         str -> [%ReqLLM.Message{role: :system, content: [ReqLLM.Message.ContentPart.text(str)]}]
       end
 
-    converted = messages |> apply_rolling_reasoning() |> Enum.map(&to_req_llm_message/1)
+    converted = messages |> condense_reasoning() |> Enum.map(&to_req_llm_message/1)
     {:ok, base ++ converted}
   end
 
   @doc false
-  # Rolling-checkpoint reasoning replay (June-2026 consensus — Qwen3+
-  # template behavior, DeepSeek/MiniMax/Kimi/Anthropic guidance): reasoning
-  # is replayed for assistant messages WITHIN the current tool loop (after
-  # the last user message) and dropped for completed turns. req_llm's
-  # OpenAI encoder drops :thinking parts outbound, so replay re-injects the
-  # verbatim reasoning inline as <think> in the content — the
-  # deepseek-legacy / MiniMax inline convention; templates that don't want
-  # it prune it. Withholding is the lossy direction.
-  def apply_rolling_reasoning(messages) do
-    # Window = exactly ONE turn: only the LAST assistant message replays
-    # its reasoning (the interleaved-thinking minimum every vendor needs).
-    # An "after the last user message" window is unbounded in agent loops —
-    # there is one user message, so every turn's reasoning accumulated
-    # forever (observed live as useless context growth).
-    last_assistant_idx =
-      messages
-      |> Enum.with_index()
-      |> Enum.reduce(-1, fn
-        {%Message{role: :assistant}, idx}, _acc -> idx
-        _, acc -> acc
-      end)
+  # Every assistant reply goes out in ONE form, the same on every call that
+  # carries it (issue 330). Its reasoning never goes back verbatim: a reply
+  # whose text is blank, as a thinking model's tool turn often is, carries a
+  # short `[earlier turn]` record of what it concluded instead.
+  #
+  # The form must never change between calls. A local server reuses its cache
+  # only for the part of the prompt that matches the previous request from the
+  # start, and Qwen3.5-family models are hybrid: their recurrent layers cannot
+  # roll back to any position, so Ollama and llama.cpp restore a checkpoint
+  # saved shortly before the end of an earlier prompt (512 tokens before it on
+  # Ollama 0.40, measured against `qwen3.8:27b`). Replaying the newest reply's
+  # full `<think>` and shrinking it a call later rewrote that reply every call.
+  # Every checkpoint after the first reply then broke, and a 14-turn run
+  # re-read 7k to 33k tokens per call with the cached count flat at the first
+  # message. Sent once in its final form, the history only
+  # grows, and each call reuses the last call's checkpoint, as long as the
+  # notes after the last tool result stay shorter than the checkpoint's
+  # distance from the end (issue 330).
+  #
+  # An unbounded window that replays every turn's reasoning is stable too,
+  # but it grew the context with every turn of an agent loop (observed live).
+  def condense_reasoning(messages) do
+    Enum.map(messages, fn
+      # On thinking-first models the text channel of a tool turn is EMPTY —
+      # everything went to the reasoning channel — so dropping it serialises a
+      # totally BLANK assistant message. The model then sees a wall of tool
+      # results with no record of why it ran any of them, and re-runs them
+      # (observed live as the same file read and the same worker spawned four
+      # times over). Keep a bounded one-line trace instead of nothing. A bare
+      # " " or a few newlines is as blank to the model as "".
+      %Message{role: :assistant, content: c, reasoning: r} = msg
+      when is_binary(r) and (is_nil(c) or is_binary(c)) ->
+        if blank_text?(c) and not blank_text?(r),
+          do: %{msg | content: durable_conclusion(r)},
+          else: msg
 
-    messages
-    |> Enum.with_index()
-    |> Enum.map(fn
-      {%Message{role: :assistant, reasoning: r} = msg, idx}
-      when is_binary(r) and r != "" and idx == last_assistant_idx ->
-        %{msg | content: "<think>\n#{r}\n</think>\n\n#{msg.content || ""}"}
-
-      # Completed turns lose their reasoning (above). On thinking-first
-      # models the text channel of a tool turn is EMPTY — everything went to
-      # the reasoning channel — so dropping it serialises a totally BLANK
-      # assistant message. The model then sees a wall of tool results with no
-      # record of why it ran any of them, and re-runs them (observed live as
-      # the same file read and the same worker spawned four times over).
-      # Keep a bounded one-line trace instead of nothing.
-      {%Message{role: :assistant, content: c, reasoning: r} = msg, _idx}
-      when is_binary(r) and r != "" and (is_nil(c) or c == "") ->
-        %{msg | content: durable_conclusion(r)}
-
-      {msg, _idx} ->
+      msg ->
         msg
     end)
   end

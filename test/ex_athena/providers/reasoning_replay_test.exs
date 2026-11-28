@@ -1,11 +1,9 @@
 defmodule ExAthena.Providers.ReasoningReplayTest do
   @moduledoc """
-  Rolling-checkpoint reasoning replay (June-2026 consensus: Qwen3+ template
-  behavior, MiniMax/Kimi/DeepSeek guidance): reasoning is replayed for
-  assistant messages WITHIN the current tool loop (after the last user
-  message) and dropped for completed turns. req_llm's OpenAI encoder drops
-  :thinking parts outbound, so replay uses inline <think> re-injection in
-  the assistant content (the deepseek-legacy / MiniMax inline convention).
+  What an assistant reply's reasoning becomes on the wire. Each reply goes
+  out in one form on every call that carries it (issue 330): its reasoning
+  never goes back verbatim, and a reply whose text channel is empty carries a
+  one-line record of what it concluded instead.
   """
   use ExUnit.Case, async: true
 
@@ -18,34 +16,57 @@ defmodule ExAthena.Providers.ReasoningReplayTest do
     assert msg.reasoning == "because reasons"
   end
 
-  test "reasoning replays ONLY for the LAST assistant message" do
+  # Issue 330. Replaying the newest reply's full reasoning and shrinking it
+  # a call later rewrote that reply on every call, which broke a hybrid
+  # model's prompt cache at the first reply. No reply replays it now, the
+  # newest included.
+  test "no reply replays its reasoning verbatim, the newest included" do
     old_call = %ToolCall{id: "a", name: "read", arguments: %{}}
-    mid_call = %ToolCall{id: "b", name: "read", arguments: %{}}
     cur_call = %ToolCall{id: "c", name: "read", arguments: %{}}
 
-    # Agent loops have ONE user message — an "after the last user message"
-    # window would replay EVERY turn's reasoning forever (unbounded
-    # context growth, observed live). The window is exactly one turn: the
-    # immediately preceding assistant message.
     messages = [
       Messages.user("the task"),
       Messages.assistant("looking", [old_call], "OLD reasoning"),
       Messages.tool_result("a", "x"),
-      Messages.assistant("digging", [mid_call], "MID reasoning"),
-      Messages.tool_result("b", "y"),
       Messages.assistant("acting", [cur_call], "CURRENT reasoning"),
       Messages.tool_result("c", "z")
     ]
 
-    replayed = Provider.apply_rolling_reasoning(messages)
+    [_, old_a, _, cur_a, _] = Provider.condense_reasoning(messages)
 
-    [_, old_a, _, mid_a, _, cur_a, _] = replayed
+    assert old_a.content == "looking"
+    assert cur_a.content == "acting"
+    refute cur_a.content =~ "<think>"
+  end
 
-    refute old_a.content =~ "OLD reasoning"
-    refute mid_a.content =~ "MID reasoning"
-    assert cur_a.content =~ "<think>"
-    assert cur_a.content =~ "CURRENT reasoning"
-    assert cur_a.content =~ "acting"
+  test "a reply renders the same whether it is the newest or an older one" do
+    first =
+      Messages.assistant(
+        nil,
+        [%ToolCall{id: "a", name: "grep", arguments: %{}}],
+        "Found it at line 113."
+      )
+
+    second =
+      Messages.assistant(
+        nil,
+        [%ToolCall{id: "b", name: "edit", arguments: %{}}],
+        "Edit line 113."
+      )
+
+    [_, as_newest, _] =
+      Provider.condense_reasoning([Messages.user("task"), first, Messages.tool_result("a", "x")])
+
+    [_, as_older, _, _, _] =
+      Provider.condense_reasoning([
+        Messages.user("task"),
+        first,
+        Messages.tool_result("a", "x"),
+        second,
+        Messages.tool_result("b", "y")
+      ])
+
+    assert as_newest == as_older
   end
 
   # Thinking-first models (Qwen3.6) leave the text channel EMPTY on tool
@@ -65,7 +86,7 @@ defmodule ExAthena.Providers.ReasoningReplayTest do
       Messages.tool_result("b", "edited")
     ]
 
-    [_, old_a, _, cur_a, _] = Provider.apply_rolling_reasoning(messages)
+    [_, old_a, _, cur_a, _] = Provider.condense_reasoning(messages)
 
     # The completed turn keeps a distilled trace of what it concluded.
     assert old_a.content =~ "line 113"
@@ -74,9 +95,25 @@ defmodule ExAthena.Providers.ReasoningReplayTest do
     # Bounded — it must not replay the whole reasoning blob.
     refute old_a.content =~ "<think>"
 
-    # The newest turn still gets full reasoning replay.
-    assert cur_a.content =~ "<think>"
+    # The newest turn gets the same one-line record, never a blank.
     assert cur_a.content =~ "CURRENT reasoning"
+    refute cur_a.content =~ "<think>"
+  end
+
+  # Local models often send a bare " " or a few newlines as the text of a
+  # tool turn. That is as blank as "" to the model, so it gets the record too.
+  test "a reply whose text is only whitespace keeps a record of its reasoning" do
+    call = %ToolCall{id: "a", name: "grep", arguments: %{}}
+
+    [_, reply, _] =
+      Provider.condense_reasoning([
+        Messages.user("task"),
+        Messages.assistant(" \n\n", [call], "The select element sits at line 113."),
+        Messages.tool_result("a", "match at 113")
+      ])
+
+    assert reply.content =~ "[earlier turn]"
+    assert reply.content =~ "line 113"
   end
 
   test "older assistant turns that already have text are left alone" do
@@ -91,7 +128,7 @@ defmodule ExAthena.Providers.ReasoningReplayTest do
       Messages.tool_result("b", "y")
     ]
 
-    [_, old_a, _, _, _] = Provider.apply_rolling_reasoning(messages)
+    [_, old_a, _, _, _] = Provider.condense_reasoning(messages)
 
     assert old_a.content == "looking"
   end
@@ -102,7 +139,7 @@ defmodule ExAthena.Providers.ReasoningReplayTest do
       Messages.assistant("plain answer")
     ]
 
-    assert Provider.apply_rolling_reasoning(messages) == messages
+    assert Provider.condense_reasoning(messages) == messages
   end
 
   test "the agent loop persists response thinking onto the assistant message" do

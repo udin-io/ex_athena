@@ -117,6 +117,24 @@ minor version. Nobody has published it yet.
   runs in the `:default` phase with `permission_mode: :bypass_permissions`,
   and a Claude Code helper in the `:plan` phase stays in `:plan` under it.
 
+- **A local hybrid model reuses its cache from one call to the next**
+  ([#330](https://github.com/udin-io/ex_athena/issues/330)). In a 14-turn
+  chat on Ollama's `qwen3.8:27b`, every call reported 5,696 cached tokens
+  while its input grew from 7k to 33k, so each call read the whole
+  conversation again. The adapter sent the newest reply with its full
+  thinking and shrank it to a one-line note a call later. That rewrite sat
+  before every checkpoint the server had saved since the first reply, and
+  this model family cannot reuse its cache past a change. Each reply now goes
+  out in its final form from its first call and never changes. Against the
+  same Ollama host, a four-call loop of the old shape kept 5,831 cached tokens
+  on every call; the new shape cached 5,831, then 6,949, then 8,067, and its
+  calls took 12 to 16 seconds instead of about 42. The model no longer sees
+  its previous step's full thinking: it sees that step's text, or a line with
+  what the step concluded when its text was blank (a bare space or newline
+  now counts as blank too). The cache still breaks when the notes the loop
+  adds after the last tool result pass about 512 tokens; issue 330 stays open
+  for that.
+
 - **A tool call sent as one fenced JSON block now runs**
   ([#321](https://github.com/udin-io/ex_athena/issues/321)). qwen2.5-coder on
   Ollama sends no native tool call; its whole answer is the call inside a
