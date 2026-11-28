@@ -385,8 +385,8 @@ and ETS-buffered JSONL with periodic flush. Sessions emit
 `:user_message` / `:assistant_message` / `:tool_result` events;
 `Session.resume/2` rebuilds the message history from any store.
 File-checkpoint snapshots fire before every `Edit` / `Write`, and
-`Checkpoint.rewind/3` restores files + truncates the session log to
-a chosen UUID. See [sessions + checkpoints](guides/sessions_and_checkpoints.md).
+`ExAthena.Chats.rewind/3` takes a saved chat back to a step and puts back
+the files the later steps changed. See [sessions + checkpoints](guides/sessions_and_checkpoints.md).
 
 ## Guides
 

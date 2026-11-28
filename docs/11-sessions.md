@@ -189,6 +189,35 @@ Cross-link: [`guides/sessions_and_checkpoints.md`](../guides/sessions_and_checkp
 
 ---
 
+## The saved chat record
+
+[`ExAthena.Chats`](../lib/ex_athena/chats.ex) keeps one file per chat in
+`~/.ex_athena/chats/<id>.jsonl` (`config :ex_athena, :chats_dir`). The
+folder is 0700 and each file 0600, created restricted before anything is
+written. The file only grows; each line is a JSON object whose `type` comes
+first:
+
+- `chat`, the first line: folder, provider, model, permission, title, and
+  `forked_from` or `parent` (a helper's record) as `%{chat:, step:}`.
+- `meta`: header fields that changed.
+- `message`: one message and the `uuid` that names its step.
+- `compact`: keep the first `keep` active steps, then these messages.
+- `rewind`: the chat goes on from step `to`.
+
+Messages go through [`ExAthena.Chats.Codec`](../lib/ex_athena/chats/codec.ex),
+which tags atoms, atom keys, tuples, structs and raw bytes, so a message
+reads back exactly as written. Decoding never creates an atom.
+
+A front end calls `Chats.sync/2` with its whole history after each turn; the
+store appends what is new, or one `compact` line when compaction rewrote the
+middle. `fork/2` copies steps up to one into a new chat; `rewind/3` appends a
+`rewind` line and puts back the files the dropped tool calls edited
+(`Checkpoint.restore_files/4`, which skips history entries that fail its
+hash, folder and symlink checks). Both refuse a chat a turn holds
+(`Chats.hold/1`, a `<id>.lock` file holding the OS pid, so it works across
+the separate terminal and web programs). A cut last line is skipped on read, and the next write
+starts on a new line.
+
 ## The web chat's session file
 
 `mix athena.web` saves each chat to `~/.ex_athena/web/sessions/<id>.session`,

@@ -214,11 +214,11 @@ See [memory + skills](memory_and_skills.md).
 ```
 
 Every `Edit` / `Write` snapshots the prior file contents to
-`.exathena/file-history/<session>/<sha>/<v>.bin`. `/rewind` restores
-files + truncates the session log:
+`.exathena/file-history/<session>/<sha>/<v>.bin`. Rewinding a saved chat
+takes it back to a step and puts back the files the later steps changed:
 
 ```elixir
-ExAthena.Checkpoint.rewind(session_id, :code_and_history, to_uuid: uuid)
+ExAthena.Chats.rewind(chat_id, step_uuid)
 ```
 
 See [sessions + checkpoints](sessions_and_checkpoints.md).
