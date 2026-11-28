@@ -18,6 +18,8 @@ defmodule Mix.Tasks.Athena.Chat do
       mix athena.chat --provider ollama --model qwen2.5-coder:14b
       mix athena.chat --permission read_only
       mix athena.chat -p ~/projects/my_app
+      mix athena.chat --continue
+      mix athena.chat --resume 4ee9e00f1a2b3c4d
 
   ## Flags
 
@@ -30,6 +32,10 @@ defmodule Mix.Tasks.Athena.Chat do
       filesystem. `~` is expanded. The chat process does NOT `cd` into
       this path; tools just receive it as their `cwd`.
     * `--log` — also write log output to `log/phoenix_output.log`.
+    * `--continue` — open the newest saved chat of this folder (or `--path`).
+    * `--resume ID` — open the saved chat `ID`. Saved chats live in
+      `~/.ex_athena/chats` and are shared with the web UI; `/resume` inside
+      the chat lists this folder's.
 
   ## Provider-specific requirements
 
@@ -53,7 +59,9 @@ defmodule Mix.Tasks.Athena.Chat do
           mode: :string,
           provider: :string,
           path: :string,
-          log: :boolean
+          log: :boolean,
+          continue: :boolean,
+          resume: :string
         ],
         aliases: [p: :path]
       )
@@ -76,6 +84,7 @@ defmodule Mix.Tasks.Athena.Chat do
       |> maybe_put(:model, parsed[:model])
       |> maybe_put_permission(parsed[:permission])
       |> maybe_put_path(parsed[:path])
+      |> put_resume(parsed)
 
     # The TUI is only compiled when the optional :ex_ratatui dep is present.
     # Dispatch dynamically so this task still compiles when Tui is absent.
@@ -86,6 +95,31 @@ defmodule Mix.Tasks.Athena.Chat do
         "mix athena.chat requires the optional :ex_ratatui dependency. " <>
           "Add `{:ex_ratatui, \"~> 0.10\"}` to your deps and re-run."
       )
+    end
+  end
+
+  @doc false
+  # `--resume ID` opens that chat; `--continue` the newest of the folder.
+  @spec put_resume(keyword(), keyword()) :: keyword()
+  def put_resume(opts, parsed) do
+    cond do
+      id = parsed[:resume] ->
+        Keyword.put(opts, :resume, id)
+
+      parsed[:continue] ->
+        cwd = Keyword.get_lazy(opts, :cwd, &File.cwd!/0)
+
+        case ExAthena.Chat.Session.latest(cwd) do
+          nil ->
+            Mix.shell().info("No saved chat for #{cwd} yet; starting a new one.")
+            opts
+
+          id ->
+            Keyword.put(opts, :resume, id)
+        end
+
+      true ->
+        opts
     end
   end
 

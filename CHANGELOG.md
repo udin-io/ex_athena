@@ -52,6 +52,15 @@ minor version. Nobody has published it yet.
 
 ### Added
 
+- **The terminal chat saves every reply and opens saved chats**
+  ([#358](https://github.com/udin-io/ex_athena/issues/358)). Closing
+  `mix athena.chat` used to lose the chat. It now saves after each reply to
+  the shared chat record. `mix athena.chat --continue` opens the newest chat
+  of the folder, `--resume <id>` opens a named one, and `/resume` picks from
+  the folder's chats. `/fork [N]` copies the chat up to step N into a new
+  one, and `/rewind N` goes back to step N and puts back the files the later
+  steps changed; both wait while a reply is still coming. `/clear` starts a
+  new chat and keeps the old one.
 - **One saved chat record any front end can write and read**
   ([#357](https://github.com/udin-io/ex_athena/issues/357)). Each front end
   kept chats its own way, so none could open another's. `ExAthena.Chats`

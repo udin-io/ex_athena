@@ -1018,6 +1018,7 @@ if Code.ensure_loaded?(ExRatatui.App) do
           :permissions -> {" What the chat may do ", Enum.map(items, &Permission.label/1)}
           {:question, _q} -> {" Your answer ", items}
           :provider -> {" Pick a provider ", Enum.map(items, fn {_name, display} -> display end)}
+          :resume -> {" Open a saved chat ", Enum.map(items, fn {_id, label} -> label end)}
         end
 
       list = %List{

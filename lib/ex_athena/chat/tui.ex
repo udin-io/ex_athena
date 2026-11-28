@@ -29,6 +29,7 @@ if Code.ensure_loaded?(ExRatatui.App) do
     use ExRatatui.App
 
     alias ExAthena.Chat.{Commands, Permission, Session}
+    alias ExAthena.Chats
     alias ExAthena.Chat.Tui.{Runner, State, View}
     alias ExAthena.Tools
     alias ExRatatui.Event
@@ -104,22 +105,52 @@ if Code.ensure_loaded?(ExRatatui.App) do
       prior_log_level = Logger.level()
       Logger.configure(level: :warning)
 
-      session = opts |> Session.new() |> reconcile_initial_session()
-
-      input_ref = ExRatatui.textarea_new()
-
       state =
-        session
-        |> State.new()
-        |> Map.put(:input_ref, input_ref)
+        opts
+        |> build_state()
+        |> Map.put(:input_ref, ExRatatui.textarea_new())
         |> Map.put(:prior_log_level, prior_log_level)
-        |> banner_events()
         |> maybe_kick_git_diff()
 
       schedule_tick()
 
       {:ok, state}
     end
+
+    @doc """
+    The App's first state for `opts`, without the input box. With `resume:
+    id`, it opens that saved chat and shows its messages; a chat that cannot
+    be opened starts a new one, with a line saying why.
+    """
+    @spec build_state(keyword()) :: State.t()
+    def build_state(opts) do
+      {resume, opts} = Keyword.pop(opts, :resume)
+
+      case open_saved(resume, opts) do
+        {:ok, session} ->
+          session
+          |> reconcile_initial_session()
+          |> State.new()
+          |> banner_events()
+          |> replay_chat()
+
+        {:error, reason} ->
+          opts
+          |> Session.new()
+          |> reconcile_initial_session()
+          |> State.new()
+          |> banner_events()
+          |> State.append_event(
+            {:warning, "Could not open chat #{resume}: #{describe(reason)}. Started a new one."}
+          )
+
+        :new ->
+          opts |> Session.new() |> reconcile_initial_session() |> State.new() |> banner_events()
+      end
+    end
+
+    defp open_saved(nil, _opts), do: :new
+    defp open_saved(id, opts), do: Session.open(id, opts)
 
     @impl true
     def render(%State{} = state, %Frame{} = frame), do: View.build_frame(state, frame)
@@ -194,7 +225,7 @@ if Code.ensure_loaded?(ExRatatui.App) do
 
     defp handle_key(%Event.Key{code: "c", modifiers: mods} = key, state) do
       if "ctrl" in mods do
-        {:stop, restore_logger(state)}
+        {:stop, state |> save_chat() |> restore_logger()}
       else
         forward_to_textarea(key, state)
       end
@@ -417,6 +448,13 @@ if Code.ensure_loaded?(ExRatatui.App) do
       |> noreply()
     end
 
+    defp handle_popup_key(%Event.Key{code: "enter"}, %State{popup: {:resume, _, _}} = state) do
+      case State.current_popup_selection(state) do
+        nil -> {:noreply, State.close_popup(state)}
+        id -> state |> State.close_popup() |> open_chat(id) |> noreply()
+      end
+    end
+
     defp handle_popup_key(%Event.Key{code: "enter"}, %State{popup: {:provider, _, _}} = state) do
       case State.current_popup_selection(state) do
         nil ->
@@ -467,6 +505,7 @@ if Code.ensure_loaded?(ExRatatui.App) do
         |> State.set_loading(false)
         |> Map.put(:run_task, nil)
         |> hand_back_unsent()
+        |> save_chat()
         |> append_status_row()
         |> maybe_kick_git_diff()
 
@@ -485,6 +524,7 @@ if Code.ensure_loaded?(ExRatatui.App) do
         |> Map.put(:run_task, nil)
         |> hand_back_unsent()
         |> State.append_event({:error, "run error: " <> inspect(reason)})
+        |> save_chat()
 
       {:noreply, new_state}
     end
@@ -590,7 +630,47 @@ if Code.ensure_loaded?(ExRatatui.App) do
       end
     end
 
+    # The App holds the chat for the turn, so a turn in the web UI (or another
+    # terminal) on the same chat waits, and rewind and fork wait for this one.
     defp do_dispatch_message(text, state) do
+      case Chats.hold(state.session.chat_id) do
+        :ok ->
+          state |> current_chat() |> then(&start_turn(text, &1))
+
+        {:error, :busy} ->
+          append_and_noreply(
+            state,
+            {:warning,
+             "Another window is running a reply in this chat. Wait for it, then send again."}
+          )
+
+        {:error, reason} ->
+          append_and_noreply(state, {:warning, "Could not start: " <> describe(reason)})
+      end
+    end
+
+    # Holds the chat the turn will run in: a copy another window went on with
+    # moves to a new chat first, and the hold moves with it.
+    defp current_chat(state) do
+      old = state.session.chat_id
+
+      case Session.fork_if_moved(state.session) do
+        {:moved, session} ->
+          Chats.release(old)
+          _ = Chats.hold(session.chat_id)
+
+          State.append_event(
+            %{state | session: session},
+            {:warning,
+             "This chat moved on in another window, so it goes on here as a new chat (#{session.chat_id})."}
+          )
+
+        _ ->
+          state
+      end
+    end
+
+    defp start_turn(text, state) do
       state =
         state
         |> State.append_event({:user, text})
@@ -664,6 +744,71 @@ if Code.ensure_loaded?(ExRatatui.App) do
 
     defp dispatch_command(:clear, _args, state) do
       {:noreply, State.clear_session(state)}
+    end
+
+    defp dispatch_command(:resume, [], state) do
+      case Chats.list(cwd: session_cwd(state.session)) do
+        [] ->
+          append_and_noreply(state, {:info, "No saved chats for this folder yet."})
+
+        chats ->
+          items = Enum.map(chats, &{&1.id, resume_label(&1)})
+          {:noreply, State.open_popup(state, {:resume, items})}
+      end
+    end
+
+    defp dispatch_command(:resume, [id | _], state), do: state |> open_chat(id) |> noreply()
+
+    defp dispatch_command(:fork, args, state) do
+      with {:ok, steps} <- saved_steps(state),
+           {:ok, step} <- pick_step(steps, args, :last),
+           {:ok, fork} <- Chats.fork(state.session.chat_id, step: step.uuid) do
+        state
+        |> reopen_chat(fork.id)
+        |> State.append_event({:info, "Forked into a new chat."})
+        |> noreply()
+      else
+        {:error, reason} ->
+          append_and_noreply(state, {:warning, "Could not fork: " <> describe(reason)})
+      end
+    end
+
+    defp dispatch_command(:rewind, [], state) do
+      case saved_steps(state) do
+        {:ok, steps} ->
+          state =
+            steps
+            |> Enum.with_index(1)
+            |> Enum.reduce(
+              State.append_event(state, {:info, "Steps (/rewind N goes back to step N):"}),
+              fn {step, n}, s ->
+                State.append_event(s, {:info, "  #{n}. #{step_line(step.message)}"})
+              end
+            )
+
+          {:noreply, state}
+
+        {:error, reason} ->
+          append_and_noreply(state, {:warning, "Could not rewind: " <> describe(reason)})
+      end
+    end
+
+    defp dispatch_command(:rewind, args, state) do
+      with :ok <- idle(state),
+           {:ok, steps} <- saved_steps(state),
+           {:ok, step} <- pick_step(steps, args, nil),
+           {:ok, result} <- Chats.rewind(state.session.chat_id, step.uuid) do
+        state
+        |> reopen_chat(state.session.chat_id)
+        |> State.append_event(
+          {:info, "Rewound to step #{hd(args)}; put back #{result.files_restored} file(s)."}
+        )
+        |> append_failed_files(result.files_failed)
+        |> noreply()
+      else
+        {:error, reason} ->
+          append_and_noreply(state, {:warning, "Could not rewind: " <> describe(reason)})
+      end
     end
 
     defp dispatch_command(:tools, _args, state) do
@@ -1023,6 +1168,134 @@ if Code.ensure_loaded?(ExRatatui.App) do
     end
 
     defp update_in_session(state, fun), do: %{state | session: fun.(state.session)}
+
+    # ── Saved chats (ExAthena.Chats) ─────────────────────────────────────────
+
+    # Saved while the turn still holds the chat, then released.
+    defp save_chat(%State{} = state) do
+      id = state.session.chat_id
+      saved = Session.save(state.session)
+      Chats.release(id)
+
+      case saved do
+        {:ok, session} ->
+          %{state | session: session}
+
+        {:moved, session} ->
+          State.append_event(
+            %{state | session: session},
+            {:warning,
+             "This chat moved on in another window, so this reply was saved as a new chat (#{session.chat_id})."}
+          )
+
+        {:error, reason} ->
+          State.append_event(state, {:warning, "Could not save this chat: " <> describe(reason)})
+      end
+    end
+
+    # Rewind and fork reopen a chat this window already had open: the settings
+    # picked since the last save (permission, model, folder) stay.
+    defp reopen_chat(%State{session: s} = state, id) do
+      open_chat(state, id,
+        provider: s.provider,
+        model: s.model,
+        permission: s.permission,
+        cwd: s.cwd
+      )
+    end
+
+    defp append_failed_files(state, []), do: state
+
+    defp append_failed_files(state, paths),
+      do: State.append_event(state, {:warning, "Could not put back: " <> Enum.join(paths, ", ")})
+
+    defp open_chat(state, id, opts \\ [])
+
+    defp open_chat(%State{run_task: task} = state, _id, _opts) when is_pid(task),
+      do: State.append_event(state, {:warning, "Wait for the reply to finish first."})
+
+    defp open_chat(%State{} = state, id, opts) do
+      case Session.open(id, Enum.reject(opts, fn {_k, v} -> is_nil(v) end)) do
+        {:ok, session} ->
+          %{State.clear_session(state) | session: session} |> banner_events() |> replay_chat()
+
+        {:error, reason} ->
+          State.append_event(state, {:warning, "Could not open chat #{id}: " <> describe(reason)})
+      end
+    end
+
+    # One row per saved message: what you typed, what the model said, and the
+    # tools it used.
+    defp replay_chat(%State{session: session} = state) do
+      Enum.reduce(session.messages, state, fn message, s ->
+        case replay_row(message) do
+          nil -> s
+          row -> State.append_event(s, row)
+        end
+      end)
+    end
+
+    defp replay_row(%{role: :user, content: text}) when is_binary(text), do: {:user, text}
+
+    defp replay_row(%{role: :assistant, content: text}) when is_binary(text) and text != "",
+      do: {:assistant, text}
+
+    defp replay_row(%{role: :assistant, tool_calls: [_ | _] = calls}),
+      do: {:info, "used " <> Enum.map_join(calls, ", ", & &1.name)}
+
+    defp replay_row(_), do: nil
+
+    defp saved_steps(state) do
+      case Chats.load(state.session.chat_id) do
+        {:ok, %{steps: [_ | _] = steps}} -> {:ok, steps}
+        {:ok, _} -> {:error, :empty}
+        {:error, :not_found} -> {:error, :empty}
+        err -> err
+      end
+    end
+
+    defp pick_step(steps, [], :last), do: {:ok, List.last(steps)}
+
+    defp pick_step(steps, [n | _], _default) do
+      case Integer.parse(n) do
+        {i, ""} when i >= 1 and i <= length(steps) -> {:ok, Enum.at(steps, i - 1)}
+        _ -> {:error, {:no_step, n, length(steps)}}
+      end
+    end
+
+    defp pick_step(_steps, [], nil), do: {:error, :no_step_given}
+
+    defp idle(%State{run_task: task}) when is_pid(task), do: {:error, :busy}
+    defp idle(_), do: :ok
+
+    defp step_line(%{role: :user, content: text}) when is_binary(text), do: "you: " <> short(text)
+
+    defp step_line(%{role: :assistant, content: text}) when is_binary(text) and text != "",
+      do: "model: " <> short(text)
+
+    defp step_line(%{role: :assistant, tool_calls: [_ | _] = calls}),
+      do: "model used " <> Enum.map_join(calls, ", ", & &1.name)
+
+    defp step_line(%{role: :tool}), do: "tool result"
+    defp step_line(%{role: role}), do: to_string(role)
+
+    defp short(text),
+      do: text |> String.split("\n", trim: true) |> List.first("") |> String.slice(0, 60)
+
+    defp resume_label(chat) do
+      when_text = Calendar.strftime(chat.updated_at, "%Y-%m-%d %H:%M")
+      "#{chat[:title] || chat.id} · #{when_text}"
+    end
+
+    defp session_cwd(session), do: session.cwd || File.cwd!()
+
+    defp describe(:busy), do: "wait for the reply to finish first"
+    defp describe(:not_found), do: "no saved chat by that name"
+    defp describe(:invalid_id), do: "that is not a chat name"
+    defp describe(:empty), do: "nothing is saved in this chat yet"
+    defp describe(:no_step_given), do: "say which step, e.g. /rewind 2 (/rewind lists them)"
+    defp describe({:no_step, n, count}), do: "there is no step #{n}; this chat has #{count}"
+    defp describe(other), do: inspect(other)
 
     defp noreply(state), do: {:noreply, state}
 

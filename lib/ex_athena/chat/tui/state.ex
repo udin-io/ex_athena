@@ -39,6 +39,7 @@ defmodule ExAthena.Chat.Tui.State do
           | {:permissions, [atom()], non_neg_integer()}
           | {{:question, map()}, [String.t()], non_neg_integer()}
           | {:provider, [{String.t(), String.t()}], non_neg_integer()}
+          | {:resume, [{String.t(), String.t()}], non_neg_integer()}
 
   defstruct session: nil,
             input_ref: nil,
@@ -425,6 +426,7 @@ defmodule ExAthena.Chat.Tui.State do
           {:model, [String.t()]}
           | {:permissions, [atom()]}
           | {:provider, [{String.t(), String.t()}]}
+          | {:resume, [{String.t(), String.t()}]}
         ) :: t()
   # A picker waits while a question is on screen: replacing it would leave
   # its asker waiting forever.
@@ -435,8 +437,9 @@ defmodule ExAthena.Chat.Tui.State do
     %{state | popup: {kind, items, 0}}
   end
 
-  def open_popup(%__MODULE__{} = state, {:provider, items}) when is_list(items) do
-    %{state | popup: {:provider, items, 0}}
+  def open_popup(%__MODULE__{} = state, {kind, items})
+      when kind in [:provider, :resume] and is_list(items) do
+    %{state | popup: {kind, items, 0}}
   end
 
   @doc """
@@ -479,7 +482,8 @@ defmodule ExAthena.Chat.Tui.State do
   def current_popup_selection(%__MODULE__{popup: nil}), do: nil
   def current_popup_selection(%__MODULE__{popup: {_, [], _}}), do: nil
 
-  def current_popup_selection(%__MODULE__{popup: {:provider, items, idx}}) do
+  def current_popup_selection(%__MODULE__{popup: {kind, items, idx}})
+      when kind in [:provider, :resume] do
     case Enum.at(items, idx) do
       {name, _display} -> name
       other -> other
