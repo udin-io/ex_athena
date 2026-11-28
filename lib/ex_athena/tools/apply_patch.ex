@@ -361,9 +361,13 @@ defmodule ExAthena.Tools.ApplyPatch do
   # `deleted file mode` with no hunk, a binary patch), and the snapshot covers
   # only the parsed files. So git lists what the patch does first: a rename,
   # copy, create or delete, or more files than the parser found, would change
-  # a file no rewind can put back.
+  # a file no rewind can put back. `core.quotepath=false` keeps a name outside
+  # ASCII as it is, so it compares equal to the parsed path; a name with a
+  # quote or control character stays quoted and is refused.
   defp git_touches_only(tmp, file_sections, cwd) do
-    case run_git(["apply", "--summary", "--numstat", "--whitespace=nowarn", tmp], cwd) do
+    args = ["-c", "core.quotepath=false", "apply", "--summary", "--numstat"]
+
+    case run_git(args ++ ["--whitespace=nowarn", tmp], cwd) do
       {:ok, {out, 0}} ->
         lines = String.split(out, "\n", trim: true)
 
