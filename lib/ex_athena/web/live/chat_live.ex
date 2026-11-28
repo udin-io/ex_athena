@@ -8,6 +8,7 @@ defmodule ExAthena.Web.Live.ChatLive do
   alias ExAthena.Web.FileLinks
   alias ExAthena.Web.Markdown
   alias ExAthena.Web.Sessions
+  alias ExAthena.Web.{Trace, TraceComponents}
   alias Phoenix.LiveView.JS
   alias ExAthena.Tuning
 
@@ -113,9 +114,15 @@ defmodule ExAthena.Web.Live.ChatLive do
         # The assistant message id that streaming events are currently
         # attributed to. Set in start_agent_run; cleared in :athena_done.
         pending_assistant_msg_id: nil,
-        # Details pane: tabbed (:overview | :log | :git | :terminal) plus a
-        # visibility toggle.
+        # Details pane: tabbed (:overview | :log | :trace | :git | :terminal |
+        # :files) plus a visibility toggle.
         details_tab: :overview,
+        # Trace tab (issue 352): each helper's journal records, read when the
+        # tab opens and on each autosave tick while it shows, and the mark
+        # whose turns are open.
+        trace_helpers: %{},
+        trace_selected: nil,
+        trace: nil,
         show_details: true,
         # Embedded terminals (Terminal tab). `terminals` is an ordered list
         # of %{id, title, status}; each renders its own xterm.js instance,
@@ -977,7 +984,7 @@ defmodule ExAthena.Web.Live.ChatLive do
   end
 
   def handle_event("switch_details_tab", %{"tab" => tab}, socket)
-      when tab in ~w(overview log git terminal files) do
+      when tab in ~w(overview log trace git terminal files) do
     tab = String.to_existing_atom(tab)
 
     git_diff =
@@ -987,6 +994,9 @@ defmodule ExAthena.Web.Live.ChatLive do
 
     socket =
       cond do
+        tab == :trace ->
+          load_trace_helpers(socket)
+
         # Opening the Terminal tab with no terminals yet spawns the first one.
         tab == :terminal and socket.assigns.terminals == [] ->
           open_terminal(socket)
@@ -1006,6 +1016,12 @@ defmodule ExAthena.Web.Live.ChatLive do
       end
 
     {:noreply, socket}
+  end
+
+  # A mark id is one the trace itself drew; anything else selects nothing.
+  def handle_event("trace_select", %{"mark" => mark}, socket) when is_binary(mark) do
+    selected = if socket.assigns.trace_selected == mark, do: nil, else: mark
+    {:noreply, assign(socket, trace_selected: selected)}
   end
 
   def handle_event("term_new", _params, socket) do
@@ -1185,8 +1201,18 @@ defmodule ExAthena.Web.Live.ChatLive do
     {:noreply, assign(socket, available_models: models, models_loading: false, model: model)}
   end
 
-  def handle_info({:athena, event}, socket),
-    do: {:noreply, apply_timed(socket, event, run_time(socket, :now))}
+  def handle_info({:athena, event}, socket) do
+    socket = apply_timed(socket, event, run_time(socket, :now))
+
+    # A text or thinking delta comes once per token and moves no mark; the
+    # trace is rebuilt on every other event (issue 352).
+    socket =
+      if match?({kind, _} when kind in [:content, :thinking], event),
+        do: socket,
+        else: refresh_trace(socket)
+
+    {:noreply, socket}
+  end
 
   # Keep the persisted session current while a run is in flight. Stops
   # rescheduling itself once the run ends — the completion save in
@@ -1202,6 +1228,11 @@ defmodule ExAthena.Web.Live.ChatLive do
           save_session(socket)
           assign(socket, session_sig: sig)
         end
+
+      # Helpers write their journals as they go; re-read them while the Trace
+      # tab shows, so their lanes fill in during the run.
+      socket =
+        if socket.assigns.details_tab == :trace, do: load_trace_helpers(socket), else: socket
 
       Process.send_after(
         self(),
@@ -1341,6 +1372,9 @@ defmodule ExAthena.Web.Live.ChatLive do
       else
         socket
       end
+
+    # Helpers' last journal lines land after the last autosave tick.
+    socket = if socket.assigns.details_tab == :trace, do: load_trace_helpers(socket), else: socket
 
     save_session(socket)
     {:noreply, socket}
@@ -1844,6 +1878,12 @@ defmodule ExAthena.Web.Live.ChatLive do
                 phx-value-tab="log"
               >Log</button>
               <button
+                class={tab_class(@details_tab, :trace)}
+                phx-click="switch_details_tab"
+                phx-value-tab="trace"
+                id="details-tab-trace"
+              >Trace</button>
+              <button
                 class={tab_class(@details_tab, :git)}
                 phx-click="switch_details_tab"
                 phx-value-tab="git"
@@ -1890,6 +1930,31 @@ defmodule ExAthena.Web.Live.ChatLive do
                         Send a message to watch the run live: agents, todos, conclusions, and GPU queue.
                       </div>
                     </div>
+                  <% end %>
+                </div>
+              <% :trace -> %>
+                <div class="details-tab-body details-tab-body--trace">
+                  <%!-- The kept drawing, passed as itself so a streamed token
+                        redraws nothing; a fresh build only when it belongs to
+                        another session (a new or forked chat). --%>
+                  <%= if @trace && @trace.id == @session_id do %>
+                    <TraceComponents.trace_panel trace={@trace} selected={@trace_selected} />
+                  <% else %>
+                    <TraceComponents.trace_panel
+                      trace={
+                        Trace.build(
+                          %{
+                            id: @session_id,
+                            title: @session_title,
+                            cwd: @cwd,
+                            created_at: @session_created_at,
+                            details_stream: @details_stream
+                          },
+                          @trace_helpers
+                        )
+                      }
+                      selected={@trace_selected}
+                    />
                   <% end %>
                 </div>
               <% :git -> %>
@@ -3161,6 +3226,37 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   def apply_event(socket, _other), do: socket
 
+  @doc """
+  The session as the Trace tab and `mix athena.trace` read it: the fields of
+  `session_payload/1` that `ExAthena.Web.Trace.build/2` needs.
+  """
+  @spec trace_session(map()) :: map()
+  def trace_session(a) do
+    %{
+      id: a.session_id,
+      title: a.session_title,
+      cwd: a.cwd,
+      created_at: a.session_created_at,
+      details_stream: a.details_stream
+    }
+  end
+
+  defp load_trace_helpers(socket) do
+    socket
+    |> assign(trace_helpers: Trace.helper_records(trace_session(socket.assigns)))
+    |> refresh_trace()
+  end
+
+  # The drawing is kept in an assign and rebuilt only when what it draws
+  # changes, not on every render (a 3,000-turn session takes about 40 ms).
+  defp refresh_trace(%{assigns: %{details_tab: :trace}} = socket),
+    do:
+      assign(socket,
+        trace: Trace.build(trace_session(socket.assigns), socket.assigns.trace_helpers)
+      )
+
+  defp refresh_trace(socket), do: socket
+
   # Fold one event and stamp `at` on the entries it added. Entries are stamped
   # only back to the head that was there before, so a resumed session's older
   # entries, saved without times, never take this one's.
@@ -3523,6 +3619,8 @@ defmodule ExAthena.Web.Live.ChatLive do
       tool_uis: tool_uis,
       expanded_uis: MapSet.new(),
       details_stream: details_stream,
+      trace_helpers: %{},
+      trace_selected: nil,
       pending_assistant_msg_id: nil,
       status: nil,
       error: nil,
@@ -3535,6 +3633,8 @@ defmodule ExAthena.Web.Live.ChatLive do
     # The cwd is only known once the session is loaded, so the sidebar list is
     # built here — otherwise opening a session by URL shows an empty sidebar.
     |> assign_session_list(session_lister())
+    # A session opened while the Trace tab shows draws its helpers' turns at once.
+    |> then(&if(&1.assigns[:details_tab] == :trace, do: load_trace_helpers(&1), else: &1))
   end
 
   # Keep the browser URL on `/c/:session_id` so a reconnect re-mounts with the
@@ -3705,9 +3805,7 @@ defmodule ExAthena.Web.Live.ChatLive do
 
   # Worker totals run to millions on a long run; raw digits are unreadable in
   # a one-line summary.
-  defp compact_count(n) when n >= 1_000_000, do: "#{Float.round(n / 1_000_000, 1)}M"
-  defp compact_count(n) when n >= 1_000, do: "#{Float.round(n / 1_000, 1)}k"
-  defp compact_count(n), do: to_string(n)
+  defp compact_count(n), do: ExAthena.Web.Trace.compact(n)
 
   @doc """
   The Overview snapshot to persist for a run that has just finished.

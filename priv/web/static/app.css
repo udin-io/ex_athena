@@ -16,6 +16,17 @@
   --font-mono:    "JetBrains Mono", "Fira Code", "Cascadia Code", ui-monospace, monospace;
   --font-ui:      "Inter", system-ui, sans-serif;
   --radius:       6px;
+  /* Trace tab: one colour per thing a turn did. */
+  --trace-read:    #60a5fa;
+  --trace-lookup:  #a78bfa;
+  --trace-edit:    #34d399;
+  --trace-command: #fbbf24;
+  --trace-pass:    #22c55e;
+  --trace-fail:    #f87171;
+  --trace-helper:  #f472b6;
+  --trace-ask:     #38bdf8;
+  --trace-answer:  #5a6080;
+  --trace-error:   #be123c;
 }
 
 [data-theme="light"] {
@@ -33,6 +44,16 @@
   --tool-border:  #c2d4c2;
   --error-text:   #dc2626;
   --error-bg:     #fee2e2;
+  --trace-read:    #2563eb;
+  --trace-lookup:  #7c3aed;
+  --trace-edit:    #0ea573;
+  --trace-command: #d97706;
+  --trace-pass:    #16a34a;
+  --trace-fail:    #dc2626;
+  --trace-helper:  #db2777;
+  --trace-ask:     #0284c7;
+  --trace-answer:  #9aa1b4;
+  --trace-error:   #9f1239;
 }
 
 [data-theme="light"] .diff-header,
@@ -1665,6 +1686,76 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   position: relative;
 }
 
+/* ── Trace tab (issue 352) ────────────────────────────────────────────────── */
+
+.details-tab-body--trace { padding: 10px 12px 16px; }
+
+.trace { display: flex; flex-direction: column; gap: 10px; font-family: var(--font-mono); font-size: 11px; }
+.trace-header { display: flex; flex-wrap: wrap; gap: 4px; color: var(--muted); }
+.trace-title { color: var(--text); font-weight: 600; }
+.trace-notice {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  color: var(--muted);
+}
+
+.trace-rows { display: flex; flex-direction: column; gap: 2px; }
+.trace-row { display: grid; grid-template-columns: 64px minmax(0, 1fr); align-items: center; gap: 6px; }
+.trace-label {
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.trace-svg { display: block; overflow: visible; }
+.trace-svg--axis { border-bottom: 1px solid var(--border); }
+.trace-tick { fill: var(--muted); font-size: 10px; }
+.trace-request { fill: var(--user-accent); font-size: 11px; }
+.trace-span { fill: var(--border-light); }
+
+.trace-mark { cursor: pointer; rx: 2px; transition: opacity 0.15s; }
+.trace-mark:hover { opacity: 0.75; }
+.trace-mark.is-selected { stroke: var(--text); stroke-width: 1.5px; }
+.trace-mark--read        { fill: var(--trace-read);    background: var(--trace-read); }
+.trace-mark--lookup      { fill: var(--trace-lookup);  background: var(--trace-lookup); }
+.trace-mark--edit        { fill: var(--trace-edit);    background: var(--trace-edit); }
+.trace-mark--command     { fill: var(--trace-command); background: var(--trace-command); }
+.trace-mark--test_passed { fill: var(--trace-pass);    background: var(--trace-pass); }
+.trace-mark--test_failed { fill: var(--trace-fail);    background: var(--trace-fail); }
+.trace-mark--error       { fill: var(--trace-error);   background: var(--trace-error); }
+.trace-mark--helper      { fill: var(--trace-helper);  background: var(--trace-helper); }
+.trace-mark--question    { fill: var(--trace-ask);     background: var(--trace-ask); }
+.trace-mark--answer      { fill: var(--trace-answer);  background: var(--trace-answer); }
+
+.trace-note-letter { fill: var(--accent); font-size: 11px; font-weight: 700; cursor: pointer; }
+.trace-note--finish_check { fill: var(--trace-command); }
+.trace-tokens-in     { fill: var(--trace-read); opacity: 0.55; }
+.trace-tokens-cached { fill: var(--trace-edit); opacity: 0.55; }
+
+.trace-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--muted); }
+.trace-legend-item { display: inline-flex; align-items: center; gap: 4px; }
+.trace-legend-item b { color: var(--accent); }
+.trace-swatch { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+.trace-hint { color: var(--muted); }
+
+.trace-details { display: flex; flex-direction: column; gap: 10px; }
+.trace-details[hidden] { display: none; }
+.trace-turn {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.trace-turn-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; color: var(--text); }
+.trace-turn-label { color: var(--muted); margin-bottom: 2px; }
+.trace-turn .detail-pre { white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; }
+.trace-test { margin-left: 6px; color: var(--muted); }
+.trace-test--failed { color: var(--trace-fail); }
+.trace-test--passed { color: var(--trace-pass); }
+
 /* ── Details tabs (Overview / Log / Git) ──────────────────────────────────── */
 
 .details-tabs {
@@ -1673,6 +1764,9 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   flex: 0 0 auto;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
+  /* Six tabs overflow a narrow pane; scroll them rather than cut the last. */
+  overflow-x: auto;
+  scrollbar-width: none;
 }
 
 .details-tab {
@@ -1686,6 +1780,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   padding: 8px 14px;
   transition: color 0.15s, border-color 0.15s;
 }
+.details-tab { flex: 0 0 auto; }
 .details-tab:hover { color: var(--text); }
 .details-tab--active {
   color: var(--accent);
