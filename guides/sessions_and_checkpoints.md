@@ -6,8 +6,8 @@ v0.4 makes sessions durable, replayable, and recoverable.
   Two stores ship: in-memory (default) and ETS-buffered JSONL.
 - **`Session.resume/2`** — rebuilds the message history from any store.
 - **`ExAthena.Checkpoint`** — file-history snapshots before every
-  `Edit` / `Write`, plus a `/rewind` API that restores files +
-  truncates the session log.
+  `Edit` / `Write`, which `ExAthena.Chats.rewind/3` uses to put files
+  back.
 
 ## The Store behaviour
 
@@ -127,43 +127,31 @@ best-effort, not a correctness gate.
 
 ## Rewind
 
-```elixir
-{:ok, %{files_restored: n, events_dropped: m}} =
-  ExAthena.Checkpoint.rewind(session_id, mode, opts)
-```
-
-Two modes:
-
-| Mode | Effect |
-|---|---|
-| `:code_and_history` | Restore each checkpointed file to its version-0 snapshot AND truncate the JSONL session log to the chosen `to_uuid`. |
-| `:history_only` | Only truncate the JSONL — files keep their current contents. |
-
-Required option:
-
-- `:to_uuid` — the event UUID at which to truncate. Find it in the
-  `Result.messages` history or the JSONL log.
-
-Optional:
-
-- `:cwd` — defaults to `File.cwd!/0`.
+Rewind works on a saved chat (`ExAthena.Chats`), by step:
 
 ```elixir
-# Walk back the entire session: restore every file the agent touched.
-{:ok, _} = ExAthena.Checkpoint.rewind(session_id, :code_and_history,
-  cwd: project_root,
-  to_uuid: "first-event-uuid")
-
-# Just drop the conversation context — keep the files as-is.
-{:ok, _} = ExAthena.Checkpoint.rewind(session_id, :history_only,
-  to_uuid: bad_branch_event_uuid)
+{:ok, %{steps_dropped: n, files_restored: m}} =
+  ExAthena.Chats.rewind(chat_id, step_uuid)
 ```
+
+The chat goes on from `step_uuid`; the steps after it stay in the file but
+leave the active history. Each version in the file history lists the tool
+calls that took it, so rewind puts back, per file, the version from just
+before the first dropped call. A file the dropped steps created is removed.
+Only files inside the chat's folder are touched. Pass `restore_files: false`
+to keep the files as they are.
+
+Rewind and fork refuse a chat while a turn runs in it (`{:error, :busy}`);
+a front end holds the chat for its turn with `ExAthena.Chats.hold/1`.
+
+For the file history to line up, the loop's `session_id` must be the chat
+id: that is the folder `Checkpoint.snapshot/4` writes under.
 
 ## TTL sweeper
 
 `ExAthena.Storage.Sweeper` runs once at application boot and removes
-both `.exathena/file-history` and `.exathena/sessions` entries that
-nothing has touched for 30 days. Retention is per directory and settable
+`.exathena/file-history` and `.exathena/sessions` entries, and saved
+chats in `~/.ex_athena/chats`, that nothing has touched for 30 days. Retention is per directory and settable
 in the web settings modal ("On-disk history"); `0` keeps that directory
 forever.
 
