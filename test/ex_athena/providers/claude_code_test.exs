@@ -350,6 +350,12 @@ defmodule ExAthena.Providers.ClaudeCodeTest do
       assert ClaudeCode.build_opts(request(), phase: :default)[:permission_mode] == :accept_edits
     end
 
+    test "a helper defined as read only stays in plan under a Trusted chat" do
+      # A Trusted chat hands its helpers permission_mode: :bypass_permissions.
+      opts = [phase: :plan, permission_mode: :bypass_permissions]
+      assert ClaudeCode.build_opts(request(), opts)[:permission_mode] == :plan
+    end
+
     test "build_opts/2 (used by query/2) does not set include_partial_messages" do
       opts = ClaudeCode.build_opts(request(), [])
       refute Keyword.has_key?(opts, :include_partial_messages)

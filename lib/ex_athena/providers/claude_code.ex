@@ -355,7 +355,7 @@ defmodule ExAthena.Providers.ClaudeCode do
       system_prompt: request.system_prompt,
       cwd: opts[:cwd],
       allowed_tools: opts[:allowed_tools],
-      permission_mode: opts[:permission_mode] || phase_to_mode(opts[:phase]),
+      permission_mode: permission_mode(opts),
       max_turns: finite_turns(opts[:max_iterations]) || opts[:max_turns],
       add_dir: opts[:add_dir],
       resume: opts[:resume],
@@ -376,6 +376,16 @@ defmodule ExAthena.Providers.ClaudeCode do
   # in `:plan`. The CLI runs its own tools and never calls `can_use_tool`, so
   # it cannot ask before an edit: below Trusted it edits freely, and Trusted
   # (`:trusted`) lets its commands run too (issue 322).
+  # A read-only phase wins over an inherited mode: a Trusted chat hands its
+  # helpers `permission_mode: :bypass_permissions`, and a helper defined as
+  # read only stays in `:plan`.
+  defp permission_mode(opts) do
+    case opts[:phase] do
+      :plan -> :plan
+      phase -> opts[:permission_mode] || phase_to_mode(phase)
+    end
+  end
+
   defp phase_to_mode(:plan), do: :plan
   defp phase_to_mode(:bypass_permissions), do: :bypass_permissions
   defp phase_to_mode(:trusted), do: :bypass_permissions
