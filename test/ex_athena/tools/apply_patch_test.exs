@@ -292,4 +292,19 @@ defmodule ExAthena.Tools.ApplyPatchTest do
       assert File.exists?(history_dir)
     end
   end
+
+  describe "a patch git would apply to another file" do
+    @describetag :tmp_dir
+
+    test "a path with no a/ or b/ that git would shorten is refused", %{tmp_dir: dir} do
+      {_, 0} = System.cmd("git", ["init", "-q"], cd: dir)
+      File.write!(Path.join(dir, "README.md"), "hello\n")
+      File.mkdir_p!(Path.join(dir, "src"))
+      ctx = ToolContext.new(cwd: dir, session_id: "pathchat01", tool_call_id: "c1")
+      patch = "--- src/README.md\n+++ src/README.md\n@@ -1,1 +1,1 @@\n-hello\n+pwned\n"
+
+      assert {:error, _} = ApplyPatch.execute(%{"patch" => patch}, ctx)
+      assert File.read!(Path.join(dir, "README.md")) == "hello\n"
+    end
+  end
 end

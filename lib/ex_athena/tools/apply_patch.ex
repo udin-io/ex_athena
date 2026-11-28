@@ -377,8 +377,16 @@ defmodule ExAthena.Tools.ApplyPatch do
           Enum.any?(lines, &String.starts_with?(&1, " delete mode ")) ->
             {:error, {:unsupported_diff_feature, :file_deletion}}
 
+          Enum.any?(lines, &String.starts_with?(&1, " mode change ")) ->
+            {:error, {:unsupported_diff_feature, :mode_change}}
+
           Enum.count(lines, &Regex.match?(~r/^(\d+|-)\t(\d+|-)\t/, &1)) > length(file_sections) ->
             {:error, {:unsupported_diff_feature, :unparsed_file}}
+
+          # git strips the first folder of a path with no `a/` or `b/`, so it
+          # can edit a file other than the one the snapshot covered.
+          numstat_paths(lines, cwd) != MapSet.new(file_sections, &Path.expand(&1.path)) ->
+            {:error, {:unsupported_diff_feature, :path_mismatch}}
 
           true ->
             :ok
@@ -390,6 +398,30 @@ defmodule ExAthena.Tools.ApplyPatch do
       _ ->
         {:error, :git_timeout}
     end
+  end
+
+  # `--numstat` prints paths from the repository's top folder; the prefix
+  # takes them back to the working folder (a path outside it keeps the
+  # prefix's absence, so it cannot match).
+  defp numstat_paths(lines, cwd) do
+    prefix =
+      case run_git(["rev-parse", "--show-prefix"], cwd) do
+        {:ok, {out, 0}} -> String.trim(out)
+        _ -> ""
+      end
+
+    for line <- lines,
+        [_, _, path] <- [String.split(line, "\t", parts: 3)],
+        into: MapSet.new(),
+        do: path |> strip_prefix(prefix) |> Path.expand(cwd)
+  end
+
+  defp strip_prefix(path, ""), do: path
+
+  defp strip_prefix(path, prefix) do
+    if String.starts_with?(path, prefix),
+      do: String.replace_prefix(path, prefix, ""),
+      else: "../" <> path
   end
 
   defp run_git(args, cwd) do
