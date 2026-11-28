@@ -73,6 +73,19 @@ minor version. Nobody has published it yet.
 
 ### Fixed
 
+- **File summaries no longer fail when the model asks for several at once**
+  ([#332](https://github.com/udin-io/ex_athena/issues/332)). On a local model
+  with one request slot, a run that asked for three file summaries got one
+  back and two `summarizer failed: :request_queue_timeout`: a summary gave up
+  after 5 seconds in the queue, shorter than one summary takes on a local 27B
+  model. The model then read both files in full, so the summaries saved
+  nothing and cost a turn. A summary now waits for the model as long as any
+  other call does, and several asked together run one after another. If a
+  summary still cannot get the model (the new `read_summary_queue_wait_ms`
+  limit under the `:tools` tuning, 0 by default for none), the error tells the model
+  to read the file instead. Hosted models, which have free slots, behave as
+  before.
+
 - **A tool call sent as one fenced JSON block now runs**
   ([#321](https://github.com/udin-io/ex_athena/issues/321)). qwen2.5-coder on
   Ollama sends no native tool call; its whole answer is the call inside a

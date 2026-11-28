@@ -519,6 +519,15 @@ defmodule ExAthena.Web.Settings do
           help: "How much of a file is fed to the summarizer."
         },
         %{
+          key: :read_summary_queue_wait_ms,
+          label: "read_summary: wait for the model (ms)",
+          default: 0,
+          type: :integer,
+          min: 0,
+          help:
+            "How long a summary waits for the model before it gives up. 0 waits without limit."
+        },
+        %{
           key: :gh_default_timeout_ms,
           label: "gh: default timeout (ms)",
           default: 20_000,
