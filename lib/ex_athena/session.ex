@@ -62,6 +62,8 @@ defmodule ExAthena.Session do
 
   use GenServer
 
+  require Logger
+
   alias ExAthena.Loop
   alias ExAthena.Messages
   alias ExAthena.Sessions.{SchemaStore, Store}
@@ -322,11 +324,11 @@ defmodule ExAthena.Session do
        opts: opts,
        session_id: session_id,
        store: store,
-       messages: seed_messages,
+       messages: chat_messages(store, session_id, seed_messages),
        usage: nil,
        # `store: :chat`: the record's version when this session opened it, so
        # its first save never writes over a turn another front end added.
-       chat_version: chat_version(store, session_id)
+       chat_version: chat_version(store, session_id, seed_messages)
      }}
   end
 
@@ -417,24 +419,51 @@ defmodule ExAthena.Session do
              :ok <- ExAthena.Chats.sync(id, messages) do
           put_version(%{state | session_id: id})
         else
-          _ -> state
+          err ->
+            Logger.warning(
+              "ExAthena.Session could not save chat #{state.session_id} as a fork: #{inspect(err)}"
+            )
+
+            state
         end
 
-      _ ->
+      {:error, reason} ->
+        Logger.warning(
+          "ExAthena.Session could not save chat #{state.session_id}: #{inspect(reason)}"
+        )
+
         state
     end
   end
 
   defp save_chat(state, _messages), do: state
 
-  defp chat_version(Chat, session_id) do
-    case ExAthena.Chats.version(session_id) do
-      {:ok, v} -> v
-      _ -> nil
+  # Opening a saved chat with no seed messages goes on from its history.
+  defp chat_messages(Chat, session_id, []) do
+    case ExAthena.Chats.load(session_id) do
+      {:ok, %{messages: messages}} -> messages
+      _ -> []
     end
   end
 
-  defp chat_version(_store, _session_id), do: nil
+  defp chat_messages(_store, _session_id, seeds), do: seeds
+
+  # Seeds that do not start with the saved history would replace it: the
+  # version is marked stale, so the first save goes to a new forked chat.
+  defp chat_version(Chat, session_id, seeds) do
+    case ExAthena.Chats.load(session_id) do
+      {:ok, %{messages: saved, version: v}} ->
+        if seeds == [] or
+             Enum.take(Enum.map(seeds, &ExAthena.Chats.as_saved/1), length(saved)) == saved,
+           do: v,
+           else: -1
+
+      _ ->
+        nil
+    end
+  end
+
+  defp chat_version(_store, _session_id, _seeds), do: nil
 
   defp put_version(state) do
     case ExAthena.Chats.version(state.session_id) do

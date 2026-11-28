@@ -96,4 +96,17 @@ defmodule ExAthena.SessionChatStoreTest do
     assert {:ok, %{messages: theirs}} = Chats.load("libchat000004")
     assert List.last(theirs).content == "terminal turn"
   end
+
+  test "a session opened on a saved chat goes on from its history", %{cwd: cwd} do
+    pid = start(cwd, "libchat000005")
+    {:ok, _} = Session.send_message(pid, "one")
+    Session.stop(pid)
+
+    pid = start(cwd, "libchat000005")
+    {:ok, _} = Session.send_message(pid, "two")
+    Session.stop(pid)
+
+    assert {:ok, %{messages: messages}} = Chats.load("libchat000005")
+    assert Enum.map(messages, & &1.content) == ["one", "hello back", "two", "hello back"]
+  end
 end

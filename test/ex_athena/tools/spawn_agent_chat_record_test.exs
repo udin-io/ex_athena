@@ -74,20 +74,26 @@ defmodule ExAthena.Tools.SpawnAgentChatRecordTest do
   end
 
   test "the helper's chat names its parent and the step that started it", %{parent: parent} do
+    {:ok, _} = Chats.create(%{id: "parentchat01", cwd: parent})
     assert {:ok, _} = run(parent, "parentchat01")
 
-    assert [helper] = Chats.list(helpers: true)
+    assert [helper] = Enum.filter(Chats.list(helpers: true), & &1[:parent])
     assert helper.parent == %{chat: "parentchat01", step: "spawn-1"}
     assert helper.title =~ "find every login route"
 
     assert {:ok, %{messages: messages}} = Chats.load(helper.id)
     assert Enum.any?(messages, &(&1.role == :assistant and &1.content =~ "/login"))
     # A helper stays out of the chat list front ends show.
-    assert Chats.list() == []
+    assert [%{id: "parentchat01"}] = Chats.list()
   end
 
   test "a run with no chat id to link to writes no helper chat", %{parent: parent} do
     assert {:ok, _} = run(parent, "not a chat id")
+    assert Chats.list(helpers: true) == []
+  end
+
+  test "a run whose session is not a saved chat writes no helper chat", %{parent: parent} do
+    assert {:ok, _} = run(parent, "nosuchchat01")
     assert Chats.list(helpers: true) == []
   end
 end

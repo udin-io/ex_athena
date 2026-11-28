@@ -275,7 +275,9 @@ defmodule ExAthena.Tools.SpawnAgent do
          prompt,
          {:ok, %{messages: [_ | _] = messages}}
        ) do
-    if ExAthena.Chats.valid_id?(parent) and ExAthena.Chats.valid_id?(sub_id) do
+    # Only under a chat that exists: a run with no saved chat keeps its
+    # helpers' transcripts out of the user's chat folder.
+    if ExAthena.Chats.valid_id?(sub_id) and match?({:ok, _}, ExAthena.Chats.version(parent)) do
       title =
         prompt
         |> to_string()
