@@ -635,7 +635,10 @@ if Code.ensure_loaded?(ExRatatui.App) do
     defp do_dispatch_message(text, state) do
       case Chats.hold(state.session.chat_id) do
         :ok ->
-          state |> current_chat() |> then(&start_turn(text, &1))
+          case current_chat(state) do
+            {:ok, state} -> start_turn(text, state)
+            {:error, state} -> {:noreply, state}
+          end
 
         {:error, :busy} ->
           append_and_noreply(
@@ -659,14 +662,27 @@ if Code.ensure_loaded?(ExRatatui.App) do
           Chats.release(old)
           _ = Chats.hold(session.chat_id)
 
-          State.append_event(
-            %{state | session: session},
-            {:warning,
-             "This chat moved on in another window, so it goes on here as a new chat (#{session.chat_id})."}
-          )
+          {:ok,
+           State.append_event(
+             %{state | session: session},
+             {:warning,
+              "This chat moved on in another window, so it goes on here as a new chat (#{session.chat_id})."}
+           )}
 
-        _ ->
-          state
+        {:ok, session} ->
+          {:ok, %{state | session: session}}
+
+        # The chat moved on and its copy could not be saved apart: running
+        # the turn would write into the moved chat, so it does not run.
+        {:error, reason} ->
+          Chats.release(old)
+
+          {:error,
+           State.append_event(
+             state,
+             {:warning,
+              "Could not start: this chat moved on in another window and could not be copied (#{describe(reason)})."}
+           )}
       end
     end
 
