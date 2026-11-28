@@ -903,10 +903,10 @@ defmodule ExAthena.Modes.ReAct do
   # state.messages, so the transcript prefix stays append-only (KV-cache
   # friendly) and the reminder always sits in the model's most recent
   # attention span.
-  defp recitation(%State{meta: %{conclusions: false}}), do: []
-  defp recitation(%State{meta: %{ledger: []}}), do: []
+  defp recitation(%State{meta: %{conclusions: false}}, _room), do: []
+  defp recitation(%State{meta: %{ledger: []}}, _room), do: []
 
-  defp recitation(%State{meta: %{ledger: [_ | _] = ledger}} = state) do
+  defp recitation(%State{meta: %{ledger: [_ | _] = ledger}} = state, room) do
     # The PREVIOUS turn's conclusion is already the most recent assistant
     # message in context — reciting it back invites recency-bias parroting
     # (a stale "waiting for user input" conclusion made the model claim it
@@ -923,31 +923,56 @@ defmodule ExAthena.Modes.ReAct do
       # stated/tail findings persist (they're distilled facts).
       |> Enum.reject(fn e -> e.source == :thinking and last_iter - e.iteration > 3 end)
 
-    case older do
-      [] ->
-        []
+    # Whole thinking blobs live in the UI/failure digests; the per-turn
+    # recitation carries a ~200-char excerpt (full blobs would prefill
+    # ~2k extra tokens EVERY turn on a 1-slot GPU).
+    lines = Enum.map(older, &"- (iteration #{&1.iteration}) #{recitation_text(&1)}")
 
-      older ->
-        # Whole thinking blobs live in the UI/failure digests; the per-turn
-        # recitation carries a ~200-char excerpt (full blobs would prefill
-        # ~2k extra tokens EVERY turn on a 1-slot GPU).
-        lines =
-          Enum.map_join(older, "\n", fn e ->
-            "- (iteration #{e.iteration}) #{recitation_text(e)}"
-          end)
+    directive = ledger_directive(state, ledger)
 
-        [
-          Messages.user("""
-          [progress ledger — runtime-generated reminder, not a user message]
-          Conclusions so far:
-          #{lines}
-          #{ledger_directive(state, ledger)}\
-          """)
-        ]
+    case fit_lines(lines, directive, room) do
+      [] -> []
+      kept -> [ledger_message(kept, directive)]
     end
   end
 
-  defp recitation(_state), do: []
+  defp recitation(_state, _room), do: []
+
+  defp ledger_message(lines, directive) do
+    Messages.user("""
+    [progress ledger — runtime-generated reminder, not a user message]
+    Conclusions so far:
+    #{Enum.join(lines, "\n")}
+    #{directive}\
+    """)
+  end
+
+  # Issue 330. The notes after the last tool result are rebuilt every call. A
+  # hybrid local model (Qwen3.5 family on Ollama or llama.cpp) reuses its cache
+  # only from a checkpoint saved about 512 tokens before the end of the
+  # previous prompt, so once these notes pass that distance the checkpoint
+  # lands inside text the next call drops and the call reads its whole prompt
+  # again. The ledger takes what room the other notes leave, dropping its
+  # oldest conclusions first; the newest stays even when nothing fits, since
+  # the wrap-up note near a budget's end alone fills most of the room.
+  # Counted in bytes: notes full of paths and numbers run about 3 bytes a
+  # token, so 1,200 bytes is about 400 tokens.
+  # Measured on Ollama 0.40 with `qwen3.8:27b`: notes of 1,157 bytes let the
+  # cached count grow every call, notes of 1,570 bytes cached nothing.
+  @tail_note_bytes 1_200
+
+  defp fit_lines(lines, _directive, :infinity), do: lines
+
+  defp fit_lines([], _directive, _room), do: []
+  defp fit_lines([_newest] = lines, _directive, _room), do: lines
+
+  defp fit_lines([_oldest | newer] = lines, directive, room) do
+    if bytes([ledger_message(lines, directive)]) <= room,
+      do: lines,
+      else: fit_lines(newer, directive, room)
+  end
+
+  defp bytes(messages), do: messages |> Enum.map(&byte_size(&1.content || "")) |> Enum.sum()
 
   defp recitation_text(%{source: :thinking, text: text}) do
     if String.length(text) > 200, do: String.slice(text, 0, 200) <> "…", else: text
@@ -1113,11 +1138,11 @@ defmodule ExAthena.Modes.ReAct do
   defp build_request(state, handback?)
 
   defp build_request(state, false) do
+    notes = phase_note(state) ++ budget_note(state) ++ research_note(state)
+
     %{
       state.request_template
-      | messages:
-          state.messages ++
-            phase_note(state) ++ budget_note(state) ++ research_note(state) ++ recitation(state),
+      | messages: state.messages ++ notes ++ recitation(state, @tail_note_bytes - bytes(notes)),
         tools: tool_schemas(state.tool_specs, state.capabilities),
         system_prompt: effective_system_prompt(state)
     }
@@ -1145,7 +1170,7 @@ defmodule ExAthena.Modes.ReAct do
       state.request_template
       | messages:
           state.messages ++
-            recitation(state) ++ [Messages.user(BudgetPressure.handback_note(state))],
+            recitation(state, :infinity) ++ [Messages.user(BudgetPressure.handback_note(state))],
         tools: nil,
         system_prompt: state.request_template.system_prompt
     }

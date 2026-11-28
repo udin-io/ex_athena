@@ -540,6 +540,82 @@ defmodule ExAthena.Loop.ConclusionsLoopTest do
     assert result.todos == todos
   end
 
+  # Issue 330. A hybrid local model reuses its cache only from a checkpoint
+  # saved about 512 tokens before the end of the previous prompt. The notes
+  # after the last tool result are rebuilt every call, so once they pass that
+  # distance the checkpoint lands inside text the next call drops, and the
+  # call reads its whole prompt again. The recitation therefore keeps the
+  # notes under about 400 tokens, dropping the oldest conclusions first,
+  # except near a budget's end, where it still keeps its newest conclusion.
+  @long_run_turns 12
+
+  # Each conclusion is about 150 characters, the most a stated one holds.
+  defp long_run_last_request(dir, max_iterations) do
+    turns = @long_run_turns
+    for i <- 1..turns, do: File.write!(Path.join(dir, "f#{i}.txt"), "x")
+    test_pid = self()
+    counter = :counters.new(1, [:atomics])
+
+    responder = fn request ->
+      :counters.add(counter, 1, 1)
+      n = :counters.get(counter, 1)
+      send(test_pid, {:request_messages, n, request.messages})
+
+      if n <= turns do
+        %Response{
+          text:
+            "CONCLUSION: step #{n} found the handler for request #{n} in " <>
+              "lib/app/handler_#{n}.ex and its test in test/app/handler_#{n}_test.exs, both unchanged.",
+          tool_calls: [%ToolCall{id: "c#{n}", name: "read", arguments: %{"path" => "f#{n}.txt"}}],
+          finish_reason: :tool_calls,
+          provider: :mock
+        }
+      else
+        %Response{text: "done", tool_calls: [], finish_reason: :stop, provider: :mock}
+      end
+    end
+
+    assert {:ok, _} =
+             Loop.run("go",
+               provider: :mock,
+               mock: [responder: responder],
+               cwd: dir,
+               tools: [ExAthena.Tools.Read],
+               max_iterations: max_iterations
+             )
+
+    assert_receive {:request_messages, last, msgs} when last == turns + 1
+
+    msgs
+    |> Enum.reverse()
+    |> Enum.take_while(&(&1.role != :tool))
+    |> Enum.reverse()
+  end
+
+  test "the notes after the last tool result stay under about 400 tokens", %{dir: dir} do
+    tail = long_run_last_request(dir, @long_run_turns + 5)
+
+    # Notes full of paths and numbers run about 3 bytes a token.
+    tail_tokens = tail |> Enum.map(&byte_size(message_text(&1))) |> Enum.sum() |> div(3)
+    assert tail_tokens <= 400, "tail notes ran to about #{tail_tokens} tokens"
+
+    # The newest older conclusion stays; the oldest go first. The ledger keeps
+    # 10 entries, so steps 3 and 4 are the oldest it still holds here.
+    ledger = tail |> Enum.find(&ledger_message?/1) |> message_text()
+    assert ledger =~ "step #{@long_run_turns - 1} found"
+    refute ledger =~ "step 3 found"
+    refute ledger =~ "step 4 found"
+  end
+
+  test "near a budget's end the ledger still recites its newest conclusion", %{dir: dir} do
+    # Two turns from the iteration cap, so the wrap-up note fills the room.
+    tail = long_run_last_request(dir, @long_run_turns + 2)
+
+    assert Enum.any?(tail, &(message_text(&1) =~ "near the end of your budget"))
+    ledger = tail |> Enum.find(&ledger_message?/1) |> message_text()
+    assert ledger =~ "step #{@long_run_turns - 1} found"
+  end
+
   defp ledger_message?(%{content: content}) when is_binary(content),
     do: content =~ "[progress ledger"
 
