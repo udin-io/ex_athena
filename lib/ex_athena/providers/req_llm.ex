@@ -405,8 +405,8 @@ defmodule ExAthena.Providers.ReqLLM do
   @doc false
   # Every assistant reply goes out in ONE form, the same on every call that
   # carries it (issue 330). Its reasoning never goes back verbatim: a reply
-  # whose text channel is empty, as a thinking model's tool turn is, carries a
-  # one-line record of what it concluded instead.
+  # whose text is blank, as a thinking model's tool turn often is, carries a
+  # short `[earlier turn]` record of what it concluded instead.
   #
   # The form must never change between calls. A local server reuses its cache
   # only for the part of the prompt that matches the previous request from the
@@ -431,10 +431,13 @@ defmodule ExAthena.Providers.ReqLLM do
       # totally BLANK assistant message. The model then sees a wall of tool
       # results with no record of why it ran any of them, and re-runs them
       # (observed live as the same file read and the same worker spawned four
-      # times over). Keep a bounded one-line trace instead of nothing.
+      # times over). Keep a bounded one-line trace instead of nothing. A bare
+      # " " or a few newlines is as blank to the model as "".
       %Message{role: :assistant, content: c, reasoning: r} = msg
-      when is_binary(r) and r != "" and (is_nil(c) or c == "") ->
-        %{msg | content: durable_conclusion(r)}
+      when is_binary(r) and (is_nil(c) or is_binary(c)) ->
+        if blank_text?(c) and not blank_text?(r),
+          do: %{msg | content: durable_conclusion(r)},
+          else: msg
 
       msg ->
         msg

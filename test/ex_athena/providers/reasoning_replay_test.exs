@@ -100,6 +100,22 @@ defmodule ExAthena.Providers.ReasoningReplayTest do
     refute cur_a.content =~ "<think>"
   end
 
+  # Local models often send a bare " " or a few newlines as the text of a
+  # tool turn. That is as blank as "" to the model, so it gets the record too.
+  test "a reply whose text is only whitespace keeps a record of its reasoning" do
+    call = %ToolCall{id: "a", name: "grep", arguments: %{}}
+
+    [_, reply, _] =
+      Provider.condense_reasoning([
+        Messages.user("task"),
+        Messages.assistant(" \n\n", [call], "The select element sits at line 113."),
+        Messages.tool_result("a", "match at 113")
+      ])
+
+    assert reply.content =~ "[earlier turn]"
+    assert reply.content =~ "line 113"
+  end
+
   test "older assistant turns that already have text are left alone" do
     old_call = %ToolCall{id: "a", name: "read", arguments: %{}}
     cur_call = %ToolCall{id: "b", name: "read", arguments: %{}}
