@@ -265,6 +265,40 @@ defmodule ExAthena.Tools.SpawnAgent do
 
   def execute(_, _), do: {:error, :missing_prompt}
 
+  # The worker's task returns `{:ok, {:ok, result}}` once it finished.
+  defp save_helper_chat(ctx, sub_id, prompt, {:ok, {:ok, result}}),
+    do: save_helper_chat(ctx, sub_id, prompt, {:ok, result})
+
+  defp save_helper_chat(
+         %{session_id: parent} = ctx,
+         sub_id,
+         prompt,
+         {:ok, %{messages: [_ | _] = messages}}
+       ) do
+    if ExAthena.Chats.valid_id?(parent) and ExAthena.Chats.valid_id?(sub_id) do
+      title =
+        prompt
+        |> to_string()
+        |> String.split("\n", trim: true)
+        |> List.first("")
+        |> String.slice(0, 60)
+
+      with {:ok, _} <-
+             ExAthena.Chats.create(%{
+               id: sub_id,
+               cwd: ctx.cwd,
+               title: title,
+               parent: %{chat: parent, step: ctx.tool_call_id}
+             }) do
+        ExAthena.Chats.sync(sub_id, messages)
+      end
+    end
+  rescue
+    _ -> :ok
+  end
+
+  defp save_helper_chat(_ctx, _sub_id, _prompt, _result), do: :ok
+
   defp resolve_prompt(args) do
     Enum.find_value(@prompt_sources, fn key ->
       case Map.get(args, key) do
@@ -563,6 +597,10 @@ defmodule ExAthena.Tools.SpawnAgent do
             other -> other
           end
       })
+
+    # The helper's transcript as a saved chat of its own, linked to the
+    # parent chat and the step that sent it (best-effort, like the sidechain).
+    _ = save_helper_chat(ctx, sub_id, prompt, raw_result)
 
     finalized_isolation = finalize_isolation(isolation_info)
 
