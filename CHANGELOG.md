@@ -73,6 +73,12 @@ minor version. Nobody has published it yet.
 
 ### Fixed
 
+- **The web UI's key and saved chats are private to their owner**
+  ([#303](https://github.com/udin-io/ex_athena/issues/303)). On a shared machine
+  every user could read the signing key, every saved chat and the recent-projects
+  list, and the saved settings and token are private too. The web folder is now 0700 and the files in it 0600; `mix athena.web`
+  restricts files an older version left open when it starts.
+
 - **The model is no longer told to search the web while it reads local code**
   ([#331](https://github.com/udin-io/ex_athena/issues/331)). The note that
   steers the model to `web_search` fired on every empty grep or glob, and an
